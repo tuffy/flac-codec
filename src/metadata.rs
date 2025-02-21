@@ -530,7 +530,7 @@ impl FromBitStreamWith<'_> for CuesheetTrack {
 
         match *is_cdda {
             true => match number {
-                1..99 => {
+                1..=99 => {
                     if point_count == 0 {
                         return Err(Error::InvalidCuesheetIndexPoints);
                     }
