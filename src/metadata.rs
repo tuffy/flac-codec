@@ -405,13 +405,17 @@ impl FromBitStreamWith<'_> for SeekTable {
 
                 for _ in 0..p {
                     let point: SeekPoint = r.parse()?;
-                    match points.last() {
-                        Some(SeekPoint { sample_offset, .. })
-                            if point.sample_offset <= *sample_offset =>
-                        {
-                            return Err(Error::InvalidSeekTablePoint);
-                        }
-                        _ => points.push(point),
+                    match point.sample_offset {
+                        None => points.push(point),
+                        Some(our_offset) => match points.last() {
+                            Some(SeekPoint {
+                                sample_offset: Some(last_offset),
+                                ..
+                            }) if our_offset <= *last_offset => {
+                                return Err(Error::InvalidSeekTablePoint);
+                            }
+                            _ => points.push(point),
+                        },
                     }
                 }
 
@@ -424,7 +428,7 @@ impl FromBitStreamWith<'_> for SeekTable {
 
 #[derive(Debug, Clone)]
 pub struct SeekPoint {
-    pub sample_offset: u64,
+    pub sample_offset: Option<u64>,
     pub byte_offset: u64,
     pub frame_samples: u16,
 }
@@ -434,7 +438,7 @@ impl FromBitStream for SeekPoint {
 
     fn from_reader<R: BitRead + ?Sized>(r: &mut R) -> Result<Self, Self::Error> {
         Ok(Self {
-            sample_offset: r.read_to()?,
+            sample_offset: r.read_to().map(|o| (o != u64::MAX).then_some(o))?,
             byte_offset: r.read_to()?,
             frame_samples: r.read_to()?,
         })
