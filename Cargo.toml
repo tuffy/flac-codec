@@ -1,0 +1,7 @@
+[package]
+name = "flac-codec"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+bitstream-io = { "path" = "/mnt/multimedia/code/development/bitstream-io" }
