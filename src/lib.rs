@@ -13,6 +13,7 @@
 #![forbid(unsafe_code)]
 
 pub mod metadata;
+pub mod stream;
 
 /// A unified FLAC format error
 #[derive(Debug)]
@@ -72,6 +73,18 @@ pub enum Error {
     ExcessiveCuesheetIndexPoints,
     /// A metadata block larger than its 24-bit size field can hold
     ExcessiveBlockSize,
+    /// Invalid frame sync code
+    InvalidSyncCode,
+    /// Invalid frame block size
+    InvalidBlockSize,
+    /// Invalid frame sample rate
+    InvalidSampleRate,
+    /// Invalid frame channel assignment
+    InvalidChannels,
+    /// Invalid frame bits-per-sample
+    InvalidBitsPerSample,
+    /// Invalid frame number
+    InvalidFrameNumber,
 }
 
 impl From<std::io::Error> for Error {
@@ -120,6 +133,12 @@ impl std::fmt::Display for Error {
                 "excessuve number of CUESHEET track index points".fmt(f)
             }
             Self::ExcessiveBlockSize => "excessive metadata block size".fmt(f),
+            Self::InvalidSyncCode => "invalid frame sync code".fmt(f),
+            Self::InvalidBlockSize => "invalid frame block size".fmt(f),
+            Self::InvalidSampleRate => "invalid frame sample rate".fmt(f),
+            Self::InvalidChannels => "invalid frame channel assignment".fmt(f),
+            Self::InvalidBitsPerSample => "invalid frame bits-per-sample".fmt(f),
+            Self::InvalidFrameNumber => "invalid frame numbe".fmt(f),
         }
     }
 }
