@@ -21,6 +21,12 @@ pub enum Error {
     InvalidMetadataBlock,
     InvalidMetadataBlockSize,
     InsufficientApplicationBlock,
+    ExcessiveVorbisEntries,
+    ExcessiveStringLength,
+    ExcessivePictureSize,
+    ExcessiveCuesheetTracks,
+    ExcessiveCuesheetIndexPoints,
+    ExcessiveBlockSize,
 }
 
 impl From<std::io::Error> for Error {
@@ -61,6 +67,14 @@ impl std::fmt::Display for Error {
             Self::InvalidMetadataBlock => "invalid metadata block".fmt(f),
             Self::InvalidMetadataBlockSize => "invalid metadat block size".fmt(f),
             Self::InsufficientApplicationBlock => "APPLICATION block too small for data".fmt(f),
+            Self::ExcessiveVorbisEntries => "excessive number of VORBIS_COMMENT entries".fmt(f),
+            Self::ExcessiveStringLength => "excessive string length".fmt(f),
+            Self::ExcessivePictureSize => "excessive PICTURE data size".fmt(f),
+            Self::ExcessiveCuesheetTracks => "excessuve number of CUESHEET tracks".fmt(f),
+            Self::ExcessiveCuesheetIndexPoints => {
+                "excessuve number of CUESHEET track index points".fmt(f)
+            }
+            Self::ExcessiveBlockSize => "excessive metadata block size".fmt(f),
         }
     }
 }
