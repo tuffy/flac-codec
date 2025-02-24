@@ -408,7 +408,7 @@ impl ToBitStreamWith<'_> for Block {
             type Error = (); // the error will be replaced later
 
             fn try_from(u: u32) -> Result<Self, Self::Error> {
-                (u < Self::MAX).then_some(Self(u)).ok_or(())
+                (u <= Self::MAX).then_some(Self(u)).ok_or(())
             }
         }
 
@@ -418,7 +418,7 @@ impl ToBitStreamWith<'_> for Block {
             fn try_from(u: usize) -> Result<Self, Self::Error> {
                 u32::try_from(u)
                     .map_err(|_| ())
-                    .and_then(|u| (u < Self::MAX).then_some(Self(u)).ok_or(()))
+                    .and_then(|u| (u <= Self::MAX).then_some(Self(u)).ok_or(()))
             }
         }
 
@@ -427,7 +427,7 @@ impl ToBitStreamWith<'_> for Block {
                 *self = self
                     .0
                     .checked_add(b)
-                    .filter(|b| *b < Self::MAX)
+                    .filter(|b| *b <= Self::MAX)
                     .map(Self)
                     .ok_or(Overflowed)?;
                 Ok(())
@@ -436,7 +436,7 @@ impl ToBitStreamWith<'_> for Block {
             fn checked_mul(self, Self(b): Self) -> Result<Self, Overflowed> {
                 self.0
                     .checked_mul(b)
-                    .filter(|b| *b < Self::MAX)
+                    .filter(|b| *b <= Self::MAX)
                     .map(Self)
                     .ok_or(Overflowed)
             }
@@ -611,7 +611,7 @@ impl ToBitStream for Padding {
     type Error = std::io::Error;
 
     fn to_writer<W: BitWrite + ?Sized>(&self, w: &mut W) -> Result<(), Self::Error> {
-        w.pad(self.size)
+        w.pad(self.size * 8)
     }
 }
 
@@ -923,6 +923,7 @@ impl ToBitStreamWith<'_> for CuesheetTrack {
             return Err(Error::InvalidCuesheetOffset);
         }
         w.write_from(self.offset)?;
+        w.write_from(self.number)?;
         w.write_from(self.isrc.unwrap_or([0; 12]))?;
         w.write_bit(self.non_audio)?;
         w.write_bit(self.pre_emphasis)?;
@@ -1074,7 +1075,8 @@ impl ToBitStream for Picture {
             error: Error,
         ) -> Result<(), Error> {
             w.write_from::<u32>(field.len().try_into().map_err(|_| error)?)
-                .map_err(Error::Io)
+                .map_err(Error::Io)?;
+            w.write_bytes(field).map_err(Error::Io)
         }
 
         w.build(&self.picture_type)?;
