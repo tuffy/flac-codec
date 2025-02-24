@@ -23,6 +23,94 @@ pub struct BlockHeader {
     size: BlockSize,
 }
 
+trait MetadataBlock: ToBitStream<Error: Into<Error>> {
+    const TYPE: BlockType;
+}
+
+impl BlockHeader {
+    fn new<M: MetadataBlock>(last: bool, block: &M) -> Result<Self, Error> {
+        use bitstream_io::write::Overflowed;
+
+        #[derive(Default)]
+        struct BlockBits(u32);
+
+        impl BlockBits {
+            const MAX: u32 = BlockSize::MAX * 8;
+        }
+
+        impl From<u8> for BlockBits {
+            fn from(u: u8) -> Self {
+                Self(u.into())
+            }
+        }
+
+        impl TryFrom<u32> for BlockBits {
+            type Error = (); // the error will be replaced later
+
+            fn try_from(u: u32) -> Result<Self, Self::Error> {
+                (u <= Self::MAX).then_some(Self(u)).ok_or(())
+            }
+        }
+
+        impl TryFrom<usize> for BlockBits {
+            type Error = (); // the error will be replaced later
+
+            fn try_from(u: usize) -> Result<Self, Self::Error> {
+                u32::try_from(u)
+                    .map_err(|_| ())
+                    .and_then(|u| (u <= Self::MAX).then_some(Self(u)).ok_or(()))
+            }
+        }
+
+        impl bitstream_io::write::Counter for BlockBits {
+            fn checked_add_assign(&mut self, Self(b): Self) -> Result<(), Overflowed> {
+                *self = self
+                    .0
+                    .checked_add(b)
+                    .filter(|b| *b <= Self::MAX)
+                    .map(Self)
+                    .ok_or(Overflowed)?;
+                Ok(())
+            }
+
+            fn checked_mul(self, Self(b): Self) -> Result<Self, Overflowed> {
+                self.0
+                    .checked_mul(b)
+                    .filter(|b| *b <= Self::MAX)
+                    .map(Self)
+                    .ok_or(Overflowed)
+            }
+
+            fn byte_aligned(&self) -> bool {
+                self.0 % 8 == 0
+            }
+        }
+
+        impl From<BlockBits> for BlockSize {
+            fn from(BlockBits(u): BlockBits) -> Self {
+                assert!(u % 8 == 0);
+                Self(u / 8)
+            }
+        }
+
+        fn large_block<E: Into<Error>>(err: E) -> Error {
+            match err.into() {
+                Error::Io(_) => Error::ExcessiveBlockSize,
+                e => e,
+            }
+        }
+
+        Ok(Self {
+            last,
+            block_type: M::TYPE,
+            size: block
+                .bits_len::<BlockBits, BigEndian>()
+                .map_err(large_block)?
+                .into(),
+        })
+    }
+}
+
 impl FromBitStream for BlockHeader {
     type Error = Error;
 
@@ -47,7 +135,7 @@ impl ToBitStream for BlockHeader {
 }
 
 /// A defined FLAC metadata block type
-#[derive(Debug)]
+#[derive(Copy, Clone, Debug)]
 pub enum BlockType {
     /// The STREAMINFO block
     Streaminfo,
@@ -149,7 +237,7 @@ impl TryFrom<usize> for BlockSize {
 #[derive(Copy, Clone, Debug)]
 pub struct BlockSizeOverflow;
 
-impl std::error::Error for BlockSizeOverflow { }
+impl std::error::Error for BlockSizeOverflow {}
 
 impl std::fmt::Display for BlockSizeOverflow {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
@@ -314,6 +402,7 @@ impl<R: std::io::Read> Iterator for BlockReader<R> {
 }
 
 /// Writes iterator of blocks to the given writer.
+///
 /// Because this may perform many small writes,
 /// buffering writes may greatly improve performance
 /// when writing to a raw `File`.
@@ -442,160 +531,33 @@ impl ToBitStreamWith<'_> for Block {
 
     // builds to writer with header
     fn to_writer<W: BitWrite + ?Sized>(&self, w: &mut W, is_last: &bool) -> Result<(), Error> {
-        use bitstream_io::write::Overflowed;
-
-        #[derive(Default)]
-        struct BlockBits(u32);
-
-        impl BlockBits {
-            const MAX: u32 = BlockSize::MAX * 8;
-        }
-
-        impl From<u8> for BlockBits {
-            fn from(u: u8) -> Self {
-                Self(u.into())
-            }
-        }
-
-        impl TryFrom<u32> for BlockBits {
-            type Error = (); // the error will be replaced later
-
-            fn try_from(u: u32) -> Result<Self, Self::Error> {
-                (u <= Self::MAX).then_some(Self(u)).ok_or(())
-            }
-        }
-
-        impl TryFrom<usize> for BlockBits {
-            type Error = (); // the error will be replaced later
-
-            fn try_from(u: usize) -> Result<Self, Self::Error> {
-                u32::try_from(u)
-                    .map_err(|_| ())
-                    .and_then(|u| (u <= Self::MAX).then_some(Self(u)).ok_or(()))
-            }
-        }
-
-        impl bitstream_io::write::Counter for BlockBits {
-            fn checked_add_assign(&mut self, Self(b): Self) -> Result<(), Overflowed> {
-                *self = self
-                    .0
-                    .checked_add(b)
-                    .filter(|b| *b <= Self::MAX)
-                    .map(Self)
-                    .ok_or(Overflowed)?;
-                Ok(())
-            }
-
-            fn checked_mul(self, Self(b): Self) -> Result<Self, Overflowed> {
-                self.0
-                    .checked_mul(b)
-                    .filter(|b| *b <= Self::MAX)
-                    .map(Self)
-                    .ok_or(Overflowed)
-            }
-
-            fn byte_aligned(&self) -> bool {
-                self.0 % 8 == 0
-            }
-        }
-
-        impl From<BlockBits> for BlockSize {
-            fn from(BlockBits(u): BlockBits) -> Self {
-                assert!(u % 8 == 0);
-                Self(u / 8)
-            }
-        }
-
-        fn large_block<E: Into<Error>>(err: E) -> Error {
-            match err.into() {
-                Error::Io(_) => Error::ExcessiveBlockSize,
-                e => e,
-            }
-        }
-
         match self {
-            Self::Streaminfo(streaminfo) => {
-                w.build(&BlockHeader {
-                    last: *is_last,
-                    block_type: BlockType::Streaminfo,
-                    size: streaminfo
-                        .bits_len::<BlockBits, BigEndian>()
-                        .map_err(large_block)?
-                        .into(),
-                })?;
-                Ok(w.build(streaminfo)?)
-            }
-            Self::Padding(padding) => {
-                w.build(&BlockHeader {
-                    last: *is_last,
-                    block_type: BlockType::Padding,
-                    size: padding
-                        .bits_len::<BlockBits, BigEndian>()
-                        .map_err(large_block)?
-                        .into(),
-                })?;
-                Ok(w.build(padding)?)
-            }
-            Self::Application(application) => {
-                w.build(&BlockHeader {
-                    last: *is_last,
-                    block_type: BlockType::Application,
-                    size: application
-                        .bits_len::<BlockBits, BigEndian>()
-                        .map_err(large_block)?
-                        .into(),
-                })?;
-                Ok(w.build(application)?)
-            }
-            Self::SeekTable(seektable) => {
-                w.build(&BlockHeader {
-                    last: *is_last,
-                    block_type: BlockType::SeekTable,
-                    size: seektable
-                        .bits_len::<BlockBits, BigEndian>()
-                        .map_err(large_block)?
-                        .into(),
-                })?;
-                Ok(w.build(seektable)?)
-            }
-            Self::VorbisComment(vorbis_comment) => {
-                w.build(&BlockHeader {
-                    last: *is_last,
-                    block_type: BlockType::VorbisComment,
-                    size: vorbis_comment
-                        .bits_len::<BlockBits, BigEndian>()
-                        .map_err(large_block)?
-                        .into(),
-                })?;
-                Ok(w.build(vorbis_comment)?)
-            }
-            Self::Cuesheet(cuesheet) => {
-                w.build(&BlockHeader {
-                    last: *is_last,
-                    block_type: BlockType::Cuesheet,
-                    size: cuesheet
-                        .bits_len::<BlockBits, BigEndian>()
-                        .map_err(large_block)?
-                        .into(),
-                })?;
-                Ok(w.build(cuesheet)?)
-            }
-            Self::Picture(picture) => {
-                w.build(&BlockHeader {
-                    last: *is_last,
-                    block_type: BlockType::Picture,
-                    size: picture
-                        .bits_len::<BlockBits, BigEndian>()
-                        .map_err(large_block)?
-                        .into(),
-                })?;
-                Ok(w.build(picture)?)
-            }
+            Self::Streaminfo(streaminfo) => w
+                .build(&BlockHeader::new(*is_last, streaminfo)?)
+                .and_then(|()| w.build(streaminfo).map_err(Error::Io)),
+            Self::Padding(padding) => w
+                .build(&BlockHeader::new(*is_last, padding)?)
+                .and_then(|()| w.build(padding).map_err(Error::Io)),
+            Self::Application(application) => w
+                .build(&BlockHeader::new(*is_last, application)?)
+                .and_then(|()| w.build(application).map_err(Error::Io)),
+            Self::SeekTable(seektable) => w
+                .build(&BlockHeader::new(*is_last, seektable)?)
+                .and_then(|()| w.build(seektable)),
+            Self::VorbisComment(vorbis_comment) => w
+                .build(&BlockHeader::new(*is_last, vorbis_comment)?)
+                .and_then(|()| w.build(vorbis_comment)),
+            Self::Cuesheet(cuesheet) => w
+                .build(&BlockHeader::new(*is_last, cuesheet)?)
+                .and_then(|()| w.build(cuesheet)),
+            Self::Picture(picture) => w
+                .build(&BlockHeader::new(*is_last, picture)?)
+                .and_then(|()| w.build(picture)),
         }
     }
 }
 
-/// The STREAMINFO metadata block
+/// A STREAMINFO metadata block
 #[derive(Debug, Clone)]
 pub struct Streaminfo {
     /// The minimum block size (in samples) used in the stream,
@@ -622,6 +584,10 @@ pub struct Streaminfo {
     /// MD5 hash of unencoded audio data.
     /// `None` indicates the value is unknown.
     pub md5: Option<[u8; 16]>,
+}
+
+impl MetadataBlock for Streaminfo {
+    const TYPE: BlockType = BlockType::Streaminfo;
 }
 
 impl FromBitStream for Streaminfo {
@@ -668,6 +634,10 @@ pub struct Padding {
     pub size: u32,
 }
 
+impl MetadataBlock for Padding {
+    const TYPE: BlockType = BlockType::Padding;
+}
+
 impl FromBitStreamWith<'_> for Padding {
     type Context = BlockSize;
     type Error = Error;
@@ -693,6 +663,10 @@ pub struct Application {
     pub id: u32,
     /// Application-specific data
     pub data: Vec<u8>,
+}
+
+impl MetadataBlock for Application {
+    const TYPE: BlockType = BlockType::Application;
 }
 
 impl FromBitStreamWith<'_> for Application {
@@ -727,6 +701,10 @@ impl ToBitStream for Application {
 pub struct SeekTable {
     /// The seek table's individual seek points
     pub points: Vec<SeekPoint>,
+}
+
+impl MetadataBlock for SeekTable {
+    const TYPE: BlockType = BlockType::SeekTable;
 }
 
 impl FromBitStreamWith<'_> for SeekTable {
@@ -836,6 +814,10 @@ pub struct VorbisComment {
     pub fields: Vec<String>,
 }
 
+impl MetadataBlock for VorbisComment {
+    const TYPE: BlockType = BlockType::VorbisComment;
+}
+
 impl FromBitStream for VorbisComment {
     type Error = Error;
 
@@ -890,6 +872,10 @@ pub struct Cuesheet {
     pub is_cdda: bool,
     /// Cuesheet's tracks
     pub tracks: Vec<CuesheetTrack>,
+}
+
+impl MetadataBlock for Cuesheet {
+    const TYPE: BlockType = BlockType::Cuesheet;
 }
 
 impl FromBitStream for Cuesheet {
@@ -1132,7 +1118,7 @@ impl ToBitStreamWith<'_> for CuesheetIndexPoint {
     }
 }
 
-/// The contents of a PICTURE metadata block
+/// A PICTURE metadata block
 #[derive(Debug, Clone)]
 pub struct Picture {
     /// The picture type
@@ -1151,6 +1137,10 @@ pub struct Picture {
     pub colors_used: u32,
     /// The binary picture data
     pub data: Vec<u8>,
+}
+
+impl MetadataBlock for Picture {
+    const TYPE: BlockType = BlockType::Picture;
 }
 
 impl FromBitStream for Picture {
