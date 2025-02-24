@@ -1,3 +1,13 @@
+// Copyright 2025 Brian Langenberger
+//
+// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
+// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
+// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
+// option. This file may not be copied, modified, or distributed
+// except according to those terms.
+
+//! For handling a FLAC file's metadata blocks
+
 use crate::Error;
 use bitstream_io::{
     BigEndian, BitRead, BitReader, BitWrite, FromBitStream, FromBitStreamWith, LittleEndian,
@@ -5,6 +15,7 @@ use bitstream_io::{
 };
 use std::num::NonZero;
 
+/// A FLAC metadata block header
 #[derive(Debug)]
 pub struct BlockHeader {
     last: bool,
@@ -35,14 +46,22 @@ impl ToBitStream for BlockHeader {
     }
 }
 
+/// A defined FLAC metadata block type
 #[derive(Debug)]
 pub enum BlockType {
+    /// The STREAMINFO block
     Streaminfo,
+    /// The PADDING block
     Padding,
+    /// The APPLICATION block
     Application,
+    /// The SEEKTABLE block
     SeekTable,
+    /// The VORBIS_COMMENT block
     VorbisComment,
+    /// The CUESHEET block
     Cuesheet,
+    /// The PICTURE block
     Picture,
 }
 
@@ -81,13 +100,14 @@ impl ToBitStream for BlockType {
     }
 }
 
-/// a 24-bit block size value, with safeguards against overflow
+/// A 24-bit block size value, with safeguards against overflow
 #[derive(Debug, Default, Copy, Clone)]
 pub struct BlockSize(u32);
 
 impl BlockSize {
     const MAX: u32 = (1 << 24) - 1;
 
+    /// Our current value as a u32
     fn get(&self) -> u32 {
         self.0
     }
@@ -125,8 +145,19 @@ impl TryFrom<usize> for BlockSize {
     }
 }
 
+/// An error that occurs when trying to build an overly large `BlockSize`
+#[derive(Copy, Clone, Debug)]
 pub struct BlockSizeOverflow;
 
+impl std::error::Error for BlockSizeOverflow { }
+
+impl std::fmt::Display for BlockSizeOverflow {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        "value too large for BlockSize".fmt(f)
+    }
+}
+
+/// An iterator over FLAC metadata blocks
 pub struct BlockReader<R: std::io::Read> {
     reader: R,
     failed: bool,
@@ -139,6 +170,10 @@ pub struct BlockReader<R: std::io::Read> {
 }
 
 impl<R: std::io::Read> BlockReader<R> {
+    /// Creates an iterator over something that implements `Read`.
+    /// Because this can perform many small reads,
+    /// performance is greatly improved by buffering reads
+    /// when reading from a raw `File`.
     pub fn new(reader: R) -> Self {
         Self {
             reader,
@@ -278,6 +313,16 @@ impl<R: std::io::Read> Iterator for BlockReader<R> {
     }
 }
 
+/// Writes iterator of blocks to the given writer.
+/// Because this may perform many small writes,
+/// buffering writes may greatly improve performance
+/// when writing to a raw `File`.
+///
+/// # Errors
+///
+/// Passes along any I/O errors from the underlying stream.
+/// May also generate an error if any of the blocks are invalid
+/// (e.g. STREAMINFO not being the first block, any block is too large, etc.).
 pub fn write_blocks<'b>(
     blocks: impl IntoIterator<Item = &'b Block>,
     mut w: impl std::io::Write,
@@ -305,13 +350,13 @@ pub fn write_blocks<'b>(
     let mut w = bitstream_io::BitWriter::endian(w, BigEndian);
     let mut blocks = iter_last(blocks.into_iter());
 
-    // STREAMINFO block must be first in file
+    // STREAMINFO block must be present and must be first in file
     match blocks.next() {
         Some((last, streaminfo @ Block::Streaminfo(_))) => w.build_with(streaminfo, &last)?,
         _ => return Err(Error::MissingStreaminfo),
     }
 
-    // other blocks in the file must only occur once at most
+    // certain other blocks in the file must only occur once at most
     let mut seektable_read = false;
     let mut png_read = false;
     let mut icon_read = false;
@@ -351,14 +396,22 @@ pub fn write_blocks<'b>(
     })
 }
 
+/// Any possible FLAC metadata block
 #[derive(Debug, Clone)]
 pub enum Block {
+    /// The STREAMINFO block
     Streaminfo(Streaminfo),
+    /// The PADDING block
     Padding(Padding),
+    /// The APPLICATION block
     Application(Application),
+    /// The SEEKTABLE block
     SeekTable(SeekTable),
+    /// The VORBIS_COMMENT block
     VorbisComment(VorbisComment),
+    /// The CUESHEET block
     Cuesheet(Cuesheet),
+    /// The PICTURE block
     Picture(Picture),
 }
 
@@ -542,16 +595,32 @@ impl ToBitStreamWith<'_> for Block {
     }
 }
 
+/// The STREAMINFO metadata block
 #[derive(Debug, Clone)]
 pub struct Streaminfo {
+    /// The minimum block size (in samples) used in the stream,
+    /// excluding the last block.
     pub minimum_block_size: u16,
+    /// The maximum block size (in samples) used in the stream,
+    /// excluding the last block.
     pub maximum_block_size: u16,
+    /// The minimum framesize (in bytes) used in the stream.
+    /// `None` indicates the value is unknown.
     pub minimum_frame_size: Option<NonZero<u32>>,
+    /// The maximum framesize (in bytes) used in the stream.
+    /// `None` indicates the value is unknown.
     pub maximum_frame_size: Option<NonZero<u32>>,
+    /// Sample rate in Hz
     pub sample_rate: u32,
+    /// Number of channels
     pub channels: NonZero<u8>,
+    /// Number of bits-per-sample, from 4 to 32
     pub bits_per_sample: NonZero<u8>,
+    /// Total number of interchannel samples in stream.
+    /// `None` indicates the value is unknown.
     pub total_samples: Option<NonZero<u64>>,
+    /// MD5 hash of unencoded audio data.
+    /// `None` indicates the value is unknown.
     pub md5: Option<[u8; 16]>,
 }
 
@@ -592,8 +661,10 @@ impl ToBitStream for Streaminfo {
     }
 }
 
+/// A PADDING metadata block
 #[derive(Debug, Clone)]
 pub struct Padding {
+    /// The size of the padding, in bytes
     pub size: u32,
 }
 
@@ -615,9 +686,12 @@ impl ToBitStream for Padding {
     }
 }
 
+/// An APPLICATION metadata block
 #[derive(Debug, Clone)]
 pub struct Application {
+    /// A registered application ID
     pub id: u32,
+    /// Application-specific data
     pub data: Vec<u8>,
 }
 
@@ -648,8 +722,10 @@ impl ToBitStream for Application {
     }
 }
 
+/// A SEEKTABLE metadata block
 #[derive(Debug, Clone)]
 pub struct SeekTable {
+    /// The seek table's individual seek points
     pub points: Vec<SeekPoint>,
 }
 
@@ -716,10 +792,16 @@ impl ToBitStream for SeekTable {
     }
 }
 
+/// An individual SEEKTABLE seek point
 #[derive(Debug, Clone)]
 pub struct SeekPoint {
+    /// The sample number of the first sample in the target frame,
+    /// or `None` for placeholder points
     pub sample_offset: Option<u64>,
+    /// Offset, in bytes, from the first byte of the first frame header
+    /// to the first byte in the target frame's header
     pub byte_offset: u64,
+    /// Number of samples in the target frame
     pub frame_samples: u16,
 }
 
@@ -745,9 +827,12 @@ impl ToBitStream for SeekPoint {
     }
 }
 
+/// A VORBIS_COMMENT metadata block
 #[derive(Debug, Clone)]
 pub struct VorbisComment {
+    /// The vendor string
     pub vendor_string: String,
+    /// The individual metadata comment strings
     pub fields: Vec<String>,
 }
 
@@ -794,11 +879,16 @@ impl ToBitStream for VorbisComment {
     }
 }
 
+/// A CUESHEET metadata block
 #[derive(Debug, Clone)]
 pub struct Cuesheet {
+    /// Media catalog number in ASCII printable characters
     pub catalog_number: Box<[u8; 128]>,
+    /// Number of lead-in samples
     pub lead_in_samples: u64,
+    /// Whether cuesheet corresponds to CA-DA
     pub is_cdda: bool,
+    /// Cuesheet's tracks
     pub tracks: Vec<CuesheetTrack>,
 }
 
@@ -837,13 +927,21 @@ impl ToBitStream for Cuesheet {
     }
 }
 
+/// An individual CUESHEET track
 #[derive(Debug, Clone)]
 pub struct CuesheetTrack {
+    /// Offset of the first index point in samples,
+    /// relative to the beginning of the FLAC audio stream
     pub offset: u64,
+    /// Track number
     pub number: u8,
+    /// Track ISRC
     pub isrc: Option<[u8; 12]>,
+    /// Whether track is non-audio
     pub non_audio: bool,
+    /// Whether track has pre-emphasis
     pub pre_emphasis: bool,
+    /// The tracks' index points
     pub index_points: Vec<CuesheetIndexPoint>,
 }
 
@@ -989,9 +1087,12 @@ impl TrackType {
     }
 }
 
+/// An individual CUESHEET track index point
 #[derive(Debug, Clone)]
 pub struct CuesheetIndexPoint {
+    /// Offset in samples
     pub offset: u64,
+    /// Track index point number
     pub number: u8,
 }
 
@@ -1031,15 +1132,24 @@ impl ToBitStreamWith<'_> for CuesheetIndexPoint {
     }
 }
 
+/// The contents of a PICTURE metadata block
 #[derive(Debug, Clone)]
 pub struct Picture {
+    /// The picture type
     pub picture_type: PictureType,
+    /// The media type string as specified by RFC2046
     pub media_type: String,
+    /// The description of the picture
     pub description: String,
+    /// The width of the picture in pixels
     pub width: u32,
+    /// The height of the picture in pixels
     pub height: u32,
+    /// The color depth of the picture in bits per pixel
     pub color_depth: u32,
+    /// For indexed-color pictures, the number of colors used
     pub colors_used: u32,
+    /// The binary picture data
     pub data: Vec<u8>,
 }
 
@@ -1090,28 +1200,50 @@ impl ToBitStream for Picture {
     }
 }
 
+/// Defined variants of PICTURE type
 #[derive(Debug, Clone)]
 pub enum PictureType {
+    /// Other
     Other,
+    /// PNG file icon of 32x32 pixels
     Png32x32,
+    /// General file icon
     GeneralFileIcon,
+    /// Front cover
     FrontCover,
+    /// Back cover
     BackCover,
+    /// Liner notes page
     LinerNotes,
+    /// Media label (e.g., CD, Vinyl or Cassette label)
     MediaLabel,
+    /// Lead artist, lead performer, or soloist
     LeadArtist,
+    /// Artist or performer
     Artist,
+    /// Conductor
     Conductor,
+    /// Band or orchestra
     Band,
+    /// Composer
     Composer,
+    /// Lyricist or text writer
     Lyricist,
+    /// Recording location
     RecordingLocation,
+    /// During recording
     DuringRecording,
+    /// During performance
     DuringPerformance,
+    /// Movie or video screen capture
     ScreenCapture,
+    /// A bright colored fish
     Fish,
+    /// Illustration
     Illustration,
+    /// Band or artist logotype
     BandLogo,
+    /// Publisher or studio logotype
     PublisherLogo,
 }
 

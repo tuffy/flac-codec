@@ -1,31 +1,76 @@
+// Copyright 2025 Brian Langenberger
+//
+// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
+// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
+// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
+// option. This file may not be copied, modified, or distributed
+// except according to those terms.
+
+//! A library for reading, writing, and editing the metadata
+//! of FLAC-formatted audio files.
+
+#![warn(missing_docs)]
+#![forbid(unsafe_code)]
+
 pub mod metadata;
 
+/// A unified FLAC format error
 #[derive(Debug)]
 pub enum Error {
+    /// A general I/O error from the underlying stream
     Io(std::io::Error),
+    /// A UTF-8 formatting error
     Utf8(std::string::FromUtf8Error),
+    /// A FLAC file missing its initial "fLaC" file tag
     MissingFlacTag,
+    /// A FLAC file missing its initial STREAMINFO block
     MissingStreaminfo,
+    /// A FLAC file containing multiple STREAMINFO blocks
     MultipleStreaminfo,
+    /// A FLAC file containing multiple SEEKTABLE blocks
     MultipleSeekTable,
+    /// A SEEKTABLE block whose size isn't evenly divisible
+    /// by a whole of number of seek points.
     InvalidSeekTableSize,
+    /// A SEEKTABLE point whose offset does not increment properly
     InvalidSeekTablePoint,
+    /// A CDDA CUESHEET offset that does not start on a CD frame boundary
     InvalidCuesheetOffset,
+    /// An invalid CDDA CUESHEET track number
     InvalidCuesheetTrackNumber,
+    /// A non-lead-out CUESHEET track containing no index points,
+    /// or a lead-out CUESHEET track containing some index points.
     InvalidCuesheetIndexPoints,
+    /// A CUESHEET track index point that does not start with 0 or 1,
+    /// or does not increment by 1.
     InvalidCuesheetIndexPointNum,
+    /// An undefined PICTURE type
     InvalidPictureType,
+    /// Multiple 32x32 PNG icons defined
     MultiplePngIcon,
+    /// Multiple general file icons defined
     MultipleGeneralIcon,
+    /// A reserved metadata block encountered
     ReservedMetadataBlock,
+    /// An invalid metadata block encountered
     InvalidMetadataBlock,
+    /// A metadata block's contents are smaller than the size
+    /// indicated in the metadata block header.
     InvalidMetadataBlockSize,
+    /// An APPLICATION metadata block which is not large enough
+    /// to hold any contents beyond its ID.
     InsufficientApplicationBlock,
+    /// A `VorbisComment` struct with more entries that can fit in a `u32`
     ExcessiveVorbisEntries,
+    /// A `VorbisComment` or `Picture` struct with strings longer than a `u32`
     ExcessiveStringLength,
+    /// A `Picture` struct whose data is larger than a `u32`
     ExcessivePictureSize,
+    /// A `Cuesheet` struct with more than `u8` tracks
     ExcessiveCuesheetTracks,
+    /// A `CuesheetTrack` struct with more than `u8` index points
     ExcessiveCuesheetIndexPoints,
+    /// A metadata block larger than its 24-bit size field can hold
     ExcessiveBlockSize,
 }
 
