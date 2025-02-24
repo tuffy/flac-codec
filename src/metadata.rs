@@ -236,36 +236,36 @@ impl<R: std::io::Read> Iterator for BlockReader<R> {
             match self.read_block() {
                 Some(Ok(Block::Streaminfo(_))) => Some(Err(Error::MultipleStreaminfo)),
                 seektable @ Some(Ok(Block::SeekTable(_))) => {
-                    if self.seektable_read {
-                        self.failed = true;
-                        Some(Err(Error::MultipleSeekTable))
-                    } else {
+                    if !self.seektable_read {
                         self.seektable_read = true;
                         seektable
+                    } else {
+                        self.failed = true;
+                        Some(Err(Error::MultipleSeekTable))
                     }
                 }
                 picture @ Some(Ok(Block::Picture(Picture {
                     picture_type: PictureType::Png32x32,
                     ..
                 }))) => {
-                    if self.png_read {
-                        self.failed = true;
-                        Some(Err(Error::MultiplePngIcon))
-                    } else {
+                    if !self.png_read {
                         self.png_read = true;
                         picture
+                    } else {
+                        self.failed = true;
+                        Some(Err(Error::MultiplePngIcon))
                     }
                 }
                 picture @ Some(Ok(Block::Picture(Picture {
                     picture_type: PictureType::GeneralFileIcon,
                     ..
                 }))) => {
-                    if self.icon_read {
-                        self.failed = true;
-                        Some(Err(Error::MultipleGeneralIcon))
-                    } else {
+                    if !self.icon_read {
                         self.icon_read = true;
                         picture
+                    } else {
+                        self.failed = true;
+                        Some(Err(Error::MultipleGeneralIcon))
                     }
                 }
                 block @ Some(Err(_)) => {
@@ -276,6 +276,79 @@ impl<R: std::io::Read> Iterator for BlockReader<R> {
             }
         }
     }
+}
+
+pub fn write_blocks<'b>(
+    blocks: impl IntoIterator<Item = &'b Block>,
+    mut w: impl std::io::Write,
+) -> Result<(), Error> {
+    fn iter_last<T>(i: impl Iterator<Item = T>) -> impl Iterator<Item = (bool, T)> {
+        struct LastIterator<I: std::iter::Iterator> {
+            iter: std::iter::Peekable<I>,
+        }
+
+        impl<T, I: std::iter::Iterator<Item = T>> Iterator for LastIterator<I> {
+            type Item = (bool, T);
+
+            fn next(&mut self) -> Option<Self::Item> {
+                let item = self.iter.next()?;
+                Some((self.iter.peek().is_none(), item))
+            }
+        }
+
+        LastIterator { iter: i.peekable() }
+    }
+
+    // "FlaC" tag must come before anything else
+    w.write_all(b"fLaC").map_err(Error::Io)?;
+
+    let mut w = bitstream_io::BitWriter::endian(w, BigEndian);
+    let mut blocks = iter_last(blocks.into_iter());
+
+    // STREAMINFO block must be first in file
+    match blocks.next() {
+        Some((last, streaminfo @ Block::Streaminfo(_))) => w.build_with(streaminfo, &last)?,
+        _ => return Err(Error::MissingStreaminfo),
+    }
+
+    // other blocks in the file must only occur once at most
+    let mut seektable_read = false;
+    let mut png_read = false;
+    let mut icon_read = false;
+
+    blocks.try_for_each(|(last, block)| match block {
+        Block::Streaminfo(_) => Err(Error::MultipleStreaminfo),
+        seektable @ Block::SeekTable(_) => match seektable_read {
+            false => {
+                seektable_read = true;
+                w.build_with(seektable, &last)
+            }
+            true => Err(Error::MultipleSeekTable),
+        },
+        picture @ Block::Picture(Picture {
+            picture_type: PictureType::Png32x32,
+            ..
+        }) => {
+            if !png_read {
+                png_read = true;
+                w.build_with(picture, &last)
+            } else {
+                Err(Error::MultiplePngIcon)
+            }
+        }
+        picture @ Block::Picture(Picture {
+            picture_type: PictureType::GeneralFileIcon,
+            ..
+        }) => {
+            if !icon_read {
+                icon_read = true;
+                w.build_with(picture, &last)
+            } else {
+                Err(Error::MultipleGeneralIcon)
+            }
+        }
+        block => w.build_with(block, &last),
+    })
 }
 
 #[derive(Debug, Clone)]
