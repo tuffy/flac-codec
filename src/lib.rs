@@ -12,6 +12,8 @@
 #![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
+pub mod crc;
+pub mod decode;
 pub mod metadata;
 pub mod stream;
 
@@ -85,6 +87,16 @@ pub enum Error {
     InvalidBitsPerSample,
     /// Invalid frame number
     InvalidFrameNumber,
+    /// CRC-8 mismatch in frame header
+    Crc8Mismatch,
+    /// CRC-16 mismatch in frame footer
+    Crc16Mismatch,
+    /// Invalid subframe header
+    InvalidSubframeHeader,
+    /// Invalid subframe header type
+    InvalidSubframeHeaderType,
+    /// Excessive number of wasted bits-per-sample
+    ExcessiveWastedBits,
 }
 
 impl From<std::io::Error> for Error {
@@ -138,7 +150,12 @@ impl std::fmt::Display for Error {
             Self::InvalidSampleRate => "invalid frame sample rate".fmt(f),
             Self::InvalidChannels => "invalid frame channel assignment".fmt(f),
             Self::InvalidBitsPerSample => "invalid frame bits-per-sample".fmt(f),
-            Self::InvalidFrameNumber => "invalid frame numbe".fmt(f),
+            Self::InvalidFrameNumber => "invalid frame number".fmt(f),
+            Self::Crc8Mismatch => "CRC-8 mismatch in frame header".fmt(f),
+            Self::Crc16Mismatch => "CRC-16 mismatch in frame footer".fmt(f),
+            Self::InvalidSubframeHeader => "invalid subframe header".fmt(f),
+            Self::InvalidSubframeHeaderType => "invalid subframe header type".fmt(f),
+            Self::ExcessiveWastedBits => "excessive number of wasted BPS".fmt(f),
         }
     }
 }

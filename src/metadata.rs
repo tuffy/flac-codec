@@ -401,6 +401,15 @@ impl<R: std::io::Read> Iterator for BlockReader<R> {
     }
 }
 
+/// Returns iterator of blocks from the given reader
+///
+/// Because this may perform many small reads,
+/// buffering writes may greatly improve performance
+/// when reading from a raw `File`.
+pub fn read_blocks<R: std::io::Read>(r: R) -> BlockReader<R> {
+    BlockReader::new(r)
+}
+
 /// Writes iterator of blocks to the given writer.
 ///
 /// Because this may perform many small writes,
