@@ -105,6 +105,12 @@ pub enum Error {
     InvalidSubframeHeaderType,
     /// Excessive number of wasted bits-per-sample
     ExcessiveWastedBits,
+    /// Insufficient number of residuals in residuals block
+    MissingResiduals,
+    /// Invalid residual coding method
+    InvalidCodingMethod,
+    /// Invalid residual partition order
+    InvalidPartitionOrder,
 }
 
 impl From<std::io::Error> for Error {
@@ -176,6 +182,9 @@ impl std::fmt::Display for Error {
             Self::InvalidSubframeHeader => "invalid subframe header".fmt(f),
             Self::InvalidSubframeHeaderType => "invalid subframe header type".fmt(f),
             Self::ExcessiveWastedBits => "excessive number of wasted BPS".fmt(f),
+            Self::MissingResiduals => "insufficient number of residuals".fmt(f),
+            Self::InvalidCodingMethod => "invalid residual coding method".fmt(f),
+            Self::InvalidPartitionOrder => "invalid residual partition order".fmt(f),
         }
     }
 }

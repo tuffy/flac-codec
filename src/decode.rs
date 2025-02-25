@@ -131,8 +131,8 @@ fn read_subframe<R: BitRead>(
                 Ok::<(), Error>(())
             })?;
         }
-        SubframeHeaderType::Fixed(_) => {
-            todo!()
+        SubframeHeaderType::Fixed(predictor_order) => {
+            read_fixed_subframe(reader, bits_per_sample, predictor_order, &mut stripe)?;
         }
         SubframeHeaderType::Lpc(_) => {
             todo!()
@@ -144,6 +144,193 @@ fn read_subframe<R: BitRead>(
     }
 
     Ok(())
+}
+
+fn read_fixed_subframe<R: BitRead>(
+    reader: &mut R,
+    bits_per_sample: u8,
+    predictor_order: u8,
+    channel: &mut Stripe<'_>,
+) -> Result<(), Error> {
+    match predictor_order {
+        0 => {
+            let mut residuals = ResidualBlock::new(reader, channel.len(), predictor_order)?;
+
+            channel.try_for_each(|i| {
+                *i = residuals.next()?;
+                Ok(())
+            })
+        }
+        1 => {
+            // warm-up samples
+            for i in 0..1 {
+                channel[i] = reader.read(bits_per_sample.into())?;
+            }
+            let mut residuals = ResidualBlock::new(reader, channel.len(), predictor_order)?;
+            for i in 1..channel.len() {
+                channel[i] = channel[i - 1] + residuals.next()?;
+            }
+            Ok(())
+        }
+        2 => {
+            // warm-up samples
+            for i in 0..2 {
+                channel[i] = reader.read(bits_per_sample.into())?;
+            }
+            let mut residuals = ResidualBlock::new(reader, channel.len(), predictor_order)?;
+            for i in 2..channel.len() {
+                channel[i] = (2 * channel[i - 1]) - channel[i - 2] + residuals.next()?;
+            }
+            Ok(())
+        }
+        3 => {
+            // warm-up sampels
+            for i in 0..3 {
+                channel[i] = reader.read(bits_per_sample.into())?;
+            }
+            let mut residuals = ResidualBlock::new(reader, channel.len(), predictor_order)?;
+            for i in 3..channel.len() {
+                channel[i] = (3 * channel[i - 1]) - (3 * channel[i - 2])
+                    + channel[i - 3]
+                    + residuals.next()?;
+            }
+            Ok(())
+        }
+        4 => {
+            for i in 0..4 {
+                channel[i] = reader.read(bits_per_sample.into())?;
+            }
+            let mut residuals = ResidualBlock::new(reader, channel.len(), predictor_order)?;
+            for i in 4..channel.len() {
+                channel[i] = (4 * channel[i - 1]) - (6 * channel[i - 2]) + (4 * channel[i - 3])
+                    - channel[i - 4]
+                    + residuals.next()?;
+            }
+            Ok(())
+        }
+        // this shouldn't happen
+        _ => panic!("invalid FIXED subframe predictor order"),
+    }
+}
+
+struct ResidualBlock<'r, R: BitRead> {
+    reader: &'r mut R,
+    block_size: u16,
+    rice_bits: u32,
+    escaped_rice: u32,
+
+    partitions: std::ops::Range<u16>,
+    partition: ResidualPartition,
+}
+
+impl<'r, R: BitRead> ResidualBlock<'r, R> {
+    fn new(reader: &'r mut R, block_size: u16, predictor_order: u8) -> Result<Self, Error> {
+        let coding_method = reader.read_in::<2, u8>()?;
+        let partition_order = reader.read_in::<4, u32>()?;
+        let partition_count = 1 << partition_order;
+        let (rice_bits, escaped_rice) = match coding_method {
+            0b00 => (4, 0b1111),
+            0b01 => (5, 0b11111),
+            _ => return Err(Error::InvalidCodingMethod),
+        };
+
+        if ((block_size % partition_count) != 0)
+            || (u16::from(predictor_order) > (block_size / partition_count))
+        {
+            return Err(Error::InvalidPartitionOrder);
+        }
+
+        Ok(Self {
+            block_size,
+            rice_bits,
+            escaped_rice,
+
+            partitions: 0..partition_count,
+            partition: ResidualPartition::new(
+                reader,
+                rice_bits,
+                escaped_rice,
+                block_size / partition_count - u16::from(predictor_order),
+            )?,
+
+            reader,
+        })
+    }
+}
+
+impl<R: BitRead> ResidualBlock<'_, R> {
+    fn next(&mut self) -> Result<i32, Error> {
+        match self.partition.next(self.reader) {
+            Some(residual) => residual.map_err(Error::Io),
+            None => {
+                self.partition = match self.partitions.next() {
+                    Some(_) => ResidualPartition::new(
+                        self.reader,
+                        self.rice_bits,
+                        self.escaped_rice,
+                        self.block_size / self.partitions.end,
+                    )?,
+                    // this shouldn't happen?
+                    None => panic!("attempting to read too many partitions"),
+                };
+                self.next()
+            }
+        }
+    }
+}
+
+enum ResidualPartition {
+    Unescaped {
+        rice: u32,
+        residual: std::ops::Range<u16>,
+    },
+    Escaped {
+        escape_code: u32,
+        residual: std::ops::Range<u16>,
+    },
+}
+
+impl ResidualPartition {
+    fn new<R: BitRead>(
+        r: &mut R,
+        rice_bits: u32,
+        escaped_rice: u32,
+        partition_size: u16,
+    ) -> Result<Self, Error> {
+        let rice = r.read(rice_bits)?;
+        Ok(if rice == escaped_rice {
+            Self::Escaped {
+                escape_code: r.read(5)?,
+                residual: 0..partition_size,
+            }
+        } else {
+            Self::Unescaped {
+                rice,
+                residual: 0..partition_size,
+            }
+        })
+    }
+}
+
+impl ResidualPartition {
+    fn next<R: BitRead>(&mut self, r: &mut R) -> Option<Result<i32, std::io::Error>> {
+        match self {
+            Self::Unescaped { rice, residual } => residual.next().map(|_| {
+                let msb = r.read_unary::<1>()?;
+                let lsb = r.read::<u32>(*rice)?;
+                let unsigned = (msb << *rice) | lsb;
+                Ok(if unsigned % 2 == 1 {
+                    -((unsigned >> 1) as i32) - 1
+                } else {
+                    (unsigned >> 1) as i32
+                })
+            }),
+            Self::Escaped {
+                escape_code,
+                residual,
+            } => residual.next().map(|_| r.read(*escape_code)),
+        }
+    }
 }
 
 struct Stripe<'b> {

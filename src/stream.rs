@@ -180,7 +180,7 @@ fn read_frame_number<R: BitRead + ?Sized>(r: &mut R) -> Result<u32, Error> {
             for _ in 1..bytes {
                 match r.read_in::<2, u8>()? {
                     0b10 => {
-                        frame = frame << 6 | r.read_in::<6, u32>()?;
+                        frame = (frame << 6) | r.read_in::<6, u32>()?;
                     }
                     _ => return Err(Error::InvalidFrameNumber),
                 }
