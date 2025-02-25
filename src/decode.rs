@@ -110,7 +110,7 @@ impl<R: std::io::Read> Decoder<R> {
 fn read_subframe<R: BitRead>(
     reader: &mut R,
     bits_per_sample: u8,
-    mut stripe: Stripe<'_>,
+    mut channel: Stripe<'_>,
 ) -> Result<(), Error> {
     use crate::stream::{SubframeHeader, SubframeHeaderType};
 
@@ -123,16 +123,16 @@ fn read_subframe<R: BitRead>(
     match header.type_ {
         SubframeHeaderType::Constant => {
             let sample = reader.read(effective_bps)?;
-            stripe.for_each(|i| *i = sample);
+            channel.for_each(|i| *i = sample);
         }
         SubframeHeaderType::Verbatim => {
-            stripe.try_for_each(|i| {
+            channel.try_for_each(|i| {
                 *i = reader.read(effective_bps)?;
                 Ok::<(), Error>(())
             })?;
         }
         SubframeHeaderType::Fixed(predictor_order) => {
-            read_fixed_subframe(reader, bits_per_sample, predictor_order, &mut stripe)?;
+            read_fixed_subframe(reader, bits_per_sample, predictor_order, &mut channel)?;
         }
         SubframeHeaderType::Lpc(_) => {
             todo!()
@@ -140,7 +140,7 @@ fn read_subframe<R: BitRead>(
     }
 
     if header.wasted_bps > 0 {
-        stripe.for_each(|i| *i <<= header.wasted_bps);
+        channel.for_each(|i| *i <<= header.wasted_bps);
     }
 
     Ok(())
@@ -184,7 +184,7 @@ fn read_fixed_subframe<R: BitRead>(
             Ok(())
         }
         3 => {
-            // warm-up sampels
+            // warm-up samples
             for i in 0..3 {
                 channel[i] = reader.read(bits_per_sample.into())?;
             }
@@ -197,6 +197,7 @@ fn read_fixed_subframe<R: BitRead>(
             Ok(())
         }
         4 => {
+            // warm-up samples
             for i in 0..4 {
                 channel[i] = reader.read(bits_per_sample.into())?;
             }
