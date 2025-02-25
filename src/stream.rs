@@ -78,6 +78,10 @@ impl FromBitStreamWith<'_> for FrameHeader {
             _ => unreachable!(), // 4-bit field
         };
 
+        if block_size > streaminfo.maximum_block_size {
+            return Err(Error::BlockSizeMismatch);
+        }
+
         let sample_rate = match encoded_sample_rate {
             0b0000 => streaminfo.sample_rate,
             0b0001 => 88200,
@@ -98,6 +102,10 @@ impl FromBitStreamWith<'_> for FrameHeader {
             _ => unreachable!(), // 4-bit field
         };
 
+        if sample_rate != streaminfo.sample_rate {
+            return Err(Error::SampleRateMismatch);
+        }
+
         let channel_assignment = match encoded_channels {
             c @ 0b0000..=0b0111 => ChannelAssignment::Independent(c + 1),
             0b1000 => ChannelAssignment::LeftSide,
@@ -106,6 +114,10 @@ impl FromBitStreamWith<'_> for FrameHeader {
             0b1011..=0b1111 => return Err(Error::InvalidChannels),
             _ => unreachable!(), // 4-bit field
         };
+
+        if channel_assignment.len() != streaminfo.channels.get() {
+            return Err(Error::ChannelsMismatch);
+        }
 
         let bits_per_sample = match encoded_bps {
             0b000 => streaminfo.bits_per_sample.get(),
@@ -118,6 +130,10 @@ impl FromBitStreamWith<'_> for FrameHeader {
             0b111 => 32,
             _ => unreachable!(), // 3-bit field
         };
+
+        if bits_per_sample != streaminfo.bits_per_sample.get() {
+            return Err(Error::BitsPerSampleMismatch);
+        }
 
         r.skip(8)?; // CRC-8
 

@@ -79,12 +79,20 @@ pub enum Error {
     InvalidSyncCode,
     /// Invalid frame block size
     InvalidBlockSize,
+    /// Block size in frame is larger than maximum block size in STREAMINFO
+    BlockSizeMismatch,
     /// Invalid frame sample rate
     InvalidSampleRate,
+    /// Mismatch between frame sample rate and STREAMINFO sample rate
+    SampleRateMismatch,
     /// Invalid frame channel assignment
     InvalidChannels,
+    /// Channel count in frame differs from channel count in STREAMINFO
+    ChannelsMismatch,
     /// Invalid frame bits-per-sample
     InvalidBitsPerSample,
+    /// Bits-per-sample in frame differs from bits-per-sample in STREAMINFO
+    BitsPerSampleMismatch,
     /// Invalid frame number
     InvalidFrameNumber,
     /// CRC-8 mismatch in frame header
@@ -147,9 +155,21 @@ impl std::fmt::Display for Error {
             Self::ExcessiveBlockSize => "excessive metadata block size".fmt(f),
             Self::InvalidSyncCode => "invalid frame sync code".fmt(f),
             Self::InvalidBlockSize => "invalid frame block size".fmt(f),
+            Self::BlockSizeMismatch => {
+                "block size in frame larger than maximum block size in STREAMINFO".fmt(f)
+            }
             Self::InvalidSampleRate => "invalid frame sample rate".fmt(f),
+            Self::SampleRateMismatch => {
+                "sample rate in frame differs from sample rate in STREAMINFO".fmt(f)
+            }
             Self::InvalidChannels => "invalid frame channel assignment".fmt(f),
+            Self::ChannelsMismatch => {
+                "channel count in frame differs from channel count in STREAMINFO".fmt(f)
+            }
             Self::InvalidBitsPerSample => "invalid frame bits-per-sample".fmt(f),
+            Self::BitsPerSampleMismatch => {
+                "bits-per-sample in frame differs from bits-per-sample in STREAMINFO".fmt(f)
+            }
             Self::InvalidFrameNumber => "invalid frame number".fmt(f),
             Self::Crc8Mismatch => "CRC-8 mismatch in frame header".fmt(f),
             Self::Crc16Mismatch => "CRC-16 mismatch in frame footer".fmt(f),
