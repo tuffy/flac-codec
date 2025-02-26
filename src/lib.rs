@@ -119,6 +119,8 @@ pub enum Error {
     NegativeLpcShift,
     /// Accumulator overflow in LPC subframe
     AccumulatorOverflow,
+    /// Too many samples encountered in stream
+    TooManySamples,
 }
 
 impl From<std::io::Error> for Error {
@@ -197,6 +199,7 @@ impl std::fmt::Display for Error {
             Self::InvalidLpcOrder => "invalid LPC subframe predicto order".fmt(f),
             Self::NegativeLpcShift => "negative shift in LPC subframe".fmt(f),
             Self::AccumulatorOverflow => "accumulator overflow in LPC subframe".fmt(f),
+            Self::TooManySamples => "more samples in stream than indicated in STREAMINFO".fmt(f),
         }
     }
 }

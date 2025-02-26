@@ -17,6 +17,7 @@ use std::num::NonZero;
 pub struct Decoder<R> {
     reader: R,
     streaminfo: Streaminfo,
+    samples_remaining: Option<u64>,
     buffer: Box<[i32]>,
 }
 
@@ -56,12 +57,18 @@ impl<R: std::io::Read> Decoder<R> {
                 ]
                 .into_boxed_slice(),
                 reader,
+                samples_remaining: streaminfo.total_samples.map(|s| s.get()),
                 streaminfo,
             }),
             // read_blocks should check for this already
             // but we'll add a second check to be certain
             None => Err(Error::MissingStreaminfo),
         }
+    }
+
+    /// Returns number of bits-per-sample
+    pub fn bits_per_sample(&self) -> NonZero<u8> {
+        self.streaminfo.bits_per_sample
     }
 
     /// Reads a whole FLAC frame
@@ -79,7 +86,22 @@ impl<R: std::io::Read> Decoder<R> {
         use std::io::Read;
 
         let mut crc16_reader: CrcReader<_, Crc16> = CrcReader::new(self.reader.by_ref());
-        let header = dbg!(FrameHeader::read(crc16_reader.by_ref(), &self.streaminfo)?);
+
+        let header = match self.samples_remaining {
+            Some(0) => return Ok(&[]),
+            Some(_) => FrameHeader::read(crc16_reader.by_ref(), &self.streaminfo)?,
+            // if total number of remaining samples isn't known,
+            // treat an EOF error as the end of stream
+            // (this is an uncommon case)
+            None => match FrameHeader::read(crc16_reader.by_ref(), &self.streaminfo) {
+                Ok(header) => header,
+                Err(Error::Io(err)) if err.kind() == std::io::ErrorKind::UnexpectedEof => {
+                    return Ok(&[]);
+                }
+                Err(err) => return Err(err),
+            },
+        };
+
         let channels = header.channel_assignment.count();
         let buffer = &mut self.buffer[0..usize::from(header.block_size) * usize::from(channels)];
 
@@ -163,7 +185,14 @@ impl<R: std::io::Read> Decoder<R> {
         reader.skip(16)?; // CRC-16 checksum
 
         match crc16_reader.into_checksum().valid() {
-            true => Ok(buffer),
+            true => {
+                if let Some(remaining) = self.samples_remaining.as_mut() {
+                    *remaining = remaining
+                        .checked_sub(u64::from(header.block_size))
+                        .ok_or(Error::TooManySamples)?;
+                }
+                Ok(buffer)
+            }
             false => Err(Error::Crc16Mismatch),
         }
     }
@@ -176,7 +205,7 @@ fn read_subframe<R: BitRead>(
 ) -> Result<(), Error> {
     use crate::stream::{SubframeHeader, SubframeHeaderType};
 
-    let header: SubframeHeader = dbg!(reader.parse::<SubframeHeader>()?);
+    let header: SubframeHeader = reader.parse::<SubframeHeader>()?;
 
     let effective_bps = u32::from(bits_per_sample)
         .checked_sub(header.wasted_bps)
