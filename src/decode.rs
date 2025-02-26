@@ -95,7 +95,68 @@ impl<R: std::io::Read> Decoder<R> {
                     )
                 })?;
             }
-            _ => todo!(),
+            ChannelAssignment::LeftSide => {
+                read_subframe(
+                    &mut reader,
+                    header.bits_per_sample,
+                    Channel::new(buffer, 0, 2),
+                )?;
+                read_subframe(
+                    &mut reader,
+                    header.bits_per_sample + 1,
+                    Channel::new(buffer, 1, 2),
+                )?;
+
+                // FIXME - array_chunks_mut would be better
+                // whenever that stabilizes
+                buffer.chunks_exact_mut(2).for_each(|c| {
+                    if let [left, side] = c {
+                        *side = *left - *side;
+                    }
+                })
+            }
+            ChannelAssignment::SideRight => {
+                read_subframe(
+                    &mut reader,
+                    header.bits_per_sample + 1,
+                    Channel::new(buffer, 0, 2),
+                )?;
+                read_subframe(
+                    &mut reader,
+                    header.bits_per_sample,
+                    Channel::new(buffer, 1, 2),
+                )?;
+
+                // FIXME - array_chunks_mut would be better
+                // whenever that stabilizes
+                buffer.chunks_exact_mut(2).for_each(|c| {
+                    if let [side, right] = c {
+                        *side = *side + *right;
+                    }
+                })
+            }
+            ChannelAssignment::MidSide => {
+                read_subframe(
+                    &mut reader,
+                    header.bits_per_sample,
+                    Channel::new(buffer, 0, 2),
+                )?;
+                read_subframe(
+                    &mut reader,
+                    header.bits_per_sample + 1,
+                    Channel::new(buffer, 1, 2),
+                )?;
+
+                // FIXME - array_chunks_mut would be better
+                // whenever that stabilizes
+                buffer.chunks_exact_mut(2).for_each(|c| {
+                    if let [mid, side] = c {
+                        let sum = *mid * 2 + side.abs() % 2;
+                        *mid = (sum + *side) >> 1;
+                        *side = (sum - *side) >> 1;
+                    }
+                })
+            }
         }
 
         reader.byte_align();
@@ -392,6 +453,8 @@ struct Channel<'b> {
 
 impl<'b> Channel<'b> {
     fn new(buf: &'b mut [i32], channel: u8, total_channels: u8) -> Self {
+        assert!(channel < total_channels);
+
         Self {
             buf,
             channel,
