@@ -11,6 +11,7 @@
 use crate::Error;
 use crate::metadata::Streaminfo;
 use bitstream_io::BitRead;
+use std::num::NonZero;
 
 /// A FLAC decoder
 pub struct Decoder<R> {
@@ -79,7 +80,7 @@ impl<R: std::io::Read> Decoder<R> {
 
         let mut crc16_reader: CrcReader<_, Crc16> = CrcReader::new(self.reader.by_ref());
         let header = dbg!(FrameHeader::read(crc16_reader.by_ref(), &self.streaminfo)?);
-        let channels = header.channel_assignment.len();
+        let channels = header.channel_assignment.count();
         let buffer = &mut self.buffer[0..usize::from(header.block_size) * usize::from(channels)];
 
         let mut reader = BitReader::endian(crc16_reader.by_ref(), BigEndian);
@@ -90,7 +91,7 @@ impl<R: std::io::Read> Decoder<R> {
                     read_subframe(
                         &mut reader,
                         header.bits_per_sample,
-                        Stripe::new(buffer, channel, total_channels),
+                        Channel::new(buffer, channel, total_channels),
                     )
                 })?;
             }
@@ -110,7 +111,7 @@ impl<R: std::io::Read> Decoder<R> {
 fn read_subframe<R: BitRead>(
     reader: &mut R,
     bits_per_sample: u8,
-    mut channel: Stripe<'_>,
+    mut channel: Channel<'_>,
 ) -> Result<(), Error> {
     use crate::stream::{SubframeHeader, SubframeHeaderType};
 
@@ -134,8 +135,8 @@ fn read_subframe<R: BitRead>(
         SubframeHeaderType::Fixed(predictor_order) => {
             read_fixed_subframe(reader, bits_per_sample, predictor_order, &mut channel)?;
         }
-        SubframeHeaderType::Lpc(_) => {
-            todo!()
+        SubframeHeaderType::Lpc(predictor_order) => {
+            read_lpc_subframe(reader, bits_per_sample, predictor_order, &mut channel)?;
         }
     }
 
@@ -150,8 +151,12 @@ fn read_fixed_subframe<R: BitRead>(
     reader: &mut R,
     bits_per_sample: u8,
     predictor_order: u8,
-    channel: &mut Stripe<'_>,
+    channel: &mut Channel<'_>,
 ) -> Result<(), Error> {
+    if u16::from(predictor_order) > channel.len() {
+        return Err(Error::InvalidFixedOrder);
+    }
+
     match predictor_order {
         0 => {
             let mut residuals = ResidualBlock::new(reader, channel.len(), predictor_order)?;
@@ -209,8 +214,7 @@ fn read_fixed_subframe<R: BitRead>(
             }
             Ok(())
         }
-        // this shouldn't happen
-        _ => panic!("invalid FIXED subframe predictor order"),
+        _ => Err(Error::InvalidFixedOrder),
     }
 }
 
@@ -222,6 +226,52 @@ struct ResidualBlock<'r, R: BitRead> {
 
     partitions: std::ops::Range<u16>,
     partition: ResidualPartition,
+}
+
+fn read_lpc_subframe<R: BitRead>(
+    reader: &mut R,
+    bits_per_sample: u8,
+    predictor_order: NonZero<u8>,
+    channel: &mut Channel<'_>,
+) -> Result<(), Error> {
+    if u16::from(predictor_order.get()) > channel.len() {
+        return Err(Error::InvalidLpcOrder);
+    }
+
+    let mut coefficient = [0i32; 33];
+    let coefficient = &mut coefficient[0..usize::from(predictor_order.get())];
+
+    // warm-up samples
+    for i in 0..u16::from(predictor_order.get()) {
+        channel[i] = reader.read(bits_per_sample.into())?;
+    }
+
+    let precision = reader.read_in::<4, u32>()? + 1;
+
+    // shift is a signed field in the file format,
+    // but negative shifts are not allowed
+    let shift = u32::try_from(reader.read_in::<5, i32>()?).map_err(|_| Error::NegativeLpcShift)?;
+
+    coefficient.iter_mut().try_for_each(|c| {
+        *c = reader.read::<i32>(precision)?;
+        Ok::<(), std::io::Error>(())
+    })?;
+
+    let mut residuals = ResidualBlock::new(reader, channel.len(), predictor_order.get())?;
+
+    for i in u16::from(predictor_order.get())..channel.len() {
+        let mut acc = 0i64;
+
+        for j in 0..predictor_order.get() {
+            acc +=
+                i64::from(coefficient[usize::from(j)]) * i64::from(channel[i - u16::from(j) - 1]);
+        }
+
+        channel[i] = i32::try_from(acc >> shift).map_err(|_| Error::AccumulatorOverflow)?
+            + residuals.next()?;
+    }
+
+    Ok(())
 }
 
 impl<'r, R: BitRead> ResidualBlock<'r, R> {
@@ -334,13 +384,13 @@ impl ResidualPartition {
     }
 }
 
-struct Stripe<'b> {
+struct Channel<'b> {
     buf: &'b mut [i32],
     channel: u8,
     total_channels: u8,
 }
 
-impl<'b> Stripe<'b> {
+impl<'b> Channel<'b> {
     fn new(buf: &'b mut [i32], channel: u8, total_channels: u8) -> Self {
         Self {
             buf,
@@ -369,7 +419,7 @@ impl<'b> Stripe<'b> {
     }
 }
 
-impl std::ops::Index<u16> for Stripe<'_> {
+impl std::ops::Index<u16> for Channel<'_> {
     type Output = i32;
 
     fn index(&self, index: u16) -> &i32 {
@@ -377,7 +427,7 @@ impl std::ops::Index<u16> for Stripe<'_> {
     }
 }
 
-impl std::ops::IndexMut<u16> for Stripe<'_> {
+impl std::ops::IndexMut<u16> for Channel<'_> {
     fn index_mut(&mut self, index: u16) -> &mut i32 {
         &mut self.buf
             [usize::from(index) * usize::from(self.total_channels) + usize::from(self.channel)]

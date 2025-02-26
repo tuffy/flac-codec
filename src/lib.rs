@@ -111,6 +111,14 @@ pub enum Error {
     InvalidCodingMethod,
     /// Invalid residual partition order
     InvalidPartitionOrder,
+    /// Invalid FIXED subframe predictor order
+    InvalidFixedOrder,
+    /// Invalid LPC subframe predictor order
+    InvalidLpcOrder,
+    /// Negative shift value in LPC subframe
+    NegativeLpcShift,
+    /// Accumulator overflow in LPC subframe
+    AccumulatorOverflow,
 }
 
 impl From<std::io::Error> for Error {
@@ -185,6 +193,10 @@ impl std::fmt::Display for Error {
             Self::MissingResiduals => "insufficient number of residuals".fmt(f),
             Self::InvalidCodingMethod => "invalid residual coding method".fmt(f),
             Self::InvalidPartitionOrder => "invalid residual partition order".fmt(f),
+            Self::InvalidFixedOrder => "invalid FIXED subframe predictor order".fmt(f),
+            Self::InvalidLpcOrder => "invalid LPC subframe predicto order".fmt(f),
+            Self::NegativeLpcShift => "negative shift in LPC subframe".fmt(f),
+            Self::AccumulatorOverflow => "accumulator overflow in LPC subframe".fmt(f),
         }
     }
 }

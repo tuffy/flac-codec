@@ -115,7 +115,7 @@ impl FromBitStreamWith<'_> for FrameHeader {
             _ => unreachable!(), // 4-bit field
         };
 
-        if channel_assignment.len() != streaminfo.channels.get() {
+        if channel_assignment.count() != streaminfo.channels.get() {
             return Err(Error::ChannelsMismatch);
         }
 
@@ -163,7 +163,7 @@ pub enum ChannelAssignment {
 
 impl ChannelAssignment {
     /// Returns total number of channels defined by assignment
-    pub fn len(&self) -> u8 {
+    pub fn count(&self) -> u8 {
         match self {
             Self::Independent(c) => *c,
             _ => 2,
