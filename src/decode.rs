@@ -308,16 +308,6 @@ fn read_fixed_subframe<R: BitRead>(
     }
 }
 
-struct ResidualBlock<'r, R: BitRead> {
-    reader: &'r mut R,
-    block_size: u16,
-    rice_bits: u32,
-    escaped_rice: u32,
-
-    partitions: std::ops::Range<u16>,
-    partition: ResidualPartition,
-}
-
 fn read_lpc_subframe<R: BitRead>(
     reader: &mut R,
     bits_per_sample: u8,
@@ -362,6 +352,16 @@ fn read_lpc_subframe<R: BitRead>(
     }
 
     Ok(())
+}
+
+struct ResidualBlock<'r, R: BitRead> {
+    reader: &'r mut R,
+    block_size: u16,
+    rice_bits: u32,
+    escaped_rice: u32,
+
+    partitions: std::ops::Range<u16>,
+    partition: ResidualPartition,
 }
 
 impl<'r, R: BitRead> ResidualBlock<'r, R> {
