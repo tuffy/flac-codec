@@ -71,6 +71,11 @@ impl<R: std::io::Read> Decoder<R> {
         self.streaminfo.bits_per_sample
     }
 
+    /// Returns MD5 of entire stream, if known
+    pub fn md5(&self) -> Option<&[u8; 16]> {
+        self.streaminfo.md5.as_ref()
+    }
+
     /// Reads a whole FLAC frame
     ///
     /// The frame may be empty at the end of the stream.
@@ -400,6 +405,7 @@ impl<'r, R: BitRead> ResidualBlock<'r, R> {
 }
 
 impl<R: BitRead> ResidualBlock<'_, R> {
+    #[inline]
     fn next(&mut self) -> Result<i32, Error> {
         match self.partition.next(self.reader) {
             Some(residual) => residual.map_err(Error::Io),
@@ -454,13 +460,14 @@ impl ResidualPartition {
 }
 
 impl ResidualPartition {
+    #[inline]
     fn next<R: BitRead>(&mut self, r: &mut R) -> Option<Result<i32, std::io::Error>> {
         match self {
             Self::Unescaped { rice, residual } => residual.next().map(|_| {
                 let msb = r.read_unary::<1>()?;
                 let lsb = r.read::<u32>(*rice)?;
                 let unsigned = (msb << *rice) | lsb;
-                Ok(if unsigned % 2 == 1 {
+                Ok(if unsigned & 1 == 1 {
                     -((unsigned >> 1) as i32) - 1
                 } else {
                     (unsigned >> 1) as i32
