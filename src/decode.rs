@@ -323,13 +323,19 @@ fn read_lpc_subframe<R: BitRead>(
         return Err(Error::InvalidLpcOrder);
     }
 
-    let mut coefficient = [0i32; 33];
+    let mut coefficient = [0i64; 33];
     let coefficient = &mut coefficient[0..usize::from(predictor_order.get())];
+
+    let mut previous = [0i64; 33];
+    let previous = &mut previous[0..usize::from(predictor_order.get())];
 
     // warm-up samples
     for i in 0..u16::from(predictor_order.get()) {
-        channel[i] = reader.read(bits_per_sample.into())?;
+        let warm_up = reader.read(bits_per_sample.into())?;
+        channel[i] = warm_up;
+        previous[i as usize] = warm_up.into();
     }
+    previous.reverse();
 
     let precision = reader.read_in::<4, u32>()? + 1;
 
@@ -338,7 +344,7 @@ fn read_lpc_subframe<R: BitRead>(
     let shift = u32::try_from(reader.read_in::<5, i32>()?).map_err(|_| Error::NegativeLpcShift)?;
 
     coefficient.iter_mut().try_for_each(|c| {
-        *c = reader.read::<i32>(precision)?;
+        *c = reader.read(precision)?;
         Ok::<(), std::io::Error>(())
     })?;
 
@@ -347,13 +353,17 @@ fn read_lpc_subframe<R: BitRead>(
     for i in u16::from(predictor_order.get())..channel.len() {
         let mut acc = 0i64;
 
+        // TODO - would be handy to have SIMD here
         for j in 0..predictor_order.get() {
-            acc +=
-                i64::from(coefficient[usize::from(j)]) * i64::from(channel[i - u16::from(j) - 1]);
+            acc += coefficient[usize::from(j)] * previous[usize::from(j)];
         }
 
-        channel[i] = i32::try_from(acc >> shift).map_err(|_| Error::AccumulatorOverflow)?
+        let sample = i32::try_from(acc >> shift).map_err(|_| Error::AccumulatorOverflow)?
             + residuals.next()?;
+
+        channel[i] = sample;
+        previous.rotate_right(1);
+        previous[0] = sample.into();
     }
 
     Ok(())
