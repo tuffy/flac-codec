@@ -157,7 +157,7 @@ impl FromBitStream for BlockType {
     type Error = Error;
 
     fn from_reader<R: BitRead + ?Sized>(r: &mut R) -> Result<Self, Self::Error> {
-        match r.read_in::<7, u8>()? {
+        match r.read::<7, u8>()? {
             0 => Ok(Self::Streaminfo),
             1 => Ok(Self::Padding),
             2 => Ok(Self::Application),
@@ -175,7 +175,7 @@ impl ToBitStream for BlockType {
     type Error = Error;
 
     fn to_writer<W: BitWrite + ?Sized>(&self, w: &mut W) -> Result<(), Self::Error> {
-        w.write_out::<7, u8>(match self {
+        w.write::<7, u8>(match self {
             Self::Streaminfo => 0,
             Self::Padding => 1,
             Self::Application => 2,
@@ -205,7 +205,7 @@ impl FromBitStream for BlockSize {
     type Error = std::io::Error;
 
     fn from_reader<R: BitRead + ?Sized>(r: &mut R) -> Result<Self, Self::Error> {
-        r.read_in::<24, _>().map(Self)
+        r.read::<24, _>().map(Self)
     }
 }
 
@@ -213,7 +213,7 @@ impl ToBitStream for BlockSize {
     type Error = std::io::Error;
 
     fn to_writer<W: BitWrite + ?Sized>(&self, w: &mut W) -> Result<(), Self::Error> {
-        w.write_out::<24, _>(self.0)
+        w.write::<24, _>(self.0)
     }
 }
 
@@ -606,12 +606,12 @@ impl FromBitStream for Streaminfo {
         Ok(Self {
             minimum_block_size: r.read_to()?,
             maximum_block_size: r.read_to()?,
-            minimum_frame_size: NonZero::new(r.read_in::<24, _>()?),
-            maximum_frame_size: NonZero::new(r.read_in::<24, _>()?),
-            sample_rate: r.read_in::<20, _>()?,
-            channels: NonZero::new(r.read_in::<3, u8>()? + 1).unwrap(),
-            bits_per_sample: NonZero::new(r.read_in::<5, u8>()? + 1).unwrap(),
-            total_samples: NonZero::new(r.read_in::<36, u64>()?),
+            minimum_frame_size: r.read::<24, _>().map(NonZero::new)?,
+            maximum_frame_size: r.read::<24, _>().map(NonZero::new)?,
+            sample_rate: r.read::<20, _>()?,
+            channels: r.read::<3, _>()?,
+            bits_per_sample: r.read::<5, _>()?,
+            total_samples: r.read::<36, u64>().map(NonZero::new)?,
             md5: r
                 .read_to()
                 .map(|md5: [u8; 16]| md5.iter().any(|b| *b != 0).then_some(md5))?,
@@ -625,12 +625,12 @@ impl ToBitStream for Streaminfo {
     fn to_writer<W: BitWrite + ?Sized>(&self, w: &mut W) -> Result<(), Self::Error> {
         w.write_from(self.minimum_block_size)?;
         w.write_from(self.maximum_block_size)?;
-        w.write_out::<24, _>(self.minimum_frame_size.map(|i| i.get()).unwrap_or(0))?;
-        w.write_out::<24, _>(self.maximum_frame_size.map(|i| i.get()).unwrap_or(0))?;
-        w.write_out::<20, _>(self.sample_rate)?;
-        w.write_out::<3, _>(self.channels.get() - 1)?;
-        w.write_out::<5, _>(self.bits_per_sample.get() - 1)?;
-        w.write_out::<36, _>(self.total_samples.map(|i| i.get()).unwrap_or(0))?;
+        w.write::<24, _>(self.minimum_frame_size.map(|i| i.get()).unwrap_or(0))?;
+        w.write::<24, _>(self.maximum_frame_size.map(|i| i.get()).unwrap_or(0))?;
+        w.write::<20, _>(self.sample_rate)?;
+        w.write::<3, _>(self.channels)?;
+        w.write::<5, _>(self.bits_per_sample)?;
+        w.write::<36, _>(self.total_samples.map(|i| i.get()).unwrap_or(0))?;
         w.write_from(self.md5.unwrap_or([0; 16]))?;
         Ok(())
     }

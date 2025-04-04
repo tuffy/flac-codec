@@ -57,14 +57,14 @@ impl FromBitStreamWith<'_> for FrameHeader {
         r: &mut R,
         streaminfo: &Streaminfo,
     ) -> Result<Self, Self::Error> {
-        if r.read_in::<15, u16>()? != 0b111111111111100 {
+        if r.read::<15, u16>()? != 0b111111111111100 {
             return Err(Error::InvalidSyncCode);
         }
         let blocking_strategy = r.read_bit()?;
-        let encoded_block_size = r.read_in::<4, u8>()?;
-        let encoded_sample_rate = r.read_in::<4, u8>()?;
-        let encoded_channels = r.read_in::<4, u8>()?;
-        let encoded_bps = r.read_in::<3, u8>()?;
+        let encoded_block_size = r.read::<4, u8>()?;
+        let encoded_sample_rate = r.read::<4, u8>()?;
+        let encoded_channels = r.read::<4, u8>()?;
+        let encoded_bps = r.read::<3, u8>()?;
         r.skip(1)?;
         let frame_number = read_frame_number(r)?;
 
@@ -72,8 +72,8 @@ impl FromBitStreamWith<'_> for FrameHeader {
             0b0000 => return Err(Error::InvalidBlockSize),
             0b0001 => 192,
             v @ 0b0010..=0b0101 => 144 * (1 << v),
-            0b0110 => r.read_in::<8, u16>()? + 1,
-            0b0111 => r.read_in::<16, u16>()? + 1,
+            0b0110 => r.read::<8, u16>()? + 1,
+            0b0111 => r.read::<16, u16>()? + 1,
             v @ 0b1000..=0b1111 => 1 << v,
             _ => unreachable!(), // 4-bit field
         };
@@ -95,9 +95,9 @@ impl FromBitStreamWith<'_> for FrameHeader {
             0b1001 => 44100,
             0b1010 => 48000,
             0b1011 => 96000,
-            0b1100 => r.read_in::<8, u32>()? * 1000,
-            0b1101 => r.read_in::<16, _>()?,
-            0b1110 => r.read_in::<16, u32>()? * 10,
+            0b1100 => r.read::<8, u32>()? * 1000,
+            0b1101 => r.read::<16, _>()?,
+            0b1110 => r.read::<16, u32>()? * 10,
             0b1111 => return Err(Error::InvalidSampleRate),
             _ => unreachable!(), // 4-bit field
         };
@@ -173,14 +173,14 @@ impl ChannelAssignment {
 
 fn read_frame_number<R: BitRead + ?Sized>(r: &mut R) -> Result<u32, Error> {
     match r.read_unary::<0>()? {
-        0 => Ok(r.read_in::<7, _>()?),
+        0 => Ok(r.read::<7, _>()?),
         1 => Err(Error::InvalidFrameNumber),
         bytes @ 2..=7 => {
-            let mut frame = r.read(7 - bytes)?;
+            let mut frame = r.read_var(7 - bytes)?;
             for _ in 1..bytes {
-                match r.read_in::<2, u8>()? {
+                match r.read::<2, u8>()? {
                     0b10 => {
-                        frame = (frame << 6) | r.read_in::<6, u32>()?;
+                        frame = (frame << 6) | r.read::<6, u32>()?;
                     }
                     _ => return Err(Error::InvalidFrameNumber),
                 }
@@ -234,7 +234,7 @@ impl FromBitStream for SubframeHeaderType {
     type Error = Error;
 
     fn from_reader<R: BitRead + ?Sized>(r: &mut R) -> Result<Self, Error> {
-        match r.read_in::<6, u8>()? {
+        match r.read::<6, u8>()? {
             0b000000 => Ok(Self::Constant),
             0b000001 => Ok(Self::Verbatim),
             v @ 0b001000..=0b001100 => Ok(Self::Fixed(v - 8)),
