@@ -403,28 +403,20 @@ fn read_residuals<R: BitRead>(
 
             let rice = reader.read_count::<RICE_MAX>()?;
 
+            let (partition, next) = residuals
+                .split_at_mut_checked(partition_size)
+                .ok_or_else(|| Error::InvalidPartitionOrder)?;
+
             if u32::from(rice) == RICE_MAX {
                 // escaped residuals
-
                 let escape_size = reader.read_count::<0b11111>()?;
-
-                let (partition, next) = residuals
-                    .split_at_mut_checked(partition_size)
-                    .ok_or_else(|| Error::InvalidPartitionOrder)?;
 
                 partition.iter_mut().try_for_each(|s| {
                     *s = reader.read_counted(escape_size)?;
                     Ok::<(), std::io::Error>(())
                 })?;
-
-                residuals = next;
             } else {
                 // regular residuals
-
-                let (partition, next) = residuals
-                    .split_at_mut_checked(partition_size)
-                    .ok_or_else(|| Error::InvalidPartitionOrder)?;
-
                 partition.iter_mut().try_for_each(|s| {
                     let msb = reader.read_unary::<1>()?;
                     let lsb = reader.read_counted::<RICE_MAX, u32>(rice)?;
@@ -436,9 +428,9 @@ fn read_residuals<R: BitRead>(
                     };
                     Ok::<(), std::io::Error>(())
                 })?;
-
-                residuals = next;
             }
+
+            residuals = next;
         }
 
         Ok(())
