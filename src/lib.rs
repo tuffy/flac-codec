@@ -12,6 +12,7 @@
 #![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
+pub mod audio;
 pub mod crc;
 pub mod decode;
 pub mod metadata;
@@ -91,6 +92,8 @@ pub enum Error {
     ChannelsMismatch,
     /// Invalid frame bits-per-sample
     InvalidBitsPerSample,
+    /// Excessive number of bits-per-sample
+    ExcessiveBps,
     /// Bits-per-sample in frame differs from bits-per-sample in STREAMINFO
     BitsPerSampleMismatch,
     /// Invalid frame number
@@ -183,6 +186,7 @@ impl std::fmt::Display for Error {
                 "channel count in frame differs from channel count in STREAMINFO".fmt(f)
             }
             Self::InvalidBitsPerSample => "invalid frame bits-per-sample".fmt(f),
+            Self::ExcessiveBps => "bits-per-sample higher than 32".fmt(f),
             Self::BitsPerSampleMismatch => {
                 "bits-per-sample in frame differs from bits-per-sample in STREAMINFO".fmt(f)
             }

@@ -10,7 +10,7 @@
 
 use crate::Error;
 use crate::metadata::Streaminfo;
-use bitstream_io::{BitRead, FromBitStream, FromBitStreamWith};
+use bitstream_io::{BitCount, BitRead, FromBitStream, FromBitStreamWith};
 use std::num::NonZero;
 
 /// A FLAC frame header
@@ -25,7 +25,7 @@ pub struct FrameHeader {
     /// How the channels are assigned
     pub channel_assignment: ChannelAssignment,
     /// The number if bits per output sample
-    pub bits_per_sample: u8,
+    pub bits_per_sample: BitCount<32>,
     /// The frame's number in the stream
     pub frame_number: u32,
 }
@@ -120,18 +120,18 @@ impl FromBitStreamWith<'_> for FrameHeader {
         }
 
         let bits_per_sample = match encoded_bps {
-            0b000 => streaminfo.bits_per_sample.get(),
-            0b001 => 8,
-            0b010 => 12,
+            0b000 => streaminfo.bits_per_sample,
+            0b001 => BitCount::new::<8>(),
+            0b010 => BitCount::new::<12>(),
             0b011 => return Err(Error::InvalidBitsPerSample),
-            0b100 => 16,
-            0b101 => 20,
-            0b110 => 24,
-            0b111 => 32,
+            0b100 => BitCount::new::<16>(),
+            0b101 => BitCount::new::<20>(),
+            0b110 => BitCount::new::<24>(),
+            0b111 => BitCount::new::<32>(),
             _ => unreachable!(), // 3-bit field
         };
 
-        if bits_per_sample != streaminfo.bits_per_sample.get() {
+        if bits_per_sample != streaminfo.bits_per_sample {
             return Err(Error::BitsPerSampleMismatch);
         }
 

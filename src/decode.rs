@@ -9,8 +9,9 @@
 //! For decoding FLAC files to PCM samples
 
 use crate::Error;
+use crate::audio::Frame;
 use crate::metadata::Streaminfo;
-use bitstream_io::BitRead;
+use bitstream_io::{BitCount, BitRead};
 use std::num::NonZero;
 
 /// A FLAC decoder
@@ -59,479 +60,393 @@ impl<R: std::io::Read> Decoder<R> {
         }
     }
 
-    /// Returns number of bits-per-sample
-    pub fn bits_per_sample(&self) -> NonZero<u8> {
-        self.streaminfo.bits_per_sample
-    }
-
     /// Returns MD5 of entire stream, if known
     pub fn md5(&self) -> Option<&[u8; 16]> {
         self.streaminfo.md5.as_ref()
     }
 
-    // /// Reads a whole FLAC frame
-    // ///
-    // /// The frame may be empty at the end of the stream.
-    // ///
-    // /// # Errors
-    // ///
-    // /// Returns an error if an I/O error occurs when reading
-    // /// the stream, or if the stream data is invalid.
-    // pub fn read_frame(&mut self) -> Result<&[i32], Error> {
-    //     use crate::crc::{Checksum, Crc16, CrcReader};
-    //     use crate::stream::{ChannelAssignment, FrameHeader};
-    //     use bitstream_io::{BigEndian, BitReader};
-    //     use std::io::Read;
+    /// Given a frame buffer, returns a decoded frame.
+    ///
+    /// `Frame::default` may be used if no frame buffer
+    /// exists to be reused.
+    ///
+    /// # Errors
+    ///
+    /// Returns any decoding error from the stream.
+    pub fn read_frame(&mut self, mut buf: Frame) -> Result<Frame, Error> {
+        use crate::crc::{Checksum, Crc16, CrcReader};
+        use crate::stream::{ChannelAssignment, FrameHeader};
+        use bitstream_io::{BigEndian, BitReader};
+        use std::io::Read;
 
-    //     let mut crc16_reader: CrcReader<_, Crc16> = CrcReader::new(self.reader.by_ref());
+        let mut crc16_reader: CrcReader<_, Crc16> = CrcReader::new(self.reader.by_ref());
 
-    //     let header = match self.samples_remaining {
-    //         Some(0) => return Ok(&[]),
-    //         Some(_) => FrameHeader::read(crc16_reader.by_ref(), &self.streaminfo)?,
-    //         // if total number of remaining samples isn't known,
-    //         // treat an EOF error as the end of stream
-    //         // (this is an uncommon case)
-    //         None => match FrameHeader::read(crc16_reader.by_ref(), &self.streaminfo) {
-    //             Ok(header) => header,
-    //             Err(Error::Io(err)) if err.kind() == std::io::ErrorKind::UnexpectedEof => {
-    //                 return Ok(&[]);
-    //             }
-    //             Err(err) => return Err(err),
-    //         },
-    //     };
+        let header = match self.samples_remaining {
+            Some(0) => return Ok(buf.empty(&self.streaminfo)),
+            Some(_) => FrameHeader::read(crc16_reader.by_ref(), &self.streaminfo)?,
+            // if total number of remaining samples isn't known,
+            // treat an EOF error as the end of stream
+            // (this is an uncommon case)
+            None => match FrameHeader::read(crc16_reader.by_ref(), &self.streaminfo) {
+                Ok(header) => header,
+                Err(Error::Io(err)) if err.kind() == std::io::ErrorKind::UnexpectedEof => {
+                    return Ok(buf.empty(&self.streaminfo));
+                }
+                Err(err) => return Err(err),
+            },
+        };
 
-    //     let channels = header.channel_assignment.count();
-    //     let buffer = &mut self.buffer[0..usize::from(header.block_size) * usize::from(channels)];
+        let mut reader = BitReader::endian(crc16_reader.by_ref(), BigEndian);
 
-    //     let mut reader = BitReader::endian(crc16_reader.by_ref(), BigEndian);
+        match header.channel_assignment {
+            ChannelAssignment::Independent(total_channels) => {
+                buf.channels.resize_with(total_channels.into(), || vec![]);
+                buf.channels.iter_mut().try_for_each(|channel| {
+                    channel.resize(header.block_size.into(), 0);
+                    read_subframe(&mut reader, header.bits_per_sample, channel)
+                })?;
+            }
+            ChannelAssignment::LeftSide => {
+                buf.channels.resize_with(2, || vec![]);
+                let [left, side] = buf.channels.get_disjoint_mut([0, 1]).unwrap();
 
-    //     match header.channel_assignment {
-    //         ChannelAssignment::Independent(total_channels) => {
-    //             (0..total_channels).try_for_each(|channel| {
-    //                 read_subframe(
-    //                     &mut reader,
-    //                     header.bits_per_sample,
-    //                     Channel::new(buffer, channel, total_channels),
-    //                 )
-    //             })?;
-    //         }
-    //         ChannelAssignment::LeftSide => {
-    //             read_subframe(
-    //                 &mut reader,
-    //                 header.bits_per_sample,
-    //                 Channel::new(buffer, 0, 2),
-    //             )?;
-    //             read_subframe(
-    //                 &mut reader,
-    //                 header.bits_per_sample + 1,
-    //                 Channel::new(buffer, 1, 2),
-    //             )?;
+                left.resize(header.block_size.into(), 0);
+                read_subframe(&mut reader, header.bits_per_sample, left)?;
 
-    //             // FIXME - array_chunks_mut would be better
-    //             // whenever that stabilizes
-    //             buffer.chunks_exact_mut(2).for_each(|c| {
-    //                 if let [left, side] = c {
-    //                     *side = *left - *side;
-    //                 }
-    //             })
-    //         }
-    //         ChannelAssignment::SideRight => {
-    //             read_subframe(
-    //                 &mut reader,
-    //                 header.bits_per_sample + 1,
-    //                 Channel::new(buffer, 0, 2),
-    //             )?;
-    //             read_subframe(
-    //                 &mut reader,
-    //                 header.bits_per_sample,
-    //                 Channel::new(buffer, 1, 2),
-    //             )?;
+                side.resize(header.block_size.into(), 0);
+                read_subframe(
+                    &mut reader,
+                    header
+                        .bits_per_sample
+                        .checked_add(1)
+                        .ok_or(Error::ExcessiveBps)?,
+                    side,
+                )?;
 
-    //             // FIXME - array_chunks_mut would be better
-    //             // whenever that stabilizes
-    //             buffer.chunks_exact_mut(2).for_each(|c| {
-    //                 if let [side, right] = c {
-    //                     *side = *side + *right;
-    //                 }
-    //             })
-    //         }
-    //         ChannelAssignment::MidSide => {
-    //             read_subframe(
-    //                 &mut reader,
-    //                 header.bits_per_sample,
-    //                 Channel::new(buffer, 0, 2),
-    //             )?;
-    //             read_subframe(
-    //                 &mut reader,
-    //                 header.bits_per_sample + 1,
-    //                 Channel::new(buffer, 1, 2),
-    //             )?;
+                left.iter().zip(side.iter_mut()).for_each(|(left, side)| {
+                    *side = *left - *side;
+                });
+            }
+            ChannelAssignment::SideRight => {
+                buf.channels.resize_with(2, || vec![]);
+                let [side, right] = buf.channels.get_disjoint_mut([0, 1]).unwrap();
 
-    //             // FIXME - array_chunks_mut would be better
-    //             // whenever that stabilizes
-    //             buffer.chunks_exact_mut(2).for_each(|c| {
-    //                 if let [mid, side] = c {
-    //                     let sum = *mid * 2 + side.abs() % 2;
-    //                     *mid = (sum + *side) >> 1;
-    //                     *side = (sum - *side) >> 1;
-    //                 }
-    //             })
-    //         }
-    //     }
+                side.resize(header.block_size.into(), 0);
+                read_subframe(
+                    &mut reader,
+                    header
+                        .bits_per_sample
+                        .checked_add(1)
+                        .ok_or(Error::ExcessiveBps)?,
+                    side,
+                )?;
 
-    //     reader.byte_align();
-    //     reader.skip(16)?; // CRC-16 checksum
+                right.resize(header.block_size.into(), 0);
+                read_subframe(&mut reader, header.bits_per_sample, right)?;
 
-    //     match crc16_reader.into_checksum().valid() {
-    //         true => {
-    //             if let Some(remaining) = self.samples_remaining.as_mut() {
-    //                 *remaining = remaining
-    //                     .checked_sub(u64::from(header.block_size))
-    //                     .ok_or(Error::TooManySamples)?;
-    //             }
-    //             Ok(buffer)
-    //         }
-    //         false => Err(Error::Crc16Mismatch),
-    //     }
-    // }
+                side.iter_mut().zip(right.iter()).for_each(|(side, right)| {
+                    *side = *side + *right;
+                });
+            }
+            ChannelAssignment::MidSide => {
+                buf.channels.resize_with(2, || vec![]);
+                let [mid, side] = buf.channels.get_disjoint_mut([0, 1]).unwrap();
+
+                mid.resize(header.block_size.into(), 0);
+                read_subframe(&mut reader, header.bits_per_sample, mid)?;
+
+                side.resize(header.block_size.into(), 0);
+                read_subframe(
+                    &mut reader,
+                    header
+                        .bits_per_sample
+                        .checked_add(1)
+                        .ok_or(Error::ExcessiveBps)?,
+                    side,
+                )?;
+
+                mid.iter_mut().zip(side.iter_mut()).for_each(|(mid, side)| {
+                    let sum = *mid * 2 + side.abs() % 2;
+                    *mid = (sum + *side) >> 1;
+                    *side = (sum - *side) >> 1;
+                });
+            }
+        }
+
+        reader.byte_align();
+        reader.skip(16)?; // CRC-16 checksum
+
+        match crc16_reader.into_checksum().valid() {
+            true => {
+                if let Some(remaining) = self.samples_remaining.as_mut() {
+                    *remaining = remaining
+                        .checked_sub(u64::from(header.block_size))
+                        .ok_or(Error::TooManySamples)?;
+                }
+                Ok(buf)
+            }
+            false => Err(Error::Crc16Mismatch),
+        }
+    }
 }
 
-// fn read_subframe<R: BitRead>(
-//     reader: &mut R,
-//     bits_per_sample: u8,
-//     mut channel: Channel<'_>,
-// ) -> Result<(), Error> {
-//     use crate::stream::{SubframeHeader, SubframeHeaderType};
+fn read_subframe<R: BitRead>(
+    reader: &mut R,
+    bits_per_sample: BitCount<32>,
+    channel: &mut [i32],
+) -> Result<(), Error> {
+    use crate::stream::{SubframeHeader, SubframeHeaderType};
 
-//     let header: SubframeHeader = reader.parse::<SubframeHeader>()?;
+    let header = reader.parse::<SubframeHeader>()?;
 
-//     let effective_bps = u32::from(bits_per_sample)
-//         .checked_sub(header.wasted_bps)
-//         .ok_or(Error::ExcessiveWastedBits)?;
+    let effective_bps = bits_per_sample
+        .checked_sub::<32>(header.wasted_bps)
+        .ok_or(Error::ExcessiveWastedBits)?;
 
-//     match header.type_ {
-//         SubframeHeaderType::Constant => {
-//             let sample = reader.read(effective_bps)?;
-//             channel.for_each(|i| *i = sample);
-//         }
-//         SubframeHeaderType::Verbatim => {
-//             channel.try_for_each(|i| {
-//                 *i = reader.read(effective_bps)?;
-//                 Ok::<(), Error>(())
-//             })?;
-//         }
-//         SubframeHeaderType::Fixed(predictor_order) => {
-//             read_fixed_subframe(reader, bits_per_sample, predictor_order, &mut channel)?;
-//         }
-//         SubframeHeaderType::Lpc(predictor_order) => {
-//             read_lpc_subframe(reader, bits_per_sample, predictor_order, &mut channel)?;
-//         }
-//     }
+    match header.type_ {
+        SubframeHeaderType::Constant => {
+            let sample = reader.read_counted(effective_bps)?;
+            channel.iter_mut().for_each(|i| *i = sample);
+        }
+        SubframeHeaderType::Verbatim => {
+            channel.iter_mut().try_for_each(|i| {
+                *i = reader.read_counted(effective_bps)?;
+                Ok::<(), Error>(())
+            })?;
+        }
+        SubframeHeaderType::Fixed(predictor_order) => {
+            read_fixed_subframe(reader, bits_per_sample, predictor_order, channel)?;
+        }
+        SubframeHeaderType::Lpc(predictor_order) => {
+            read_lpc_subframe(reader, bits_per_sample, predictor_order, channel)?;
+        }
+    }
 
-//     if header.wasted_bps > 0 {
-//         channel.for_each(|i| *i <<= header.wasted_bps);
-//     }
+    if header.wasted_bps > 0 {
+        channel.iter_mut().for_each(|i| *i <<= header.wasted_bps);
+    }
 
-//     Ok(())
-// }
+    Ok(())
+}
 
-// fn read_fixed_subframe<R: BitRead>(
-//     reader: &mut R,
-//     bits_per_sample: u8,
-//     predictor_order: u8,
-//     channel: &mut Channel<'_>,
-// ) -> Result<(), Error> {
-//     if u16::from(predictor_order) > channel.len() {
-//         return Err(Error::InvalidFixedOrder);
-//     }
+fn read_fixed_subframe<R: BitRead>(
+    reader: &mut R,
+    bits_per_sample: BitCount<32>,
+    predictor_order: u8,
+    channel: &mut [i32],
+) -> Result<(), Error> {
+    let (warm_up, residuals) = channel
+        .split_at_mut_checked(predictor_order.into())
+        .ok_or_else(|| Error::InvalidFixedOrder)?;
 
-//     match predictor_order {
-//         0 => {
-//             let mut residuals = ResidualBlock::new(reader, channel.len(), predictor_order)?;
+    warm_up.iter_mut().try_for_each(|s| {
+        *s = reader.read_counted(bits_per_sample)?;
+        Ok::<_, std::io::Error>(())
+    })?;
 
-//             channel.try_for_each(|i| {
-//                 *i = residuals.next()?;
-//                 Ok(())
-//             })
-//         }
-//         1 => {
-//             // warm-up samples
-//             for i in 0..1 {
-//                 channel[i] = reader.read(bits_per_sample.into())?;
-//             }
-//             let mut residuals = ResidualBlock::new(reader, channel.len(), predictor_order)?;
-//             for i in 1..channel.len() {
-//                 channel[i] = channel[i - 1] + residuals.next()?;
-//             }
-//             Ok(())
-//         }
-//         2 => {
-//             // warm-up samples
-//             for i in 0..2 {
-//                 channel[i] = reader.read(bits_per_sample.into())?;
-//             }
-//             let mut residuals = ResidualBlock::new(reader, channel.len(), predictor_order)?;
-//             for i in 2..channel.len() {
-//                 channel[i] = (2 * channel[i - 1]) - channel[i - 2] + residuals.next()?;
-//             }
-//             Ok(())
-//         }
-//         3 => {
-//             // warm-up samples
-//             for i in 0..3 {
-//                 channel[i] = reader.read(bits_per_sample.into())?;
-//             }
-//             let mut residuals = ResidualBlock::new(reader, channel.len(), predictor_order)?;
-//             for i in 3..channel.len() {
-//                 channel[i] = (3 * channel[i - 1]) - (3 * channel[i - 2])
-//                     + channel[i - 3]
-//                     + residuals.next()?;
-//             }
-//             Ok(())
-//         }
-//         4 => {
-//             // warm-up samples
-//             for i in 0..4 {
-//                 channel[i] = reader.read(bits_per_sample.into())?;
-//             }
-//             let mut residuals = ResidualBlock::new(reader, channel.len(), predictor_order)?;
-//             for i in 4..channel.len() {
-//                 channel[i] = (4 * channel[i - 1]) - (6 * channel[i - 2]) + (4 * channel[i - 3])
-//                     - channel[i - 4]
-//                     + residuals.next()?;
-//             }
-//             Ok(())
-//         }
-//         _ => Err(Error::InvalidFixedOrder),
-//     }
-// }
+    read_residuals(reader, predictor_order, residuals)?;
 
-// fn read_lpc_subframe<R: BitRead>(
-//     reader: &mut R,
-//     bits_per_sample: u8,
-//     predictor_order: NonZero<u8>,
-//     channel: &mut Channel<'_>,
-// ) -> Result<(), Error> {
-//     if u16::from(predictor_order.get()) > channel.len() {
-//         return Err(Error::InvalidLpcOrder);
-//     }
+    predict_fixed(predictor_order, channel)
+}
 
-//     let mut coefficient = [0i64; 33];
-//     let coefficient = &mut coefficient[0..usize::from(predictor_order.get())];
+fn predict_fixed(predictor_order: u8, channel: &mut [i32]) -> Result<(), Error> {
+    let coefficients: &[i32] = match predictor_order {
+        0 => &[],
+        1 => &[1],
+        2 => &[2, -1],
+        3 => &[3, -3, 1],
+        4 => &[4, -6, 4, -1],
+        _ => return Err(Error::InvalidFixedOrder),
+    };
 
-//     let mut previous = [0i64; 33];
-//     let previous = &mut previous[0..usize::from(predictor_order.get())];
+    for split in predictor_order.into()..channel.len() {
+        let (predicted, residuals) = channel.split_at_mut(split);
 
-//     // warm-up samples
-//     for i in 0..u16::from(predictor_order.get()) {
-//         let warm_up = reader.read(bits_per_sample.into())?;
-//         channel[i] = warm_up;
-//         previous[i as usize] = warm_up.into();
-//     }
-//     previous.reverse();
+        residuals[0] += predicted
+            .iter()
+            .rev()
+            .zip(coefficients)
+            .map(|(x, y)| x * y)
+            .sum::<i32>();
+    }
 
-//     let precision = reader.read_in::<4, u32>()? + 1;
+    Ok(())
+}
 
-//     // shift is a signed field in the file format,
-//     // but negative shifts are not allowed
-//     let shift = u32::try_from(reader.read_in::<5, i32>()?).map_err(|_| Error::NegativeLpcShift)?;
+#[test]
+fn test_fixed_prediction() {
+    let mut buffer = [
+        -729, -722, -667, -19, -16, 17, -23, -7, 16, -16, -5, 3, -8, -13, -15, -1,
+    ];
+    assert!(predict_fixed(3, &mut buffer).is_ok());
+    assert_eq!(
+        &buffer,
+        &[
+            -729, -722, -667, -583, -486, -359, -225, -91, 59, 209, 354, 497, 630, 740, 812, 845
+        ]
+    );
+}
 
-//     coefficient.iter_mut().try_for_each(|c| {
-//         *c = reader.read(precision)?;
-//         Ok::<(), std::io::Error>(())
-//     })?;
+fn read_lpc_subframe<R: BitRead>(
+    reader: &mut R,
+    bits_per_sample: BitCount<32>,
+    predictor_order: NonZero<u8>,
+    channel: &mut [i32],
+) -> Result<(), Error> {
+    let mut coefficients: [i32; 32] = [0; 32];
 
-//     let mut residuals = ResidualBlock::new(reader, channel.len(), predictor_order.get())?;
+    let (warm_up, residuals) = channel
+        .split_at_mut_checked(predictor_order.get().into())
+        .ok_or_else(|| Error::InvalidLpcOrder)?;
 
-//     for i in u16::from(predictor_order.get())..channel.len() {
-//         let mut acc = 0i64;
+    warm_up.iter_mut().try_for_each(|s| {
+        *s = reader.read_counted(bits_per_sample)?;
+        Ok::<_, std::io::Error>(())
+    })?;
 
-//         // TODO - would be handy to have SIMD here
-//         for j in 0..predictor_order.get() {
-//             acc += coefficient[usize::from(j)] * previous[usize::from(j)];
-//         }
+    let qlp_precision: BitCount<16> = reader.read_count::<0b1111>()?.checked_add(1).unwrap();
 
-//         let sample = i32::try_from(acc >> shift).map_err(|_| Error::AccumulatorOverflow)?
-//             + residuals.next()?;
+    let qlp_shift: u32 = reader
+        .read::<5, i32>()?
+        .try_into()
+        .map_err(|_| Error::NegativeLpcShift)?;
 
-//         channel[i] = sample;
-//         previous.rotate_right(1);
-//         previous[0] = sample.into();
-//     }
+    let coefficients = &mut coefficients[0..predictor_order.get().into()];
 
-//     Ok(())
-// }
+    coefficients.iter_mut().try_for_each(|c| {
+        *c = reader.read_counted(qlp_precision)?;
+        Ok::<_, std::io::Error>(())
+    })?;
 
-// struct ResidualBlock<'r, R: BitRead> {
-//     reader: &'r mut R,
-//     block_size: u16,
-//     rice_bits: u32,
-//     escaped_rice: u32,
+    read_residuals(reader, predictor_order.get(), residuals)?;
 
-//     partitions: std::ops::Range<u16>,
-//     partition: ResidualPartition,
-// }
+    Ok(predict_lpc(coefficients, qlp_shift, channel))
+}
 
-// impl<'r, R: BitRead> ResidualBlock<'r, R> {
-//     fn new(reader: &'r mut R, block_size: u16, predictor_order: u8) -> Result<Self, Error> {
-//         let coding_method = reader.read_in::<2, u8>()?;
-//         let partition_order = reader.read_in::<4, u32>()?;
-//         let partition_count = 1 << partition_order;
-//         let (rice_bits, escaped_rice) = match coding_method {
-//             0b00 => (4, 0b1111),
-//             0b01 => (5, 0b11111),
-//             _ => return Err(Error::InvalidCodingMethod),
-//         };
+fn predict_lpc(coefficients: &[i32], qlp_shift: u32, channel: &mut [i32]) {
+    for split in coefficients.len()..channel.len() {
+        let (predicted, residuals) = channel.split_at_mut(split);
 
-//         if ((block_size % partition_count) != 0)
-//             || (u16::from(predictor_order) > (block_size / partition_count))
-//         {
-//             return Err(Error::InvalidPartitionOrder);
-//         }
+        residuals[0] += (predicted
+            .iter()
+            .rev()
+            .zip(coefficients)
+            .map(|(x, y)| *x as i64 * *y as i64)
+            .sum::<i64>()
+            >> qlp_shift) as i32;
+    }
+}
 
-//         Ok(Self {
-//             block_size,
-//             rice_bits,
-//             escaped_rice,
+#[test]
+fn verify_lpc_prediction() {
+    let mut coefficients = [-75, 166, 121, -269, -75, -399, 1042];
+    let mut buffer = [
+        -796, -547, -285, -32, 199, 443, 670, -2, -23, 14, 6, 3, -4, 12, -2, 10,
+    ];
+    coefficients.reverse();
+    predict_lpc(&coefficients, 9, &mut buffer);
+    assert_eq!(
+        &buffer,
+        &[
+            -796, -547, -285, -32, 199, 443, 670, 875, 1046, 1208, 1343, 1454, 1541, 1616, 1663,
+            1701
+        ]
+    );
 
-//             partitions: 0..partition_count,
-//             partition: ResidualPartition::new(
-//                 reader,
-//                 rice_bits,
-//                 escaped_rice,
-//                 block_size / partition_count - u16::from(predictor_order),
-//             )?,
+    let mut coefficients = [119, -255, 555, -836, 879, -1199, 1757];
+    let mut buffer = [-21363, -21951, -22649, -24364, -27297, -26870, -30017, 3157];
+    coefficients.reverse();
+    predict_lpc(&coefficients, 10, &mut buffer);
+    assert_eq!(
+        &buffer,
+        &[
+            -21363, -21951, -22649, -24364, -27297, -26870, -30017, -29718
+        ]
+    );
 
-//             reader,
-//         })
-//     }
-// }
+    let mut coefficients = [
+        709, -2589, 4600, -4612, 1350, 4220, -9743, 12671, -12129, 8586, -3775, -645, 3904, -5543,
+        4373, 182, -6873, 13265, -15417, 11550,
+    ];
+    let mut buffer = [
+        213238, 210830, 234493, 209515, 235139, 201836, 208151, 186277, 157720, 148176, 115037,
+        104836, 60794, 54523, 412, 17943, -6025, -3713, 8373, 11764, 30094,
+    ];
+    coefficients.reverse();
+    predict_lpc(&coefficients, 12, &mut buffer);
+    assert_eq!(
+        &buffer,
+        &[
+            213238, 210830, 234493, 209515, 235139, 201836, 208151, 186277, 157720, 148176, 115037,
+            104836, 60794, 54523, 412, 17943, -6025, -3713, 8373, 11764, 33931,
+        ]
+    );
+}
 
-// impl<R: BitRead> ResidualBlock<'_, R> {
-//     #[inline]
-//     fn next(&mut self) -> Result<i32, Error> {
-//         match self.partition.next(self.reader) {
-//             Some(residual) => residual.map_err(Error::Io),
-//             None => {
-//                 self.partition = match self.partitions.next() {
-//                     Some(_) => ResidualPartition::new(
-//                         self.reader,
-//                         self.rice_bits,
-//                         self.escaped_rice,
-//                         self.block_size / self.partitions.end,
-//                     )?,
-//                     // this shouldn't happen?
-//                     None => panic!("attempting to read too many partitions"),
-//                 };
-//                 self.next()
-//             }
-//         }
-//     }
-// }
+fn read_residuals<R: BitRead>(
+    reader: &mut R,
+    predictor_order: u8,
+    residuals: &mut [i32],
+) -> Result<(), Error> {
+    fn read_block<const RICE_MAX: u32, R: BitRead>(
+        reader: &mut R,
+        predictor_order: u8,
+        mut residuals: &mut [i32],
+    ) -> Result<(), Error> {
+        let block_size = (predictor_order as usize) + residuals.len();
+        let partition_order = reader.read::<4, u32>()?;
+        let partition_count = 1 << partition_order;
 
-// enum ResidualPartition {
-//     Unescaped {
-//         rice: u32,
-//         residual: std::ops::Range<u16>,
-//     },
-//     Escaped {
-//         escape_code: u32,
-//         residual: std::ops::Range<u16>,
-//     },
-// }
+        for p in 0..partition_count {
+            let partition_size =
+                block_size / partition_count - if p == 0 { predictor_order as usize } else { 0 };
 
-// impl ResidualPartition {
-//     fn new<R: BitRead>(
-//         r: &mut R,
-//         rice_bits: u32,
-//         escaped_rice: u32,
-//         partition_size: u16,
-//     ) -> Result<Self, Error> {
-//         let rice = r.read(rice_bits)?;
-//         Ok(if rice == escaped_rice {
-//             Self::Escaped {
-//                 escape_code: r.read(5)?,
-//                 residual: 0..partition_size,
-//             }
-//         } else {
-//             Self::Unescaped {
-//                 rice,
-//                 residual: 0..partition_size,
-//             }
-//         })
-//     }
-// }
+            let rice = reader.read_count::<RICE_MAX>()?;
 
-// impl ResidualPartition {
-//     #[inline]
-//     fn next<R: BitRead>(&mut self, r: &mut R) -> Option<Result<i32, std::io::Error>> {
-//         match self {
-//             Self::Unescaped { rice, residual } => residual.next().map(|_| {
-//                 let msb = r.read_unary::<1>()?;
-//                 let lsb = r.read::<u32>(*rice)?;
-//                 let unsigned = (msb << *rice) | lsb;
-//                 Ok(if unsigned & 1 == 1 {
-//                     -((unsigned >> 1) as i32) - 1
-//                 } else {
-//                     (unsigned >> 1) as i32
-//                 })
-//             }),
-//             Self::Escaped {
-//                 escape_code,
-//                 residual,
-//             } => residual.next().map(|_| r.read(*escape_code)),
-//         }
-//     }
-// }
+            if u32::from(rice) == RICE_MAX {
+                // escaped residuals
 
-// struct Channel<'b> {
-//     buf: &'b mut [i32],
-//     channel: u8,
-//     total_channels: u8,
-// }
+                let escape_size = reader.read_count::<0b11111>()?;
 
-// impl<'b> Channel<'b> {
-//     fn new(buf: &'b mut [i32], channel: u8, total_channels: u8) -> Self {
-//         assert!(channel < total_channels);
+                let (partition, next) = residuals
+                    .split_at_mut_checked(partition_size)
+                    .ok_or_else(|| Error::InvalidPartitionOrder)?;
 
-//         Self {
-//             buf,
-//             channel,
-//             total_channels,
-//         }
-//     }
+                partition.iter_mut().try_for_each(|s| {
+                    *s = reader.read_counted(escape_size)?;
+                    Ok::<(), std::io::Error>(())
+                })?;
 
-//     fn len(&self) -> u16 {
-//         (self.buf.len() / usize::from(self.total_channels))
-//             .try_into()
-//             .unwrap()
-//     }
+                residuals = next;
+            } else {
+                // regular residuals
 
-//     fn for_each(&mut self, mut f: impl FnMut(&mut i32)) {
-//         for i in 0..self.len() {
-//             f(&mut self[i]);
-//         }
-//     }
+                let (partition, next) = residuals
+                    .split_at_mut_checked(partition_size)
+                    .ok_or_else(|| Error::InvalidPartitionOrder)?;
 
-//     fn try_for_each<E>(&mut self, mut f: impl FnMut(&mut i32) -> Result<(), E>) -> Result<(), E> {
-//         for i in 0..self.len() {
-//             f(&mut self[i])?;
-//         }
-//         Ok(())
-//     }
-// }
+                partition.iter_mut().try_for_each(|s| {
+                    let msb = reader.read_unary::<1>()?;
+                    let lsb = reader.read_counted::<RICE_MAX, u32>(rice)?;
+                    let unsigned = msb << u32::from(rice) | lsb;
+                    *s = if (unsigned & 1) == 1 {
+                        -((unsigned >> 1) as i32) - 1
+                    } else {
+                        (unsigned >> 1) as i32
+                    };
+                    Ok::<(), std::io::Error>(())
+                })?;
 
-// impl std::ops::Index<u16> for Channel<'_> {
-//     type Output = i32;
+                residuals = next;
+            }
+        }
 
-//     fn index(&self, index: u16) -> &i32 {
-//         &self.buf[usize::from(index) * usize::from(self.total_channels) + usize::from(self.channel)]
-//     }
-// }
+        Ok(())
+    }
 
-// impl std::ops::IndexMut<u16> for Channel<'_> {
-//     fn index_mut(&mut self, index: u16) -> &mut i32 {
-//         &mut self.buf
-//             [usize::from(index) * usize::from(self.total_channels) + usize::from(self.channel)]
-//     }
-// }
+    match reader.read::<2, u8>()? {
+        0 => read_block::<0b1111, R>(reader, predictor_order, residuals),
+        1 => read_block::<0b11111, R>(reader, predictor_order, residuals),
+        _ => Err(Error::InvalidCodingMethod),
+    }
+}
