@@ -33,22 +33,9 @@ impl<R: std::io::Read> Decoder<R> {
     /// is invalid or an I/O error occurs reading
     /// the initial metadata.
     pub fn new(mut reader: R) -> Result<Self, Error> {
-        use crate::metadata::{Block, read_blocks};
+        use crate::metadata::read_streaminfo;
 
-        let mut streaminfo = None;
-
-        for block in read_blocks(reader.by_ref()) {
-            match block? {
-                Block::Streaminfo(s) => {
-                    streaminfo = Some(s);
-                }
-                // FIXME - get SEEKTABLE for file seeking
-                // FIXME - get VORBIS_COMMENT for channel mask
-                _ => { /* ignore other blocks */ }
-            }
-        }
-
-        match streaminfo {
+        match read_streaminfo(reader.by_ref())? {
             Some(streaminfo) => Ok(Self {
                 reader,
                 samples_remaining: streaminfo.total_samples.map(|s| s.get()),
