@@ -217,10 +217,10 @@ fn read_subframe<R: BitRead>(
             })?;
         }
         SubframeHeaderType::Fixed(predictor_order) => {
-            read_fixed_subframe(reader, bits_per_sample, predictor_order, channel)?;
+            read_fixed_subframe(reader, effective_bps, predictor_order, channel)?;
         }
         SubframeHeaderType::Lpc(predictor_order) => {
-            read_lpc_subframe(reader, bits_per_sample, predictor_order, channel)?;
+            read_lpc_subframe(reader, effective_bps, predictor_order, channel)?;
         }
     }
 
