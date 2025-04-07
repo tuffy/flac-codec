@@ -183,6 +183,8 @@ impl<R: std::io::Read> Decoder<R> {
                         .checked_sub(u64::from(header.block_size))
                         .ok_or(Error::TooManySamples)?;
                 }
+                buf.bits_per_sample = u32::from(header.bits_per_sample) as u8;
+                buf.sample_rate = header.sample_rate;
                 Ok(buf)
             }
             false => Err(Error::Crc16Mismatch),
