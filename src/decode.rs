@@ -111,7 +111,7 @@ impl<R: std::io::Read> Decoder<R> {
                     header
                         .bits_per_sample
                         .checked_add(1)
-                        .ok_or(Error::ExcessiveBps)?,
+                        .ok_or_else(|| Error::ExcessiveBps)?,
                     side,
                 )?;
 
@@ -131,7 +131,7 @@ impl<R: std::io::Read> Decoder<R> {
                     header
                         .bits_per_sample
                         .checked_add(1)
-                        .ok_or(Error::ExcessiveBps)?,
+                        .ok_or_else(|| Error::ExcessiveBps)?,
                     side,
                 )?;
 
@@ -155,7 +155,7 @@ impl<R: std::io::Read> Decoder<R> {
                     header
                         .bits_per_sample
                         .checked_add(1)
-                        .ok_or(Error::ExcessiveBps)?,
+                        .ok_or_else(|| Error::ExcessiveBps)?,
                     side,
                 )?;
 
@@ -175,7 +175,7 @@ impl<R: std::io::Read> Decoder<R> {
                 if let Some(remaining) = self.samples_remaining.as_mut() {
                     *remaining = remaining
                         .checked_sub(u64::from(header.block_size))
-                        .ok_or(Error::TooManySamples)?;
+                        .ok_or_else(|| Error::TooManySamples)?;
                 }
                 Ok(buf)
             }
@@ -195,7 +195,7 @@ fn read_subframe<R: BitRead>(
 
     let effective_bps = bits_per_sample
         .checked_sub::<32>(header.wasted_bps)
-        .ok_or(Error::ExcessiveWastedBits)?;
+        .ok_or_else(|| Error::ExcessiveWastedBits)?;
 
     match header.type_ {
         SubframeHeaderType::Constant => {
