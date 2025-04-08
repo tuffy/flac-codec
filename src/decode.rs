@@ -213,8 +213,8 @@ fn read_subframe<R: BitRead>(
                 Ok::<(), Error>(())
             })?;
         }
-        SubframeHeaderType::Fixed(predictor_order) => {
-            read_fixed_subframe(reader, effective_bps, predictor_order, channel)?;
+        SubframeHeaderType::Fixed(coefficients) => {
+            read_fixed_subframe(reader, effective_bps, coefficients, channel)?;
         }
         SubframeHeaderType::Lpc(predictor_order) => {
             read_lpc_subframe(reader, effective_bps, predictor_order, channel)?;
@@ -265,7 +265,10 @@ fn read_lpc_subframe<R: BitRead>(
         Ok::<_, std::io::Error>(())
     })?;
 
-    let qlp_precision: BitCount<16> = reader.read_count::<0b1111>()?.checked_add(1).unwrap();
+    let qlp_precision: BitCount<15> = reader
+        .read_count::<0b1111>()?
+        .checked_add(1)
+        .ok_or_else(|| Error::InvalidQlpPrecision)?;
 
     let qlp_shift: u32 = reader
         .read::<5, i32>()?

@@ -118,6 +118,8 @@ pub enum Error {
     InvalidFixedOrder,
     /// Invalid LPC subframe predictor order
     InvalidLpcOrder,
+    /// Invalid coefficient precision bits
+    InvalidQlpPrecision,
     /// Negative shift value in LPC subframe
     NegativeLpcShift,
     /// Accumulator overflow in LPC subframe
@@ -201,6 +203,7 @@ impl std::fmt::Display for Error {
             Self::InvalidPartitionOrder => "invalid residual partition order".fmt(f),
             Self::InvalidFixedOrder => "invalid FIXED subframe predictor order".fmt(f),
             Self::InvalidLpcOrder => "invalid LPC subframe predicto order".fmt(f),
+            Self::InvalidQlpPrecision => "invalid QLP precision bits".fmt(f),
             Self::NegativeLpcShift => "negative shift in LPC subframe".fmt(f),
             Self::AccumulatorOverflow => "accumulator overflow in LPC subframe".fmt(f),
             Self::TooManySamples => "more samples in stream than indicated in STREAMINFO".fmt(f),
