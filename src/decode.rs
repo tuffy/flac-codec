@@ -69,7 +69,7 @@ impl<R: std::io::Read> Decoder<R> {
         let mut crc16_reader: CrcReader<_, Crc16> = CrcReader::new(self.reader.by_ref());
 
         let header = match self.samples_remaining {
-            Some(0) => return Ok(buf.empty(&self.streaminfo)),
+            Some(0) => return Ok(buf.empty()),
             Some(_) => FrameHeader::read(crc16_reader.by_ref(), &self.streaminfo)?,
             // if total number of remaining samples isn't known,
             // treat an EOF error as the end of stream
@@ -77,7 +77,7 @@ impl<R: std::io::Read> Decoder<R> {
             None => match FrameHeader::read(crc16_reader.by_ref(), &self.streaminfo) {
                 Ok(header) => header,
                 Err(Error::Io(err)) if err.kind() == std::io::ErrorKind::UnexpectedEof => {
-                    return Ok(buf.empty(&self.streaminfo));
+                    return Ok(buf.empty());
                 }
                 Err(err) => return Err(err),
             },
@@ -87,20 +87,25 @@ impl<R: std::io::Read> Decoder<R> {
 
         match header.channel_assignment {
             ChannelAssignment::Independent(total_channels) => {
-                buf.channels.resize_with(total_channels.into(), || vec![]);
-                buf.channels.iter_mut().try_for_each(|channel| {
-                    channel.resize(header.block_size.into(), 0);
+                buf.resize_for(
+                    header.sample_rate,
+                    header.bits_per_sample.into(),
+                    total_channels.into(),
+                    header.block_size.into(),
+                )
+                .try_for_each(|channel| {
                     read_subframe(&mut reader, header.bits_per_sample, channel)
                 })?;
             }
             ChannelAssignment::LeftSide => {
-                buf.channels.resize_with(2, || vec![]);
-                let [left, side] = buf.channels.get_disjoint_mut([0, 1]).unwrap();
+                let (left, side) = buf.resize_for_2(
+                    header.sample_rate,
+                    header.bits_per_sample.into(),
+                    header.block_size.into(),
+                );
 
-                left.resize(header.block_size.into(), 0);
                 read_subframe(&mut reader, header.bits_per_sample, left)?;
 
-                side.resize(header.block_size.into(), 0);
                 read_subframe(
                     &mut reader,
                     header
@@ -115,10 +120,12 @@ impl<R: std::io::Read> Decoder<R> {
                 });
             }
             ChannelAssignment::SideRight => {
-                buf.channels.resize_with(2, || vec![]);
-                let [side, right] = buf.channels.get_disjoint_mut([0, 1]).unwrap();
+                let (side, right) = buf.resize_for_2(
+                    header.sample_rate,
+                    header.bits_per_sample.into(),
+                    header.block_size.into(),
+                );
 
-                side.resize(header.block_size.into(), 0);
                 read_subframe(
                     &mut reader,
                     header
@@ -128,7 +135,6 @@ impl<R: std::io::Read> Decoder<R> {
                     side,
                 )?;
 
-                right.resize(header.block_size.into(), 0);
                 read_subframe(&mut reader, header.bits_per_sample, right)?;
 
                 side.iter_mut().zip(right.iter()).for_each(|(side, right)| {
@@ -136,13 +142,14 @@ impl<R: std::io::Read> Decoder<R> {
                 });
             }
             ChannelAssignment::MidSide => {
-                buf.channels.resize_with(2, || vec![]);
-                let [mid, side] = buf.channels.get_disjoint_mut([0, 1]).unwrap();
+                let (mid, side) = buf.resize_for_2(
+                    header.sample_rate,
+                    header.bits_per_sample.into(),
+                    header.block_size.into(),
+                );
 
-                mid.resize(header.block_size.into(), 0);
                 read_subframe(&mut reader, header.bits_per_sample, mid)?;
 
-                side.resize(header.block_size.into(), 0);
                 read_subframe(
                     &mut reader,
                     header
@@ -170,8 +177,6 @@ impl<R: std::io::Read> Decoder<R> {
                         .checked_sub(u64::from(header.block_size))
                         .ok_or(Error::TooManySamples)?;
                 }
-                buf.bits_per_sample = u32::from(header.bits_per_sample) as u8;
-                buf.sample_rate = header.sample_rate;
                 Ok(buf)
             }
             false => Err(Error::Crc16Mismatch),
