@@ -107,7 +107,10 @@ impl Frame {
 
     /// Iterates over any samples in interleaved order
     pub fn iter(&self) -> impl Iterator<Item = i32> {
-        (0..self.samples.len()).map(|i| self[i % self.channels][i / self.channels])
+        (0..self.samples.len()).map(|i| {
+            let (sample, channel) = (i / self.channels, i % self.channels);
+            self.samples[channel * self.channel_len + sample]
+        })
     }
 }
 
