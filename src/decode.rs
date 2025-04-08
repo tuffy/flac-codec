@@ -47,6 +47,11 @@ impl<R: std::io::Read> Decoder<R> {
         }
     }
 
+    /// Returns decoder's bits-per-sample
+    pub fn bits_per_sample(&self) -> BitCount<32> {
+        self.streaminfo.bits_per_sample
+    }
+
     /// Returns MD5 of entire stream, if known
     pub fn md5(&self) -> Option<&[u8; 16]> {
         self.streaminfo.md5.as_ref()
@@ -226,11 +231,11 @@ fn read_subframe<R: BitRead>(
 fn read_fixed_subframe<R: BitRead>(
     reader: &mut R,
     bits_per_sample: BitCount<32>,
-    predictor_order: u8,
+    coefficients: &[i64],
     channel: &mut [i32],
 ) -> Result<(), Error> {
     let (warm_up, residuals) = channel
-        .split_at_mut_checked(predictor_order.into())
+        .split_at_mut_checked(coefficients.len())
         .ok_or_else(|| Error::InvalidFixedOrder)?;
 
     warm_up.iter_mut().try_for_each(|s| {
@@ -238,47 +243,9 @@ fn read_fixed_subframe<R: BitRead>(
         Ok::<_, std::io::Error>(())
     })?;
 
-    read_residuals(reader, predictor_order, residuals)?;
+    read_residuals(reader, coefficients.len(), residuals)?;
 
-    predict_fixed(predictor_order, channel)
-}
-
-fn predict_fixed(predictor_order: u8, channel: &mut [i32]) -> Result<(), Error> {
-    let coefficients: &[i32] = match predictor_order {
-        0 => &[],
-        1 => &[1],
-        2 => &[2, -1],
-        3 => &[3, -3, 1],
-        4 => &[4, -6, 4, -1],
-        _ => return Err(Error::InvalidFixedOrder),
-    };
-
-    for split in predictor_order.into()..channel.len() {
-        let (predicted, residuals) = channel.split_at_mut(split);
-
-        residuals[0] += predicted
-            .iter()
-            .rev()
-            .zip(coefficients)
-            .map(|(x, y)| x * y)
-            .sum::<i32>();
-    }
-
-    Ok(())
-}
-
-#[test]
-fn test_fixed_prediction() {
-    let mut buffer = [
-        -729, -722, -667, -19, -16, 17, -23, -7, 16, -16, -5, 3, -8, -13, -15, -1,
-    ];
-    assert!(predict_fixed(3, &mut buffer).is_ok());
-    assert_eq!(
-        &buffer,
-        &[
-            -729, -722, -667, -583, -486, -359, -225, -91, 59, 209, 354, 497, 630, 740, 812, 845
-        ]
-    );
+    Ok(predict(coefficients, 0, channel))
 }
 
 fn read_lpc_subframe<R: BitRead>(
@@ -287,7 +254,7 @@ fn read_lpc_subframe<R: BitRead>(
     predictor_order: NonZero<u8>,
     channel: &mut [i32],
 ) -> Result<(), Error> {
-    let mut coefficients: [i32; 32] = [0; 32];
+    let mut coefficients: [i64; 32] = [0; 32];
 
     let (warm_up, residuals) = channel
         .split_at_mut_checked(predictor_order.get().into())
@@ -312,12 +279,12 @@ fn read_lpc_subframe<R: BitRead>(
         Ok::<_, std::io::Error>(())
     })?;
 
-    read_residuals(reader, predictor_order.get(), residuals)?;
+    read_residuals(reader, coefficients.len(), residuals)?;
 
-    Ok(predict_lpc(coefficients, qlp_shift, channel))
+    Ok(predict(coefficients, qlp_shift, channel))
 }
 
-fn predict_lpc(coefficients: &[i32], qlp_shift: u32, channel: &mut [i32]) {
+fn predict(coefficients: &[i64], qlp_shift: u32, channel: &mut [i32]) {
     for split in coefficients.len()..channel.len() {
         let (predicted, residuals) = channel.split_at_mut(split);
 
@@ -325,20 +292,20 @@ fn predict_lpc(coefficients: &[i32], qlp_shift: u32, channel: &mut [i32]) {
             .iter()
             .rev()
             .zip(coefficients)
-            .map(|(x, y)| *x as i64 * *y as i64)
+            .map(|(x, y)| *x as i64 * y)
             .sum::<i64>()
             >> qlp_shift) as i32;
     }
 }
 
 #[test]
-fn verify_lpc_prediction() {
+fn verify_prediction() {
     let mut coefficients = [-75, 166, 121, -269, -75, -399, 1042];
     let mut buffer = [
         -796, -547, -285, -32, 199, 443, 670, -2, -23, 14, 6, 3, -4, 12, -2, 10,
     ];
     coefficients.reverse();
-    predict_lpc(&coefficients, 9, &mut buffer);
+    predict(&coefficients, 9, &mut buffer);
     assert_eq!(
         &buffer,
         &[
@@ -350,7 +317,7 @@ fn verify_lpc_prediction() {
     let mut coefficients = [119, -255, 555, -836, 879, -1199, 1757];
     let mut buffer = [-21363, -21951, -22649, -24364, -27297, -26870, -30017, 3157];
     coefficients.reverse();
-    predict_lpc(&coefficients, 10, &mut buffer);
+    predict(&coefficients, 10, &mut buffer);
     assert_eq!(
         &buffer,
         &[
@@ -367,7 +334,7 @@ fn verify_lpc_prediction() {
         104836, 60794, 54523, 412, 17943, -6025, -3713, 8373, 11764, 30094,
     ];
     coefficients.reverse();
-    predict_lpc(&coefficients, 12, &mut buffer);
+    predict(&coefficients, 12, &mut buffer);
     assert_eq!(
         &buffer,
         &[
@@ -379,12 +346,12 @@ fn verify_lpc_prediction() {
 
 fn read_residuals<R: BitRead>(
     reader: &mut R,
-    predictor_order: u8,
+    predictor_order: usize,
     residuals: &mut [i32],
 ) -> Result<(), Error> {
     fn read_block<const RICE_MAX: u32, R: BitRead>(
         reader: &mut R,
-        predictor_order: u8,
+        predictor_order: usize,
         mut residuals: &mut [i32],
     ) -> Result<(), Error> {
         let block_size = (predictor_order as usize) + residuals.len();
@@ -393,7 +360,7 @@ fn read_residuals<R: BitRead>(
 
         for p in 0..partition_count {
             let partition_size =
-                block_size / partition_count - if p == 0 { predictor_order as usize } else { 0 };
+                block_size / partition_count - if p == 0 { predictor_order } else { 0 };
 
             let rice = reader.read_count::<RICE_MAX>()?;
 

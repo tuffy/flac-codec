@@ -13,12 +13,21 @@ use std::ops::Index;
 /// A decoded set of audio samples
 #[derive(Clone, Default, Debug)]
 pub struct Frame {
+    // all samples, stacked by channel
     samples: Vec<i32>,
 
+    // total number of channels
     channels: usize,
 
+    // total length of each channel in samples
+    channel_len: usize,
+
+    // channel_len = self.samples.len() / self.channels;
+
+    // bits-per-sample
     bits_per_sample: u32,
 
+    // sample rate, in Hz
     sample_rate: u32,
 }
 
@@ -41,11 +50,19 @@ impl Frame {
         self.sample_rate
     }
 
+    /// Returns PCM frame count
+    #[inline]
+    pub fn pcm_frames(&self) -> usize {
+        self.channel_len
+        // self.samples.len().checked_div(self.channels).unwrap_or_default()
+    }
+
     /// Empties frame of its contents and returns it
     #[inline]
     pub fn empty(mut self) -> Self {
         self.samples.clear();
         self.channels = 0;
+        self.channel_len = 0;
         self.sample_rate = 0;
         self.bits_per_sample = 0;
         self
@@ -68,6 +85,7 @@ impl Frame {
         self.sample_rate = sample_rate;
         self.bits_per_sample = bits_per_sample;
         self.channels = channels;
+        self.channel_len = block_size;
         self.samples.resize(channels * block_size, 0);
         self.samples.chunks_exact_mut(block_size)
     }
@@ -82,8 +100,14 @@ impl Frame {
         self.sample_rate = sample_rate;
         self.bits_per_sample = bits_per_sample;
         self.channels = 2;
+        self.channel_len = block_size;
         self.samples.resize(2 * block_size, 0);
         self.samples.split_at_mut(block_size)
+    }
+
+    /// Iterates over any samples in interleaved order
+    pub fn iter(&self) -> impl Iterator<Item = i32> {
+        (0..self.samples.len()).map(|i| self[i % self.channels][i / self.channels])
     }
 }
 
@@ -92,7 +116,6 @@ impl Index<usize> for Frame {
     type Output = [i32];
 
     fn index(&self, index: usize) -> &[i32] {
-        let channel_len = self.samples.len() / self.channels;
-        &self.samples[index * channel_len..(index + 1) * channel_len]
+        &self.samples[index * self.channel_len..(index + 1) * self.channel_len]
     }
 }

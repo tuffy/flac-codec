@@ -225,7 +225,7 @@ pub enum SubframeHeaderType {
     /// All samples as stored verbatim, without compression
     Verbatim,
     /// Samples are stored with one of a set of fixed LPC parameters
-    Fixed(u8),
+    Fixed(&'static [i64]),
     /// Samples are stored with dynamic LPC parameters
     Lpc(NonZero<u8>),
 }
@@ -237,7 +237,11 @@ impl FromBitStream for SubframeHeaderType {
         match r.read::<6, u8>()? {
             0b000000 => Ok(Self::Constant),
             0b000001 => Ok(Self::Verbatim),
-            v @ 0b001000..=0b001100 => Ok(Self::Fixed(v - 8)),
+            0b001000 => Ok(Self::Fixed(&[])),
+            0b001001 => Ok(Self::Fixed(&[1])),
+            0b001010 => Ok(Self::Fixed(&[2, -1])),
+            0b001011 => Ok(Self::Fixed(&[3, -3, 1])),
+            0b001100 => Ok(Self::Fixed(&[4, -6, 4, -1])),
             v @ 0b100000..=0b111111 => Ok(Self::Lpc(NonZero::new(v - 31).unwrap())),
             _ => Err(Error::InvalidSubframeHeaderType),
         }
