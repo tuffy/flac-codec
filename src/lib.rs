@@ -202,7 +202,7 @@ impl std::fmt::Display for Error {
             Self::InvalidCodingMethod => "invalid residual coding method".fmt(f),
             Self::InvalidPartitionOrder => "invalid residual partition order".fmt(f),
             Self::InvalidFixedOrder => "invalid FIXED subframe predictor order".fmt(f),
-            Self::InvalidLpcOrder => "invalid LPC subframe predicto order".fmt(f),
+            Self::InvalidLpcOrder => "invalid LPC subframe predictor order".fmt(f),
             Self::InvalidQlpPrecision => "invalid QLP precision bits".fmt(f),
             Self::NegativeLpcShift => "negative shift in LPC subframe".fmt(f),
             Self::AccumulatorOverflow => "accumulator overflow in LPC subframe".fmt(f),
