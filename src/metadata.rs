@@ -982,8 +982,7 @@ impl FromBitStreamWith<'_> for CuesheetTrack {
         let isrc = r
             .read_to()
             .map(|isrc: [u8; 12]| (!isrc.iter().all(|c| *c == 0)).then_some(isrc))?;
-        let non_audio = r.read_bit()?;
-        let pre_emphasis = r.read_bit()?;
+        let [non_audio, pre_emphasis] = r.read::<1, _>()?;
         r.skip(6 + 13 * 8)?;
         let point_count = r.read_to::<u8>()?;
 

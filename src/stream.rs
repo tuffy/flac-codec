@@ -10,7 +10,7 @@
 
 use crate::Error;
 use crate::metadata::Streaminfo;
-use bitstream_io::{BitCount, BitRead, FromBitStream, FromBitStreamWith};
+use bitstream_io::{BitCount, BitRead, BitWrite, FromBitStream, FromBitStreamWith, ToBitStream};
 use std::num::NonZero;
 
 /// A FLAC frame header
@@ -27,7 +27,7 @@ pub struct FrameHeader {
     /// The number if bits per output sample
     pub bits_per_sample: BitCount<32>,
     /// The frame's number in the stream
-    pub frame_number: u32,
+    pub frame_number: FrameNumber,
 }
 
 impl FrameHeader {
@@ -57,16 +57,14 @@ impl FromBitStreamWith<'_> for FrameHeader {
         r: &mut R,
         streaminfo: &Streaminfo,
     ) -> Result<Self, Self::Error> {
-        if r.read::<15, u16>()? != 0b111111111111100 {
-            return Err(Error::InvalidSyncCode);
-        }
+        r.read_const::<15, 0b111111111111100, _>(|| Error::InvalidSyncCode)?;
         let blocking_strategy = r.read_bit()?;
         let encoded_block_size = r.read::<4, u8>()?;
         let encoded_sample_rate = r.read::<4, u8>()?;
         let encoded_channels = r.read::<4, u8>()?;
         let encoded_bps = r.read::<3, u8>()?;
         r.skip(1)?;
-        let frame_number = read_frame_number(r)?;
+        let frame_number = r.parse()?;
 
         let block_size = match encoded_block_size {
             0b0000 => return Err(Error::InvalidBlockSize),
@@ -171,23 +169,27 @@ impl ChannelAssignment {
     }
 }
 
-fn read_frame_number<R: BitRead + ?Sized>(r: &mut R) -> Result<u32, Error> {
-    match r.read_unary::<0>()? {
-        0 => Ok(r.read::<7, _>()?),
-        1 => Err(Error::InvalidFrameNumber),
-        bytes @ 2..=7 => {
-            let mut frame = r.read_var(7 - bytes)?;
-            for _ in 1..bytes {
-                match r.read::<2, u8>()? {
-                    0b10 => {
-                        frame = (frame << 6) | r.read::<6, u32>()?;
-                    }
-                    _ => return Err(Error::InvalidFrameNumber),
+/// A frame number in the stream, as FLAC frames
+#[derive(Debug)]
+pub struct FrameNumber(pub u32);
+
+impl FromBitStream for FrameNumber {
+    type Error = Error;
+
+    fn from_reader<R: BitRead + ?Sized>(r: &mut R) -> Result<Self, Error> {
+        match r.read_unary::<0>()? {
+            0 => Ok(Self(r.read::<7, _>()?)),
+            1 => Err(Error::InvalidFrameNumber),
+            bytes @ 2..=7 => {
+                let mut frame = r.read_var(7 - bytes)?;
+                for _ in 1..bytes {
+                    r.read_const::<2, 0b10, _>(|| Error::InvalidFrameNumber)?;
+                    frame = (frame << 6) | r.read::<6, u32>()?;
                 }
+                Ok(Self(frame))
             }
-            Ok(frame)
+            _ => Err(Error::InvalidFrameNumber),
         }
-        _ => Err(Error::InvalidFrameNumber),
     }
 }
 
@@ -204,16 +206,32 @@ impl FromBitStream for SubframeHeader {
     type Error = Error;
 
     fn from_reader<R: BitRead + ?Sized>(r: &mut R) -> Result<Self, Error> {
-        match r.read_bit()? {
-            false => Ok(Self {
-                type_: r.parse()?,
-                wasted_bps: match r.read_bit()? {
-                    false => 0,
-                    true => r.read_unary::<1>()? + 1,
-                },
-            }),
-            true => Err(Error::InvalidSubframeHeader),
+        r.read_const::<1, 0, _>(|| Error::InvalidSubframeHeader)?;
+        Ok(Self {
+            type_: r.parse()?,
+            wasted_bps: match r.read_bit()? {
+                false => 0,
+                true => r.read_unary::<1>()? + 1,
+            },
+        })
+    }
+}
+
+impl ToBitStream for SubframeHeader {
+    type Error = Error;
+
+    fn to_writer<W: BitWrite + ?Sized>(&self, w: &mut W) -> Result<(), Error> {
+        w.write_const::<1, 0>()?;
+        w.build(&self.type_)?;
+        match self.wasted_bps.checked_sub(1) {
+            None => w.write_bit(false)?,
+            Some(wasted) => {
+                w.write_bit(true)?;
+                w.write_unary::<1>(wasted - 1)?;
+            }
         }
+
+        Ok(())
     }
 }
 
@@ -245,5 +263,19 @@ impl FromBitStream for SubframeHeaderType {
             v @ 0b100000..=0b111111 => Ok(Self::Lpc(NonZero::new(v - 31).unwrap())),
             _ => Err(Error::InvalidSubframeHeaderType),
         }
+    }
+}
+
+impl ToBitStream for SubframeHeaderType {
+    type Error = Error;
+
+    fn to_writer<W: BitWrite + ?Sized>(&self, w: &mut W) -> Result<(), Error> {
+        w.write::<6, u8>(match self {
+            Self::Constant => 0b000000,
+            Self::Verbatim => 0b000001,
+            Self::Fixed(coeffs) => 0b001000 + coeffs.len() as u8,
+            Self::Lpc(order) => order.get() + 31,
+        })?;
+        Ok(())
     }
 }
