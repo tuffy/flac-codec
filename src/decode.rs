@@ -116,7 +116,7 @@ impl<R: std::io::Read> Decoder<R> {
                     header
                         .bits_per_sample
                         .checked_add(1)
-                        .ok_or_else(|| Error::ExcessiveBps)?,
+                        .ok_or(Error::ExcessiveBps)?,
                     side,
                 )?;
 
@@ -136,14 +136,14 @@ impl<R: std::io::Read> Decoder<R> {
                     header
                         .bits_per_sample
                         .checked_add(1)
-                        .ok_or_else(|| Error::ExcessiveBps)?,
+                        .ok_or(Error::ExcessiveBps)?,
                     side,
                 )?;
 
                 read_subframe(&mut reader, header.bits_per_sample, right)?;
 
                 side.iter_mut().zip(right.iter()).for_each(|(side, right)| {
-                    *side = *side + *right;
+                    *side += *right;
                 });
             }
             ChannelAssignment::MidSide => {
@@ -160,7 +160,7 @@ impl<R: std::io::Read> Decoder<R> {
                     header
                         .bits_per_sample
                         .checked_add(1)
-                        .ok_or_else(|| Error::ExcessiveBps)?,
+                        .ok_or(Error::ExcessiveBps)?,
                     side,
                 )?;
 
@@ -180,7 +180,7 @@ impl<R: std::io::Read> Decoder<R> {
                 if let Some(remaining) = self.samples_remaining.as_mut() {
                     *remaining = remaining
                         .checked_sub(u64::from(header.block_size))
-                        .ok_or_else(|| Error::TooManySamples)?;
+                        .ok_or(Error::TooManySamples)?;
                 }
                 Ok(buf)
             }
@@ -200,7 +200,7 @@ fn read_subframe<R: BitRead>(
 
     let effective_bps = bits_per_sample
         .checked_sub::<32>(header.wasted_bps)
-        .ok_or_else(|| Error::ExcessiveWastedBits)?;
+        .ok_or(Error::ExcessiveWastedBits)?;
 
     match header.type_ {
         SubframeHeaderType::Constant => {
@@ -236,7 +236,7 @@ fn read_fixed_subframe<R: BitRead>(
 ) -> Result<(), Error> {
     let (warm_up, residuals) = channel
         .split_at_mut_checked(coefficients.len())
-        .ok_or_else(|| Error::InvalidFixedOrder)?;
+        .ok_or(Error::InvalidFixedOrder)?;
 
     warm_up.iter_mut().try_for_each(|s| {
         *s = reader.read_counted(bits_per_sample)?;
@@ -244,8 +244,8 @@ fn read_fixed_subframe<R: BitRead>(
     })?;
 
     read_residuals(reader, coefficients.len(), residuals)?;
-
-    Ok(predict(coefficients, 0, channel))
+    predict(coefficients, 0, channel);
+    Ok(())
 }
 
 fn read_lpc_subframe<R: BitRead>(
@@ -258,7 +258,7 @@ fn read_lpc_subframe<R: BitRead>(
 
     let (warm_up, residuals) = channel
         .split_at_mut_checked(predictor_order.get().into())
-        .ok_or_else(|| Error::InvalidLpcOrder)?;
+        .ok_or(Error::InvalidLpcOrder)?;
 
     warm_up.iter_mut().try_for_each(|s| {
         *s = reader.read_counted(bits_per_sample)?;
@@ -268,7 +268,7 @@ fn read_lpc_subframe<R: BitRead>(
     let qlp_precision: BitCount<15> = reader
         .read_count::<0b1111>()?
         .checked_add(1)
-        .ok_or_else(|| Error::InvalidQlpPrecision)?;
+        .ok_or(Error::InvalidQlpPrecision)?;
 
     let qlp_shift: u32 = reader
         .read::<5, i32>()?
@@ -283,8 +283,8 @@ fn read_lpc_subframe<R: BitRead>(
     })?;
 
     read_residuals(reader, coefficients.len(), residuals)?;
-
-    Ok(predict(coefficients, qlp_shift, channel))
+    predict(coefficients, qlp_shift, channel);
+    Ok(())
 }
 
 fn predict(coefficients: &[i64], qlp_shift: u32, channel: &mut [i32]) {
@@ -357,7 +357,7 @@ fn read_residuals<R: BitRead>(
         predictor_order: usize,
         mut residuals: &mut [i32],
     ) -> Result<(), Error> {
-        let block_size = (predictor_order as usize) + residuals.len();
+        let block_size = predictor_order + residuals.len();
         let partition_order = reader.read::<4, u32>()?;
         let partition_count = 1 << partition_order;
 
@@ -369,7 +369,7 @@ fn read_residuals<R: BitRead>(
 
             let (partition, next) = residuals
                 .split_at_mut_checked(partition_size)
-                .ok_or_else(|| Error::InvalidPartitionOrder)?;
+                .ok_or(Error::InvalidPartitionOrder)?;
 
             if u32::from(rice) == RICE_MAX {
                 // escaped residuals
