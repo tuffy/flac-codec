@@ -47,6 +47,77 @@ impl FrameHeader {
                     .ok_or(Error::Crc8Mismatch)
             })
     }
+
+    fn parse<R: BitRead + ?Sized>(
+        r: &mut R,
+        non_subset_rate: impl FnOnce() -> Result<u32, Error>,
+        non_subset_bps: impl FnOnce() -> Result<BitCount<32>, Error>,
+    ) -> Result<Self, Error> {
+        r.read_const::<15, 0b111111111111100, _>(|| Error::InvalidSyncCode)?;
+        let blocking_strategy = r.read_bit()?;
+        let encoded_block_size = r.read::<4, u8>()?;
+        let encoded_sample_rate = r.read::<4, u8>()?;
+        let encoded_channels = r.read::<4, u8>()?;
+        let encoded_bps = r.read::<3, u8>()?;
+        r.skip(1)?;
+        let frame_number = r.parse()?;
+
+        let frame_header = Self {
+            blocking_strategy,
+            frame_number,
+            block_size: match encoded_block_size {
+                0b0000 => return Err(Error::InvalidBlockSize),
+                0b0001 => 192,
+                v @ 0b0010..=0b0101 => 144 * (1 << v),
+                0b0110 => r.read::<8, u16>()? + 1,
+                0b0111 => r.read::<16, u16>()? + 1,
+                v @ 0b1000..=0b1111 => 1 << v,
+                _ => unreachable!(), // 4-bit field
+            },
+            sample_rate: match encoded_sample_rate {
+                0b0000 => non_subset_rate()?,
+                0b0001 => 88200,
+                0b0010 => 176400,
+                0b0011 => 192000,
+                0b0100 => 8000,
+                0b0101 => 16000,
+                0b0110 => 22050,
+                0b0111 => 24000,
+                0b1000 => 32000,
+                0b1001 => 44100,
+                0b1010 => 48000,
+                0b1011 => 96000,
+                0b1100 => r.read::<8, u32>()? * 1000,
+                0b1101 => r.read::<16, _>()?,
+                0b1110 => r.read::<16, u32>()? * 10,
+                0b1111 => return Err(Error::InvalidSampleRate),
+                _ => unreachable!(), // 4-bit field
+            },
+            channel_assignment: match encoded_channels {
+                c @ 0b0000..=0b0111 => ChannelAssignment::Independent(c + 1),
+                0b1000 => ChannelAssignment::LeftSide,
+                0b1001 => ChannelAssignment::SideRight,
+                0b1010 => ChannelAssignment::MidSide,
+                0b1011..=0b1111 => return Err(Error::InvalidChannels),
+                _ => unreachable!(), // 4-bit field
+            },
+            bits_per_sample: match encoded_bps {
+                0b000 => non_subset_bps()?,
+                0b001 => BitCount::new::<8>(),
+                0b010 => BitCount::new::<12>(),
+                0b011 => return Err(Error::InvalidBitsPerSample),
+                0b100 => BitCount::new::<16>(),
+                0b101 => BitCount::new::<20>(),
+                0b110 => BitCount::new::<24>(),
+                0b111 => BitCount::new::<32>(),
+                _ => unreachable!(), // 3-bit field
+            },
+        };
+
+        r.skip(8)?; // CRC-8
+
+        Ok(frame_header)
+    }
 }
 
 impl FromBitStreamWith<'_> for FrameHeader {
@@ -57,91 +128,30 @@ impl FromBitStreamWith<'_> for FrameHeader {
         r: &mut R,
         streaminfo: &Streaminfo,
     ) -> Result<Self, Self::Error> {
-        r.read_const::<15, 0b111111111111100, _>(|| Error::InvalidSyncCode)?;
-        let blocking_strategy = r.read_bit()?;
-        let encoded_block_size = r.read::<4, u8>()?;
-        let encoded_sample_rate = r.read::<4, u8>()?;
-        let encoded_channels = r.read::<4, u8>()?;
-        let encoded_bps = r.read::<3, u8>()?;
-        r.skip(1)?;
-        let frame_number = r.parse()?;
-
-        let block_size = match encoded_block_size {
-            0b0000 => return Err(Error::InvalidBlockSize),
-            0b0001 => 192,
-            v @ 0b0010..=0b0101 => 144 * (1 << v),
-            0b0110 => r.read::<8, u16>()? + 1,
-            0b0111 => r.read::<16, u16>()? + 1,
-            v @ 0b1000..=0b1111 => 1 << v,
-            _ => unreachable!(), // 4-bit field
-        };
-
-        if block_size > streaminfo.maximum_block_size {
-            return Err(Error::BlockSizeMismatch);
-        }
-
-        let sample_rate = match encoded_sample_rate {
-            0b0000 => streaminfo.sample_rate,
-            0b0001 => 88200,
-            0b0010 => 176400,
-            0b0011 => 192000,
-            0b0100 => 8000,
-            0b0101 => 16000,
-            0b0110 => 22050,
-            0b0111 => 24000,
-            0b1000 => 32000,
-            0b1001 => 44100,
-            0b1010 => 48000,
-            0b1011 => 96000,
-            0b1100 => r.read::<8, u32>()? * 1000,
-            0b1101 => r.read::<16, _>()?,
-            0b1110 => r.read::<16, u32>()? * 10,
-            0b1111 => return Err(Error::InvalidSampleRate),
-            _ => unreachable!(), // 4-bit field
-        };
-
-        if sample_rate != streaminfo.sample_rate {
-            return Err(Error::SampleRateMismatch);
-        }
-
-        let channel_assignment = match encoded_channels {
-            c @ 0b0000..=0b0111 => ChannelAssignment::Independent(c + 1),
-            0b1000 => ChannelAssignment::LeftSide,
-            0b1001 => ChannelAssignment::SideRight,
-            0b1010 => ChannelAssignment::MidSide,
-            0b1011..=0b1111 => return Err(Error::InvalidChannels),
-            _ => unreachable!(), // 4-bit field
-        };
-
-        if channel_assignment.count() != streaminfo.channels.get() {
-            return Err(Error::ChannelsMismatch);
-        }
-
-        let bits_per_sample = match encoded_bps {
-            0b000 => streaminfo.bits_per_sample,
-            0b001 => BitCount::new::<8>(),
-            0b010 => BitCount::new::<12>(),
-            0b011 => return Err(Error::InvalidBitsPerSample),
-            0b100 => BitCount::new::<16>(),
-            0b101 => BitCount::new::<20>(),
-            0b110 => BitCount::new::<24>(),
-            0b111 => BitCount::new::<32>(),
-            _ => unreachable!(), // 3-bit field
-        };
-
-        if bits_per_sample != streaminfo.bits_per_sample {
-            return Err(Error::BitsPerSampleMismatch);
-        }
-
-        r.skip(8)?; // CRC-8
-
-        Ok(Self {
-            blocking_strategy,
-            frame_number,
-            block_size,
-            sample_rate,
-            channel_assignment,
-            bits_per_sample,
+        FrameHeader::parse(
+            r,
+            || Ok(streaminfo.sample_rate),
+            || Ok(streaminfo.bits_per_sample),
+        )
+        .and_then(|h| {
+            (h.block_size <= streaminfo.maximum_block_size)
+                .then_some(h)
+                .ok_or(Error::BlockSizeMismatch)
+        })
+        .and_then(|h| {
+            (h.sample_rate == streaminfo.sample_rate)
+                .then_some(h)
+                .ok_or(Error::SampleRateMismatch)
+        })
+        .and_then(|h| {
+            (h.channel_assignment.count() == streaminfo.channels.get())
+                .then_some(h)
+                .ok_or(Error::ChannelsMismatch)
+        })
+        .and_then(|h| {
+            (h.bits_per_sample != streaminfo.bits_per_sample)
+                .then_some(h)
+                .ok_or(Error::BitsPerSampleMismatch)
         })
     }
 }
