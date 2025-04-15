@@ -53,7 +53,7 @@ impl FrameHeader {
         non_subset_rate: impl FnOnce() -> Result<u32, Error>,
         non_subset_bps: impl FnOnce() -> Result<BitCount<32>, Error>,
     ) -> Result<Self, Error> {
-        r.read_const::<15, 0b111111111111100, _>(|| Error::InvalidSyncCode)?;
+        r.read_const::<15, 0b111111111111100, _>(Error::InvalidSyncCode)?;
         let blocking_strategy = r.read_bit()?;
         let encoded_block_size = r.read::<4, u8>()?;
         let encoded_sample_rate = r.read::<4, u8>()?;
@@ -193,7 +193,7 @@ impl FromBitStream for FrameNumber {
             bytes @ 2..=7 => {
                 let mut frame = r.read_var(7 - bytes)?;
                 for _ in 1..bytes {
-                    r.read_const::<2, 0b10, _>(|| Error::InvalidFrameNumber)?;
+                    r.read_const::<2, 0b10, _>(Error::InvalidFrameNumber)?;
                     frame = (frame << 6) | r.read::<6, u32>()?;
                 }
                 Ok(Self(frame))
@@ -216,7 +216,7 @@ impl FromBitStream for SubframeHeader {
     type Error = Error;
 
     fn from_reader<R: BitRead + ?Sized>(r: &mut R) -> Result<Self, Error> {
-        r.read_const::<1, 0, _>(|| Error::InvalidSubframeHeader)?;
+        r.read_const::<1, 0, _>(Error::InvalidSubframeHeader)?;
         Ok(Self {
             type_: r.parse()?,
             wasted_bps: match r.read_bit()? {
