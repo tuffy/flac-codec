@@ -10,7 +10,9 @@
 
 use crate::Error;
 use crate::metadata::Streaminfo;
-use bitstream_io::{BitCount, BitRead, BitWrite, FromBitStream, FromBitStreamWith, ToBitStream};
+use bitstream_io::{
+    BitCount, BitRead, BitWrite, FromBitStream, FromBitStreamWith, ToBitStream, ToBitStreamWith,
+};
 use std::num::NonZero;
 
 /// A FLAC frame header
@@ -48,6 +50,23 @@ impl FrameHeader {
                     .then_some(header)
                     .ok_or(Error::Crc8Mismatch)
             })
+    }
+
+    /// Builds header to the given writer
+    pub fn write<W: std::io::Write>(
+        &self,
+        writer: &mut W,
+        streaminfo: &Streaminfo,
+    ) -> Result<(), Error> {
+        use crate::crc::{Crc8, CrcWriter};
+        use bitstream_io::{BigEndian, BitWriter};
+        use std::io::Write;
+
+        let mut crc8: CrcWriter<_, Crc8> = CrcWriter::new(writer.by_ref());
+        BitWriter::endian(crc8.by_ref(), BigEndian).build_with(self, streaminfo)?;
+        let crc8 = crc8.into_checksum().into();
+        writer.write_all(std::slice::from_ref(&crc8))?;
+        Ok(())
     }
 
     fn parse<R: BitRead + ?Sized>(
@@ -254,6 +273,24 @@ impl FromBitStreamWith<'_> for FrameHeader {
                 .then_some(h)
                 .ok_or(Error::BitsPerSampleMismatch)
         })
+    }
+}
+
+impl ToBitStreamWith<'_> for FrameHeader {
+    type Error = Error;
+    type Context = Streaminfo;
+
+    #[inline]
+    fn to_writer<W: BitWrite + ?Sized>(
+        &self,
+        w: &mut W,
+        streaminfo: &Streaminfo,
+    ) -> Result<(), Self::Error> {
+        self.build(
+            w,
+            || Ok(streaminfo.sample_rate),
+            || Ok(streaminfo.bits_per_sample),
+        )
     }
 }
 

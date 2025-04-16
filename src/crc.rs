@@ -49,6 +49,43 @@ impl<R: std::io::Read, C: Checksum> std::io::Read for CrcReader<R, C> {
     }
 }
 
+/// A generic writer wrapper over Checksum types
+pub struct CrcWriter<W, C> {
+    writer: W,
+    checksum: C,
+}
+
+impl<W, C: Checksum> CrcWriter<W, C> {
+    /// Wraps `CrcReader` around the given reader
+    pub fn new(writer: W) -> Self {
+        Self {
+            writer,
+            checksum: C::default(),
+        }
+    }
+
+    /// Consumes reader and returns resulting checksum
+    pub fn into_checksum(self) -> C {
+        self.checksum
+    }
+}
+
+impl<W: std::io::Write, C: Checksum> std::io::Write for CrcWriter<W, C> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.writer.write(buf).inspect(|amt| {
+            self.checksum = buf[0..*amt]
+                .iter()
+                .copied()
+                .fold(self.checksum, |c, b| c.update(b));
+        })
+    }
+
+    #[inline]
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.writer.flush()
+    }
+}
+
 /// A frame header's CRC-8 checksum
 #[derive(Copy, Clone, Default, Debug)]
 pub struct Crc8(u8);
@@ -82,6 +119,13 @@ impl Checksum for Crc8 {
 
     fn valid(self) -> bool {
         self.0 == 0
+    }
+}
+
+impl From<Crc8> for u8 {
+    #[inline(always)]
+    fn from(Crc8(u): Crc8) -> Self {
+        u
     }
 }
 
