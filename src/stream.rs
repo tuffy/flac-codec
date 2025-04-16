@@ -149,7 +149,7 @@ impl FromBitStreamWith<'_> for FrameHeader {
                 .ok_or(Error::ChannelsMismatch)
         })
         .and_then(|h| {
-            (h.bits_per_sample != streaminfo.bits_per_sample)
+            (h.bits_per_sample == streaminfo.bits_per_sample)
                 .then_some(h)
                 .ok_or(Error::BitsPerSampleMismatch)
         })
@@ -181,7 +181,7 @@ impl ChannelAssignment {
 
 /// A frame number in the stream, as FLAC frames
 #[derive(Debug)]
-pub struct FrameNumber(pub u32);
+pub struct FrameNumber(pub u64);
 
 impl FromBitStream for FrameNumber {
     type Error = Error;
@@ -194,12 +194,112 @@ impl FromBitStream for FrameNumber {
                 let mut frame = r.read_var(7 - bytes)?;
                 for _ in 1..bytes {
                     r.read_const::<2, 0b10, _>(Error::InvalidFrameNumber)?;
-                    frame = (frame << 6) | r.read::<6, u32>()?;
+                    frame = (frame << 6) | r.read::<6, u64>()?;
                 }
                 Ok(Self(frame))
             }
             _ => Err(Error::InvalidFrameNumber),
         }
+    }
+}
+
+impl ToBitStream for FrameNumber {
+    type Error = Error;
+
+    fn to_writer<W: BitWrite + ?Sized>(&self, w: &mut W) -> Result<(), Error> {
+        #[inline]
+        fn byte(num: u64, byte: u32) -> u8 {
+            0b10_000000 | ((num >> (6 * byte)) & 0b111111) as u8
+        }
+
+        match self.0 {
+            v @ 0..=0x7F => {
+                w.write_unary::<0>(0)?;
+                w.write::<7, _>(v)?;
+                Ok(())
+            }
+            v @ 0x80..=0x7FF => {
+                w.write_unary::<0>(2)?;
+                w.write::<5, _>(v >> 6)?;
+                w.write::<8, _>(byte(v, 0))?;
+                Ok(())
+            }
+            v @ 0x800..=0xFFFF => {
+                w.write_unary::<0>(3)?;
+                w.write::<4, _>(v >> (6 * 2))?;
+                w.write::<8, _>(byte(v, 1))?;
+                w.write::<8, _>(byte(v, 0))?;
+                Ok(())
+            }
+            v @ 0x1_0000..=0x1F_FFFF => {
+                w.write_unary::<0>(4)?;
+                w.write::<3, _>(v >> (6 * 3))?;
+                w.write::<8, _>(byte(v, 2))?;
+                w.write::<8, _>(byte(v, 1))?;
+                w.write::<8, _>(byte(v, 0))?;
+                Ok(())
+            }
+            v @ 0x20_0000..=0x3FF_FFFF => {
+                w.write_unary::<0>(5)?;
+                w.write::<2, _>(v >> (6 * 4))?;
+                w.write::<8, _>(byte(v, 3))?;
+                w.write::<8, _>(byte(v, 2))?;
+                w.write::<8, _>(byte(v, 1))?;
+                w.write::<8, _>(byte(v, 0))?;
+                Ok(())
+            }
+            v @ 0x400_0000..=0x7FFF_FFFF => {
+                w.write_unary::<0>(6)?;
+                w.write::<1, _>(v >> (6 * 5))?;
+                w.write::<8, _>(byte(v, 4))?;
+                w.write::<8, _>(byte(v, 3))?;
+                w.write::<8, _>(byte(v, 2))?;
+                w.write::<8, _>(byte(v, 1))?;
+                w.write::<8, _>(byte(v, 0))?;
+                Ok(())
+            }
+            v @ 0x8000_0000..=0xF_FFFF_FFFF => {
+                w.write_unary::<0>(7)?;
+                w.write::<8, _>(byte(v, 5))?;
+                w.write::<8, _>(byte(v, 4))?;
+                w.write::<8, _>(byte(v, 3))?;
+                w.write::<8, _>(byte(v, 2))?;
+                w.write::<8, _>(byte(v, 1))?;
+                w.write::<8, _>(byte(v, 0))?;
+                Ok(())
+            }
+            _ => Err(Error::InvalidFrameNumber),
+        }
+    }
+}
+
+#[test]
+fn test_frame_number() {
+    use bitstream_io::{BigEndian, BitRead, BitReader, BitWrite, BitWriter};
+
+    let mut buf: [u8; 7] = [0; 7];
+
+    for i in (0..=0xFFFF)
+        .chain((0x1_0000..=0x1F_FFFF).step_by(32))
+        .chain((0x20_0000..=0x3FF_FFFF).step_by(1024))
+        .chain((0x400_0000..=0x7FFF_FFFF).step_by(33760))
+        .chain((0x8000_0000..=0xF_FFFF_FFFF).step_by(1048592))
+    {
+        let num = FrameNumber(i);
+
+        assert!(
+            BitWriter::endian(buf.as_mut_slice(), BigEndian)
+                .build(&num)
+                .is_ok()
+        );
+
+        let num2 = BitReader::endian(buf.as_slice(), BigEndian)
+            .parse::<FrameNumber>()
+            .unwrap();
+
+        assert_eq!(num.0, num2.0);
+
+        buf.fill(0);
     }
 }
 
