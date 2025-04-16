@@ -496,6 +496,10 @@ pub enum SubframeHeaderType {
     Lpc(NonZero<u8>),
 }
 
+impl SubframeHeaderType {
+    const FIXED_COEFFS: [&[i64]; 5] = [&[], &[1], &[2, -1], &[3, -3, 1], &[4, -6, 4, -1]];
+}
+
 impl FromBitStream for SubframeHeaderType {
     type Error = Error;
 
@@ -503,11 +507,9 @@ impl FromBitStream for SubframeHeaderType {
         match r.read::<6, u8>()? {
             0b000000 => Ok(Self::Constant),
             0b000001 => Ok(Self::Verbatim),
-            0b001000 => Ok(Self::Fixed(&[])),
-            0b001001 => Ok(Self::Fixed(&[1])),
-            0b001010 => Ok(Self::Fixed(&[2, -1])),
-            0b001011 => Ok(Self::Fixed(&[3, -3, 1])),
-            0b001100 => Ok(Self::Fixed(&[4, -6, 4, -1])),
+            v @ 0b001000..=0b001100 => Ok(Self::Fixed(
+                SubframeHeaderType::FIXED_COEFFS[v as usize - 0b001000],
+            )),
             v @ 0b100000..=0b111111 => Ok(Self::Lpc(NonZero::new(v - 31).unwrap())),
             _ => Err(Error::InvalidSubframeHeaderType),
         }
