@@ -31,6 +31,8 @@ pub struct FrameHeader {
 }
 
 impl FrameHeader {
+    const SYNC_CODE: u32 = 0b111111111111100;
+
     /// Reads new header from the given reader
     pub fn read<R: std::io::Read>(reader: &mut R, streaminfo: &Streaminfo) -> Result<Self, Error> {
         use crate::crc::{Checksum, Crc8, CrcReader};
@@ -53,7 +55,7 @@ impl FrameHeader {
         non_subset_rate: impl FnOnce() -> Result<u32, Error>,
         non_subset_bps: impl FnOnce() -> Result<BitCount<32>, Error>,
     ) -> Result<Self, Error> {
-        r.read_const::<15, 0b111111111111100, _>(Error::InvalidSyncCode)?;
+        r.read_const::<15, { Self::SYNC_CODE }, _>(Error::InvalidSyncCode)?;
         let blocking_strategy = r.read_bit()?;
         let encoded_block_size = r.read::<4, u8>()?;
         let encoded_sample_rate = r.read::<4, u8>()?;
@@ -117,6 +119,105 @@ impl FrameHeader {
         r.skip(8)?; // CRC-8
 
         Ok(frame_header)
+    }
+
+    fn build<W: BitWrite + ?Sized>(
+        &self,
+        w: &mut W,
+        non_subset_rate: impl FnOnce() -> Result<u32, Error>,
+        non_subset_bps: impl FnOnce() -> Result<BitCount<32>, Error>,
+    ) -> Result<(), Error> {
+        w.write_const::<15, { Self::SYNC_CODE }>()?;
+
+        w.write_bit(self.blocking_strategy)?;
+
+        w.write::<4, u8>(match self.block_size {
+            0 => return Err(Error::InvalidBlockSize),
+            192 => 0b0001,
+            576 => 0b0010,
+            1152 => 0b0011,
+            2304 => 0b0100,
+            4608 => 0b0101,
+            256 => 0b1000,
+            512 => 0b1001,
+            1024 => 0b1010,
+            2048 => 0b1011,
+            4096 => 0b1100,
+            8192 => 0b1101,
+            16384 => 0b1110,
+            32768 => 0b1111,
+            size if size <= 256 => 0b0110,
+            _ => 0b0111,
+        })?;
+
+        w.write::<4, u8>(match self.sample_rate {
+            88200 => 0b0001,
+            176400 => 0b0010,
+            192000 => 0b0011,
+            8000 => 0b0100,
+            16000 => 0b0101,
+            22050 => 0b0110,
+            24000 => 0b0111,
+            32000 => 0b1000,
+            44100 => 0b1001,
+            48000 => 0b1010,
+            96000 => 0b1011,
+            rate if (rate % 1000) == 0 && (rate / 1000) < 256 => 0b1100,
+            rate if (rate % 10) == 0 && (rate / 10) < u16::MAX as u32 => 0b1110,
+            rate if rate < u16::MAX as u32 => 0b1101,
+            rate if rate == non_subset_rate()? => 0b0000,
+            _ => return Err(Error::InvalidSampleRate),
+        })?;
+
+        w.write::<4, u8>(match self.channel_assignment {
+            ChannelAssignment::Independent(c) => c - 1,
+            ChannelAssignment::LeftSide => 0b1000,
+            ChannelAssignment::SideRight => 0b1001,
+            ChannelAssignment::MidSide => 0b1010,
+        })?;
+
+        w.write::<3, u8>(match self.bits_per_sample.into() {
+            8 => 0b001,
+            12 => 0b010,
+            16 => 0b100,
+            20 => 0b101,
+            24 => 0b110,
+            32 => 0b111,
+            bps if bps == non_subset_bps()?.into() => 0b000,
+            _ => return Err(Error::InvalidBitsPerSample),
+        })?;
+
+        w.pad(1)?;
+
+        w.build(&self.frame_number)?;
+
+        // uncommon block size
+        match self.block_size {
+            0 | 192 | 576 | 1152 | 2304 | 4608 | 256 | 512 | 1024 | 2048 | 4096 | 8192 | 16384
+            | 32768 => { /* do nothing */ }
+            size => match u8::try_from(size - 1) {
+                Ok(size) => w.write::<8, _>(size)?,
+                Err(_) => w.write::<16, _>(size - 1)?,
+            },
+        }
+
+        // uncommon sample rate
+        match self.sample_rate {
+            88200 | 176400 | 192000 | 8000 | 16000 | 22050 | 24000 | 32000 | 44100 | 48000
+            | 96000 => { /* do nothing */ }
+            rate => {
+                if let Some(rate) = u8::try_from(rate / 1000).ok().filter(|_| rate % 1000 == 0) {
+                    w.write::<8, _>(rate)?;
+                } else if let Some(rate) = u16::try_from(rate / 10).ok().filter(|_| rate % 10 == 0)
+                {
+                    w.write::<16, _>(rate)?;
+                } else if let Ok(rate) = u16::try_from(rate) {
+                    w.write::<16, _>(rate)?;
+                }
+            }
+        }
+
+        Ok(())
     }
 }
 
