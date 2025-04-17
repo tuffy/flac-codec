@@ -368,8 +368,9 @@ fn read_residuals<R: BitRead>(
         let partition_count = 1 << partition_order;
 
         for p in 0..partition_count {
-            let partition_size =
-                block_size / partition_count - if p == 0 { predictor_order } else { 0 };
+            let partition_size = (block_size / partition_count)
+                .checked_sub(if p == 0 { predictor_order } else { 0 })
+                .ok_or(Error::InvalidPartitionOrder)?;
 
             let rice = reader.read_count::<RICE_MAX>()?;
 
@@ -377,7 +378,7 @@ fn read_residuals<R: BitRead>(
                 .split_at_mut_checked(partition_size)
                 .ok_or(Error::InvalidPartitionOrder)?;
 
-            if u32::from(rice) == RICE_MAX {
+            if rice == BitCount::new::<{ RICE_MAX }>() {
                 // escaped residuals
                 let escape_size = reader.read_count::<0b11111>()?;
 
