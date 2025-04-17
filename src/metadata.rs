@@ -252,6 +252,7 @@ pub struct BlockReader<R: std::io::Read> {
     tag_read: bool,
     streaminfo_read: bool,
     seektable_read: bool,
+    vorbiscomment_read: bool,
     png_read: bool,
     icon_read: bool,
     finished: bool,
@@ -269,6 +270,7 @@ impl<R: std::io::Read> BlockReader<R> {
             tag_read: false,
             streaminfo_read: false,
             seektable_read: false,
+            vorbiscomment_read: false,
             png_read: false,
             icon_read: false,
             finished: false,
@@ -365,6 +367,15 @@ impl<R: std::io::Read> Iterator for BlockReader<R> {
                     } else {
                         self.failed = true;
                         Some(Err(Error::MultipleSeekTable))
+                    }
+                }
+                vorbiscomment @ Some(Ok(Block::VorbisComment(_))) => {
+                    if !self.vorbiscomment_read {
+                        self.vorbiscomment_read = true;
+                        vorbiscomment
+                    } else {
+                        self.failed = true;
+                        Some(Err(Error::MultipleVorbisComment))
                     }
                 }
                 picture @ Some(Ok(Block::Picture(Picture {

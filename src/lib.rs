@@ -33,6 +33,8 @@ pub enum Error {
     MultipleStreaminfo,
     /// A FLAC file containing multiple SEEKTABLE blocks
     MultipleSeekTable,
+    /// A FLAC file containing multiple VORBIS_COMMENT blocks
+    MultipleVorbisComment,
     /// A SEEKTABLE block whose size isn't evenly divisible
     /// by a whole of number of seek points.
     InvalidSeekTableSize,
@@ -151,6 +153,7 @@ impl std::fmt::Display for Error {
             Self::MissingStreaminfo => "STREAMINFO block not first in file".fmt(f),
             Self::MultipleStreaminfo => "multiple STREAMINFO blocks found in file".fmt(f),
             Self::MultipleSeekTable => "multiple SEEKTABLE blocks found in file".fmt(f),
+            Self::MultipleVorbisComment => "multiple VORBIS_COMMENT blocks found in file".fmt(f),
             Self::InvalidSeekTableSize => "invalid SEEKTABLE block size".fmt(f),
             Self::InvalidSeekTablePoint => "invalid SEEKTABLE point".fmt(f),
             Self::InvalidCuesheetOffset => "invalid CUESHEET sample offset".fmt(f),

@@ -4,4 +4,5 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-bitstream-io = "3.1.0"
+# bitstream-io = "3.1.0"
+bitstream-io = { path = "/mnt/multimedia/code/development/bitstream-io" }
