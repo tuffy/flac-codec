@@ -75,7 +75,13 @@ impl<R: std::io::Read> Decoder<R> {
 
         let header = match self.samples_remaining {
             Some(0) => return Ok(buf.empty()),
-            Some(_) => FrameHeader::read(crc16_reader.by_ref(), &self.streaminfo)?,
+            Some(remaining) => FrameHeader::read(crc16_reader.by_ref(), &self.streaminfo)
+                .and_then(|header| {
+                    // only the last block in a stream may contain <= 14 samples
+                    (u64::from(header.block_size) == remaining || header.block_size > 14)
+                        .then_some(header)
+                        .ok_or(Error::ShortBlock)
+                })?,
             // if total number of remaining samples isn't known,
             // treat an EOF error as the end of stream
             // (this is an uncommon case)
@@ -375,10 +381,14 @@ fn read_residuals<R: BitRead>(
                 // escaped residuals
                 let escape_size = reader.read_count::<0b11111>()?;
 
-                partition.iter_mut().try_for_each(|s| {
-                    *s = reader.read_counted(escape_size)?;
-                    Ok::<(), std::io::Error>(())
-                })?;
+                if escape_size == BitCount::new::<0>() {
+                    partition.fill(0);
+                } else {
+                    partition.iter_mut().try_for_each(|s| {
+                        *s = reader.read_counted(escape_size)?;
+                        Ok::<(), std::io::Error>(())
+                    })?;
+                }
             } else {
                 // regular residuals
                 partition.iter_mut().try_for_each(|s| {

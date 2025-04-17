@@ -90,8 +90,14 @@ impl FrameHeader {
                 0b0000 => return Err(Error::InvalidBlockSize),
                 0b0001 => 192,
                 v @ 0b0010..=0b0101 => 144 * (1 << v),
-                0b0110 => r.read::<8, u16>()? + 1,
-                0b0111 => r.read::<16, u16>()? + 1,
+                0b0110 => r
+                    .read::<8, u16>()?
+                    .checked_add(1)
+                    .ok_or(Error::InvalidBlockSize)?,
+                0b0111 => r
+                    .read::<16, u16>()?
+                    .checked_add(1)
+                    .ok_or(Error::InvalidBlockSize)?,
                 v @ 0b1000..=0b1111 => 1 << v,
                 _ => unreachable!(), // 4-bit field
             },
@@ -212,11 +218,11 @@ impl FrameHeader {
 
         // uncommon block size
         match self.block_size {
-            0 | 192 | 576 | 1152 | 2304 | 4608 | 256 | 512 | 1024 | 2048 | 4096 | 8192 | 16384
+            192 | 576 | 1152 | 2304 | 4608 | 256 | 512 | 1024 | 2048 | 4096 | 8192 | 16384
             | 32768 => { /* do nothing */ }
-            size => match u8::try_from(size - 1) {
+            size => match u8::try_from(size.checked_sub(1).ok_or(Error::InvalidBlockSize)?) {
                 Ok(size) => w.write::<8, _>(size)?,
-                Err(_) => w.write::<16, _>(size - 1)?,
+                Err(_) => w.write::<16, _>(size.checked_sub(1).ok_or(Error::InvalidBlockSize)?)?,
             },
         }
 

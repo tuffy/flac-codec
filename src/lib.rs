@@ -76,6 +76,8 @@ pub enum Error {
     ExcessiveCuesheetTracks,
     /// A `CuesheetTrack` struct with more than `u8` index points
     ExcessiveCuesheetIndexPoints,
+    /// A block size less than 15 that's not the last block
+    ShortBlock,
     /// A metadata block larger than its 24-bit size field can hold
     ExcessiveBlockSize,
     /// Invalid frame sync code
@@ -179,6 +181,7 @@ impl std::fmt::Display for Error {
             Self::ExcessiveBlockSize => "excessive metadata block size".fmt(f),
             Self::InvalidSyncCode => "invalid frame sync code".fmt(f),
             Self::InvalidBlockSize => "invalid frame block size".fmt(f),
+            Self::ShortBlock => "block size <= 14 must be last in stream".fmt(f),
             Self::BlockSizeMismatch => {
                 "block size in frame larger than maximum block size in STREAMINFO".fmt(f)
             }

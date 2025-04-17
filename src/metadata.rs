@@ -116,7 +116,7 @@ impl FromBitStream for BlockHeader {
 
     fn from_reader<R: BitRead + ?Sized>(r: &mut R) -> Result<Self, Self::Error> {
         Ok(Self {
-            last: r.read_bit()?,
+            last: r.read::<1, _>()?,
             block_type: r.parse()?,
             size: r.parse()?,
         })
@@ -127,7 +127,7 @@ impl ToBitStream for BlockHeader {
     type Error = Error;
 
     fn to_writer<W: BitWrite + ?Sized>(&self, w: &mut W) -> Result<(), Self::Error> {
-        w.write_bit(self.last)?;
+        w.write::<1, _>(self.last)?;
         w.build(&self.block_type)?;
         w.build(&self.size)?;
         Ok(())
