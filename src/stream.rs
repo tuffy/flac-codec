@@ -365,45 +365,37 @@ impl ToBitStream for FrameNumber {
             v @ 0x800..=0xFFFF => {
                 w.write_unary::<0>(3)?;
                 w.write::<4, _>(v >> (6 * 2))?;
-                w.write::<8, _>(byte(v, 1))?;
-                w.write::<8, _>(byte(v, 0))?;
+                w.write::<8, _>([byte(v, 1), byte(v, 0)])?;
                 Ok(())
             }
             v @ 0x1_0000..=0x1F_FFFF => {
                 w.write_unary::<0>(4)?;
                 w.write::<3, _>(v >> (6 * 3))?;
-                w.write::<8, _>(byte(v, 2))?;
-                w.write::<8, _>(byte(v, 1))?;
-                w.write::<8, _>(byte(v, 0))?;
+                w.write::<8, _>([byte(v, 2), byte(v, 1), byte(v, 0)])?;
                 Ok(())
             }
             v @ 0x20_0000..=0x3FF_FFFF => {
                 w.write_unary::<0>(5)?;
                 w.write::<2, _>(v >> (6 * 4))?;
-                w.write::<8, _>(byte(v, 3))?;
-                w.write::<8, _>(byte(v, 2))?;
-                w.write::<8, _>(byte(v, 1))?;
-                w.write::<8, _>(byte(v, 0))?;
+                w.write::<8, _>([byte(v, 3), byte(v, 2), byte(v, 1), byte(v, 0)])?;
                 Ok(())
             }
             v @ 0x400_0000..=0x7FFF_FFFF => {
                 w.write_unary::<0>(6)?;
                 w.write::<1, _>(v >> (6 * 5))?;
-                w.write::<8, _>(byte(v, 4))?;
-                w.write::<8, _>(byte(v, 3))?;
-                w.write::<8, _>(byte(v, 2))?;
-                w.write::<8, _>(byte(v, 1))?;
-                w.write::<8, _>(byte(v, 0))?;
+                w.write::<8, _>([byte(v, 4), byte(v, 3), byte(v, 2), byte(v, 1), byte(v, 0)])?;
                 Ok(())
             }
             v @ 0x8000_0000..=0xF_FFFF_FFFF => {
                 w.write_unary::<0>(7)?;
-                w.write::<8, _>(byte(v, 5))?;
-                w.write::<8, _>(byte(v, 4))?;
-                w.write::<8, _>(byte(v, 3))?;
-                w.write::<8, _>(byte(v, 2))?;
-                w.write::<8, _>(byte(v, 1))?;
-                w.write::<8, _>(byte(v, 0))?;
+                w.write::<8, _>([
+                    byte(v, 5),
+                    byte(v, 4),
+                    byte(v, 3),
+                    byte(v, 2),
+                    byte(v, 1),
+                    byte(v, 0),
+                ])?;
                 Ok(())
             }
             _ => Err(Error::InvalidFrameNumber),
