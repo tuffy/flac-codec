@@ -210,8 +210,7 @@ fn read_subframe<R: BitRead>(
 
     match header.type_ {
         SubframeHeaderType::Constant => {
-            let sample = reader.read_counted(effective_bps)?;
-            channel.iter_mut().for_each(|i| *i = sample);
+            channel.fill(reader.read_counted(effective_bps)?);
         }
         SubframeHeaderType::Verbatim => {
             channel.iter_mut().try_for_each(|i| {
