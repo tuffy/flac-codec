@@ -410,32 +410,16 @@ pub fn read_blocks<R: std::io::Read>(r: R) -> BlockReader<R> {
     BlockReader::new(r)
 }
 
-/// Returns the STREAMINFO block and skips the rest
+/// Returns the STREAMINFO block
 pub fn read_streaminfo<R: std::io::Read>(r: R) -> Result<Option<Streaminfo>, Error> {
-    let mut r = BitReader::endian(r, BigEndian);
-    let mut streaminfo = None;
-
-    let mut tag = [0; 4];
-
-    r.read_bytes(&mut tag)?;
-    if &tag != b"fLaC" {
-        return Err(Error::MissingFlacTag);
-    }
-
-    loop {
-        let block_header = r.parse::<BlockHeader>()?;
-        match block_header.block_type {
-            BlockType::Streaminfo => {
-                streaminfo = Some(r.parse::<Streaminfo>()?);
-            }
-            _ => {
-                r.skip(block_header.size.get() * 8)?;
-            }
-        }
-        if block_header.last {
-            break Ok(streaminfo);
-        }
-    }
+    read_blocks(r)
+        .filter_map(|b| match b {
+            Ok(Block::Streaminfo(streaminfo)) => Some(Ok(streaminfo)),
+            Ok(_) => None,
+            Err(err) => Some(Err(err)),
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map(|mut v| v.pop())
 }
 
 /// Writes iterator of blocks to the given writer.
