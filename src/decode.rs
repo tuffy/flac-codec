@@ -47,7 +47,21 @@ impl<R: std::io::Read> Decoder<R> {
         }
     }
 
+    /// Returns channel count
+    ///
+    /// From 1 to 8
+    pub fn channel_count(&self) -> NonZero<u8> {
+        self.streaminfo.channels
+    }
+
+    /// Returns sample rate, in Hz
+    pub fn sample_rate(&self) -> u32 {
+        self.streaminfo.sample_rate
+    }
+
     /// Returns decoder's bits-per-sample
+    ///
+    /// From 1 to 32
     pub fn bits_per_sample(&self) -> SignedBitCount<32> {
         self.streaminfo.bits_per_sample
     }
@@ -218,11 +232,16 @@ fn read_subframe<R: BitRead>(
                 Ok::<(), Error>(())
             })?;
         }
-        SubframeHeaderType::Fixed(coefficients) => {
-            read_fixed_subframe(reader, effective_bps, coefficients, channel)?;
+        SubframeHeaderType::Fixed { order } => {
+            read_fixed_subframe(
+                reader,
+                effective_bps,
+                SubframeHeaderType::FIXED_COEFFS[order as usize],
+                channel,
+            )?;
         }
-        SubframeHeaderType::Lpc(predictor_order) => {
-            read_lpc_subframe(reader, effective_bps, predictor_order, channel)?;
+        SubframeHeaderType::Lpc { order } => {
+            read_lpc_subframe(reader, effective_bps, order, channel)?;
         }
     }
 

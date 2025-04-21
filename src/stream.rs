@@ -324,7 +324,7 @@ impl ChannelAssignment {
     }
 }
 
-/// A frame number in the stream, as FLAC frames
+/// A frame number in the stream, as FLAC frames or samples
 #[derive(Debug)]
 pub struct FrameNumber(pub u64);
 
@@ -445,7 +445,7 @@ fn test_frame_number() {
 pub struct SubframeHeader {
     /// The subframe header's type
     pub type_: SubframeHeaderType,
-    /// The number of wasted bits-per-sample,
+    /// The number of wasted bits-per-sample
     pub wasted_bps: u32,
 }
 
@@ -490,13 +490,24 @@ pub enum SubframeHeaderType {
     /// All samples as stored verbatim, without compression
     Verbatim,
     /// Samples are stored with one of a set of fixed LPC parameters
-    Fixed(&'static [i64]),
+    Fixed {
+        /// The predictor order, from 0..5
+        order: u8,
+    },
     /// Samples are stored with dynamic LPC parameters
-    Lpc(NonZero<u8>),
+    Lpc {
+        /// The predictor order, from 1..33
+        order: NonZero<u8>,
+    },
 }
 
 impl SubframeHeaderType {
-    const FIXED_COEFFS: [&[i64]; 5] = [&[], &[1], &[2, -1], &[3, -3, 1], &[4, -6, 4, -1]];
+    /// A set of FIXED subframe coefficients
+    ///
+    /// Note that these are in the reverse order from how
+    /// they're usually presented, simply because we'll
+    /// be predicting samples in reverse order.
+    pub const FIXED_COEFFS: [&[i64]; 5] = [&[], &[1], &[2, -1], &[3, -3, 1], &[4, -6, 4, -1]];
 }
 
 impl FromBitStream for SubframeHeaderType {
@@ -506,10 +517,12 @@ impl FromBitStream for SubframeHeaderType {
         match r.read::<6, u8>()? {
             0b000000 => Ok(Self::Constant),
             0b000001 => Ok(Self::Verbatim),
-            v @ 0b001000..=0b001100 => Ok(Self::Fixed(
-                SubframeHeaderType::FIXED_COEFFS[v as usize - 0b001000],
-            )),
-            v @ 0b100000..=0b111111 => Ok(Self::Lpc(NonZero::new(v - 31).unwrap())),
+            v @ 0b001000..=0b001100 => Ok(Self::Fixed {
+                order: v - 0b001000,
+            }),
+            v @ 0b100000..=0b111111 => Ok(Self::Lpc {
+                order: NonZero::new(v - 31).unwrap(),
+            }),
             _ => Err(Error::InvalidSubframeHeaderType),
         }
     }
@@ -522,8 +535,8 @@ impl ToBitStream for SubframeHeaderType {
         w.write::<6, u8>(match self {
             Self::Constant => 0b000000,
             Self::Verbatim => 0b000001,
-            Self::Fixed(coeffs) => 0b001000 + coeffs.len() as u8,
-            Self::Lpc(order) => order.get() + 31,
+            Self::Fixed { order } => 0b001000 + order,
+            Self::Lpc { order } => order.get() + 31,
         })?;
         Ok(())
     }

@@ -54,7 +54,6 @@ impl Frame {
     #[inline]
     pub fn pcm_frames(&self) -> usize {
         self.channel_len
-        // self.samples.len().checked_div(self.channels).unwrap_or_default()
     }
 
     /// Empties frame of its contents and returns it
@@ -74,7 +73,7 @@ impl Frame {
         self.samples.is_empty()
     }
 
-    /// Resizes our frame with the given parameters and returns channel iteraetor
+    /// Resizes our frame with the given parameters and returns channel iterator
     pub fn resize_for(
         &mut self,
         sample_rate: u32,
@@ -90,7 +89,7 @@ impl Frame {
         self.samples.chunks_exact_mut(block_size)
     }
 
-    /// Resizes our frame with the given parameters and returns channel iteraetor
+    /// Resizes our frame for two channels and returns both
     pub fn resize_for_2(
         &mut self,
         sample_rate: u32,
