@@ -11,7 +11,7 @@
 use crate::Error;
 use crate::audio::Frame;
 use crate::metadata::Streaminfo;
-use bitstream_io::{BitCount, BitRead};
+use bitstream_io::{BitCount, BitRead, SignedBitCount};
 use std::num::NonZero;
 
 /// A FLAC decoder
@@ -48,7 +48,7 @@ impl<R: std::io::Read> Decoder<R> {
     }
 
     /// Returns decoder's bits-per-sample
-    pub fn bits_per_sample(&self) -> BitCount<32> {
+    pub fn bits_per_sample(&self) -> SignedBitCount<32> {
         self.streaminfo.bits_per_sample
     }
 
@@ -197,7 +197,7 @@ impl<R: std::io::Read> Decoder<R> {
 
 fn read_subframe<R: BitRead>(
     reader: &mut R,
-    bits_per_sample: BitCount<32>,
+    bits_per_sample: SignedBitCount<32>,
     channel: &mut [i32],
 ) -> Result<(), Error> {
     use crate::stream::{SubframeHeader, SubframeHeaderType};
@@ -210,11 +210,11 @@ fn read_subframe<R: BitRead>(
 
     match header.type_ {
         SubframeHeaderType::Constant => {
-            channel.fill(reader.read_counted(effective_bps)?);
+            channel.fill(reader.read_signed_counted(effective_bps)?);
         }
         SubframeHeaderType::Verbatim => {
             channel.iter_mut().try_for_each(|i| {
-                *i = reader.read_counted(effective_bps)?;
+                *i = reader.read_signed_counted(effective_bps)?;
                 Ok::<(), Error>(())
             })?;
         }
@@ -235,7 +235,7 @@ fn read_subframe<R: BitRead>(
 
 fn read_fixed_subframe<R: BitRead>(
     reader: &mut R,
-    bits_per_sample: BitCount<32>,
+    bits_per_sample: SignedBitCount<32>,
     coefficients: &[i64],
     channel: &mut [i32],
 ) -> Result<(), Error> {
@@ -244,7 +244,7 @@ fn read_fixed_subframe<R: BitRead>(
         .ok_or(Error::InvalidFixedOrder)?;
 
     warm_up.iter_mut().try_for_each(|s| {
-        *s = reader.read_counted(bits_per_sample)?;
+        *s = reader.read_signed_counted(bits_per_sample)?;
         Ok::<_, std::io::Error>(())
     })?;
 
@@ -255,7 +255,7 @@ fn read_fixed_subframe<R: BitRead>(
 
 fn read_lpc_subframe<R: BitRead>(
     reader: &mut R,
-    bits_per_sample: BitCount<32>,
+    bits_per_sample: SignedBitCount<32>,
     predictor_order: NonZero<u8>,
     channel: &mut [i32],
 ) -> Result<(), Error> {
@@ -266,13 +266,14 @@ fn read_lpc_subframe<R: BitRead>(
         .ok_or(Error::InvalidLpcOrder)?;
 
     warm_up.iter_mut().try_for_each(|s| {
-        *s = reader.read_counted(bits_per_sample)?;
+        *s = reader.read_signed_counted(bits_per_sample)?;
         Ok::<_, std::io::Error>(())
     })?;
 
-    let qlp_precision: BitCount<15> = reader
+    let qlp_precision: SignedBitCount<15> = reader
         .read_count::<0b1111>()?
         .checked_add(1)
+        .and_then(|c| c.signed_count())
         .ok_or(Error::InvalidQlpPrecision)?;
 
     let qlp_shift: u32 = reader
@@ -283,7 +284,7 @@ fn read_lpc_subframe<R: BitRead>(
     let coefficients = &mut coefficients[0..predictor_order.get().into()];
 
     coefficients.iter_mut().try_for_each(|c| {
-        *c = reader.read_counted(qlp_precision)?;
+        *c = reader.read_signed_counted(qlp_precision)?;
         Ok::<_, std::io::Error>(())
     })?;
 
@@ -379,15 +380,17 @@ fn read_residuals<R: BitRead>(
 
             if rice == BitCount::new::<{ RICE_MAX }>() {
                 // escaped residuals
-                let escape_size = reader.read_count::<0b11111>()?;
 
-                if escape_size == BitCount::new::<0>() {
-                    partition.fill(0);
-                } else {
-                    partition.iter_mut().try_for_each(|s| {
-                        *s = reader.read_counted(escape_size)?;
-                        Ok::<(), std::io::Error>(())
-                    })?;
+                match reader.read_count::<0b11111>()?.signed_count() {
+                    None => {
+                        partition.fill(0);
+                    }
+                    Some(escape_size) => {
+                        partition.iter_mut().try_for_each(|s| {
+                            *s = reader.read_signed_counted(escape_size)?;
+                            Ok::<(), std::io::Error>(())
+                        })?;
+                    }
                 }
             } else {
                 // regular residuals

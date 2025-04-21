@@ -10,8 +10,8 @@
 
 use crate::Error;
 use bitstream_io::{
-    BigEndian, BitCount, BitRead, BitReader, BitWrite, FromBitStream, FromBitStreamWith,
-    LittleEndian, ToBitStream, ToBitStreamWith,
+    BigEndian, BitRead, BitReader, BitWrite, FromBitStream, FromBitStreamWith, LittleEndian,
+    SignedBitCount, ToBitStream, ToBitStreamWith,
 };
 use std::num::NonZero;
 
@@ -609,7 +609,7 @@ pub struct Streaminfo {
     /// Number of channels
     pub channels: NonZero<u8>,
     /// Number of bits-per-sample, from 4 to 32
-    pub bits_per_sample: BitCount<32>,
+    pub bits_per_sample: SignedBitCount<32>,
     /// Total number of interchannel samples in stream.
     /// `None` indicates the value is unknown.
     pub total_samples: Option<NonZero<u64>>,
@@ -633,7 +633,11 @@ impl FromBitStream for Streaminfo {
             maximum_frame_size: r.read::<24, _>()?,
             sample_rate: r.read::<20, _>()?,
             channels: r.read::<3, _>()?,
-            bits_per_sample: r.read_count::<0b11111>()?.checked_add(1).unwrap(),
+            bits_per_sample: r
+                .read_count::<0b11111>()?
+                .checked_add(1)
+                .and_then(|c| c.signed_count())
+                .unwrap(),
             total_samples: r.read::<36, _>()?,
             md5: r
                 .read_to()
@@ -652,7 +656,12 @@ impl ToBitStream for Streaminfo {
         w.write::<24, _>(self.maximum_frame_size)?;
         w.write::<20, _>(self.sample_rate)?;
         w.write::<3, _>(self.channels)?;
-        w.write_count(self.bits_per_sample.checked_sub::<0b11111>(1).unwrap())?;
+        w.write_count(
+            self.bits_per_sample
+                .checked_sub::<0b11111>(1)
+                .unwrap()
+                .count(),
+        )?;
         w.write::<36, _>(self.total_samples)?;
         w.write_from(self.md5.unwrap_or([0; 16]))?;
         Ok(())

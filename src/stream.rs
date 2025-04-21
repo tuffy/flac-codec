@@ -11,7 +11,8 @@
 use crate::Error;
 use crate::metadata::Streaminfo;
 use bitstream_io::{
-    BitCount, BitRead, BitWrite, FromBitStream, FromBitStreamWith, ToBitStream, ToBitStreamWith,
+    BitRead, BitWrite, FromBitStream, FromBitStreamWith, SignedBitCount, ToBitStream,
+    ToBitStreamWith,
 };
 use std::num::NonZero;
 
@@ -27,7 +28,7 @@ pub struct FrameHeader {
     /// How the channels are assigned
     pub channel_assignment: ChannelAssignment,
     /// The number if bits per output sample
-    pub bits_per_sample: BitCount<32>,
+    pub bits_per_sample: SignedBitCount<32>,
     /// The frame's number in the stream
     pub frame_number: FrameNumber,
 }
@@ -72,7 +73,7 @@ impl FrameHeader {
     fn parse<R: BitRead + ?Sized>(
         r: &mut R,
         non_subset_rate: impl FnOnce() -> Result<u32, Error>,
-        non_subset_bps: impl FnOnce() -> Result<BitCount<32>, Error>,
+        non_subset_bps: impl FnOnce() -> Result<SignedBitCount<32>, Error>,
     ) -> Result<Self, Error> {
         r.read_const::<15, { Self::SYNC_CODE }, _>(Error::InvalidSyncCode)?;
         let blocking_strategy = r.read_bit()?;
@@ -130,13 +131,13 @@ impl FrameHeader {
             },
             bits_per_sample: match encoded_bps {
                 0b000 => non_subset_bps()?,
-                0b001 => BitCount::new::<8>(),
-                0b010 => BitCount::new::<12>(),
+                0b001 => SignedBitCount::new::<8>(),
+                0b010 => SignedBitCount::new::<12>(),
                 0b011 => return Err(Error::InvalidBitsPerSample),
-                0b100 => BitCount::new::<16>(),
-                0b101 => BitCount::new::<20>(),
-                0b110 => BitCount::new::<24>(),
-                0b111 => BitCount::new::<32>(),
+                0b100 => SignedBitCount::new::<16>(),
+                0b101 => SignedBitCount::new::<20>(),
+                0b110 => SignedBitCount::new::<24>(),
+                0b111 => SignedBitCount::new::<32>(),
                 _ => unreachable!(), // 3-bit field
             },
         };
@@ -150,7 +151,7 @@ impl FrameHeader {
         &self,
         w: &mut W,
         non_subset_rate: impl FnOnce() -> Result<u32, Error>,
-        non_subset_bps: impl FnOnce() -> Result<BitCount<32>, Error>,
+        non_subset_bps: impl FnOnce() -> Result<SignedBitCount<32>, Error>,
     ) -> Result<(), Error> {
         w.write_const::<15, { Self::SYNC_CODE }>()?;
 
