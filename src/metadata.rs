@@ -104,7 +104,7 @@ impl BlockHeader {
             last,
             block_type: M::TYPE,
             size: block
-                .bits_len::<BlockBits, BigEndian>()
+                .bits_len::<BlockBits>()
                 .map_err(large_block)?
                 .into(),
         })
