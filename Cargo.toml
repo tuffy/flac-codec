@@ -6,3 +6,4 @@ edition = "2024"
 [dependencies]
 # bitstream-io = "3.1.0"
 bitstream-io = { path = "/mnt/multimedia/code/development/bitstream-io" }
+tempfile = "3.19.1"

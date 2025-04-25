@@ -14,6 +14,7 @@ use bitstream_io::{
     SignedBitCount, ToBitStream, ToBitStreamWith,
 };
 use std::num::NonZero;
+use std::path::Path;
 
 /// A FLAC metadata block header
 #[derive(Debug)]
@@ -103,10 +104,7 @@ impl BlockHeader {
         Ok(Self {
             last,
             block_type: M::TYPE,
-            size: block
-                .bits_len::<BlockBits>()
-                .map_err(large_block)?
-                .into(),
+            size: block.bits_len::<BlockBits>().map_err(large_block)?.into(),
         })
     }
 }
@@ -201,6 +199,19 @@ impl BlockSize {
     }
 }
 
+impl BlockSize {
+    fn checked_add(self, rhs: Self) -> Option<Self> {
+        self.0
+            .checked_add(rhs.0)
+            .filter(|s| *s <= Self::MAX)
+            .map(Self)
+    }
+
+    fn checked_sub(self, rhs: Self) -> Option<Self> {
+        self.0.checked_sub(rhs.0).map(Self)
+    }
+}
+
 impl FromBitStream for BlockSize {
     type Error = std::io::Error;
 
@@ -233,6 +244,15 @@ impl TryFrom<usize> for BlockSize {
     }
 }
 
+impl TryFrom<u64> for BlockSize {
+    type Error = BlockSizeOverflow;
+
+    fn try_from(u: u64) -> Result<Self, Self::Error> {
+        u32::try_from(u)
+            .map_err(|_| BlockSizeOverflow)
+            .and_then(|s| (s <= Self::MAX).then_some(Self(s)).ok_or(BlockSizeOverflow))
+    }
+}
 /// An error that occurs when trying to build an overly large `BlockSize`
 #[derive(Copy, Clone, Debug)]
 pub struct BlockSizeOverflow;
@@ -517,6 +537,188 @@ pub fn write_blocks<'b>(
     })
 }
 
+/// Whether to perform or rollback metadata changes
+pub enum Save {
+    /// Commit changes to disk, if possible
+    Commit,
+    /// Abort changes
+    Rollback,
+}
+
+/// Given a Path, attempts to update FLAC metadata blocks
+///
+/// # Errors
+///
+/// Returns error if unable to read metadata blocks,
+/// unable to write blocks, or if the existing or updated
+/// blocks do not conform to the FLAC file specification.
+pub fn update<P, E>(path: P, f: impl FnOnce(&mut Vec<Block>) -> Result<Save, E>) -> Result<(), E>
+where
+    P: AsRef<Path>,
+    E: From<Error>,
+{
+    use std::cmp::Ordering;
+    use std::fs::OpenOptions;
+    use std::io::{BufReader, BufWriter, Read, Seek, Write, sink};
+
+    struct Counter<F> {
+        stream: F,
+        count: u64,
+    }
+
+    impl<F> Counter<F> {
+        fn new(stream: F) -> Self {
+            Self { stream, count: 0 }
+        }
+    }
+
+    impl<F: Read> Read for Counter<F> {
+        #[inline]
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            self.stream.read(buf).inspect(|bytes| {
+                self.count += u64::try_from(*bytes).unwrap();
+            })
+        }
+    }
+
+    impl<F: Write> Write for Counter<F> {
+        #[inline]
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.stream.write(buf).inspect(|bytes| {
+                self.count += u64::try_from(*bytes).unwrap();
+            })
+        }
+
+        #[inline]
+        fn flush(&mut self) -> std::io::Result<()> {
+            self.stream.flush()
+        }
+    }
+
+    fn rebuild_file<P, R>(p: P, mut r: R, blocks: Vec<Block>) -> Result<(), Error>
+    where
+        P: AsRef<Path>,
+        R: Read,
+    {
+        use std::io::copy;
+
+        // dump our new blocks and remaining FLAC data to temp file
+        let mut tmp = tempfile::tempfile().map_err(Error::Io)?;
+        write_blocks(&blocks, BufWriter::new(Write::by_ref(&mut tmp)))?;
+        copy(&mut r, &mut tmp).map_err(Error::Io)?;
+        drop(r);
+
+        // open original file and rewrite it with tmp file contents
+        tmp.rewind().map_err(Error::Io)?;
+        copy(&mut tmp, &mut std::fs::File::create(p).map_err(Error::Io)?).map_err(Error::Io)?;
+
+        Ok(())
+    }
+
+    /// Returns Ok if successful
+    fn grow_padding(blocks: &mut [Block], more_bytes: u64) -> Result<(), ()> {
+        // if a block set has more than one PADDING, we'll try the first
+        // rather than attempt to grow each in turn
+        //
+        // this is the most common case
+        let padding = blocks
+            .iter_mut()
+            .find_map(|b| match b {
+                Block::Padding(p) => Some(p),
+                _ => None,
+            })
+            .ok_or(())?;
+
+        padding.size = padding
+            .size
+            .checked_add(more_bytes.try_into().map_err(|_| ())?)
+            .ok_or(())?;
+
+        Ok(())
+    }
+
+    /// Returns Ok if successful
+    fn shrink_padding(blocks: &mut [Block], fewer_bytes: u64) -> Result<(), ()> {
+        // if a block set has more than one PADDING, we'll try the first
+        // rather than attempt to grow each in turn
+        //
+        // this is the most common case
+        let padding = blocks
+            .iter_mut()
+            .find_map(|b| match b {
+                Block::Padding(p) => Some(p),
+                _ => None,
+            })
+            .ok_or(())?;
+
+        padding.size = padding
+            .size
+            .checked_sub(fewer_bytes.try_into().map_err(|_| ())?)
+            .ok_or(())?;
+
+        Ok(())
+    }
+
+    let mut file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .create(false)
+        .open(path.as_ref())
+        .map_err(Error::Io)?;
+
+    let mut reader = Counter::new(BufReader::new(Read::by_ref(&mut file)));
+
+    let mut blocks = read_blocks(Read::by_ref(&mut reader)).collect::<Result<Vec<_>, _>>()?;
+
+    let Counter {
+        stream: reader,
+        count: old_size,
+    } = reader;
+
+    if matches!(f(&mut blocks)?, Save::Rollback) {
+        return Ok(());
+    }
+
+    let new_size = {
+        let mut new_size = Counter::new(sink());
+        write_blocks(&blocks, &mut new_size)?;
+        new_size.count
+    };
+
+    match new_size.cmp(&old_size) {
+        Ordering::Less => {
+            // blocks have shrunk in size, so try to expand
+            // PADDING block to hold additional bytes
+            match grow_padding(&mut blocks, old_size - new_size) {
+                Ok(()) => {
+                    file.rewind().map_err(Error::Io)?;
+                    write_blocks(&blocks, BufWriter::new(file))?
+                }
+                Err(()) => rebuild_file(path, reader, blocks)?,
+            }
+            Ok(())
+        }
+        Ordering::Equal => {
+            // blocks are the same size, so no need to adjust padding
+            file.rewind().map_err(Error::Io)?;
+            Ok(write_blocks(&blocks, BufWriter::new(file))?)
+        }
+        Ordering::Greater => {
+            // blocks have grown in size, so try to shrink
+            // PADDING block to hold additional bytes
+            match shrink_padding(&mut blocks, new_size - old_size) {
+                Ok(()) => {
+                    file.rewind().map_err(Error::Io)?;
+                    write_blocks(&blocks, BufWriter::new(file))?
+                }
+                Err(()) => rebuild_file(path, reader, blocks)?,
+            }
+            Ok(())
+        }
+    }
+}
+
 /// Any possible FLAC metadata block
 #[derive(Debug, Clone)]
 pub enum Block {
@@ -672,7 +874,7 @@ impl ToBitStream for Streaminfo {
 #[derive(Debug, Clone)]
 pub struct Padding {
     /// The size of the padding, in bytes
-    pub size: u32,
+    pub size: BlockSize,
 }
 
 impl MetadataBlock for Padding {
@@ -685,7 +887,7 @@ impl FromBitStreamWith<'_> for Padding {
 
     fn from_reader<R: BitRead + ?Sized>(r: &mut R, size: &BlockSize) -> Result<Self, Self::Error> {
         r.skip(size.get() * 8)?;
-        Ok(Self { size: size.get() })
+        Ok(Self { size: *size })
     }
 }
 
@@ -693,7 +895,7 @@ impl ToBitStream for Padding {
     type Error = std::io::Error;
 
     fn to_writer<W: BitWrite + ?Sized>(&self, w: &mut W) -> Result<(), Self::Error> {
-        w.pad(self.size * 8)
+        w.pad(self.size.get() * 8)
     }
 }
 
