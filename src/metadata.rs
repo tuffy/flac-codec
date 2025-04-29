@@ -104,7 +104,7 @@ impl BlockHeader {
         Ok(Self {
             last,
             block_type: M::TYPE,
-            size: block.bits_len::<BlockBits>().map_err(large_block)?.into(),
+            size: block.bits::<BlockBits>().map_err(large_block)?.into(),
         })
     }
 }
@@ -280,7 +280,7 @@ pub struct BlockReader<R: std::io::Read> {
 
 impl<R: std::io::Read> BlockReader<R> {
     /// Creates an iterator over something that implements `Read`.
-    /// Because this can perform many small reads,
+    /// Because this may perform many small reads,
     /// performance is greatly improved by buffering reads
     /// when reading from a raw `File`.
     pub fn new(reader: R) -> Self {
@@ -435,7 +435,7 @@ impl<R: std::io::Read> Iterator for BlockReader<R> {
 /// Returns iterator of blocks from the given reader
 ///
 /// Because this may perform many small reads,
-/// buffering writes may greatly improve performance
+/// using a buffered reader may greatly improve performance
 /// when reading from a raw `File`.
 pub fn read_blocks<R: std::io::Read>(r: R) -> BlockReader<R> {
     BlockReader::new(r)
@@ -600,19 +600,16 @@ where
         P: AsRef<Path>,
         R: Read,
     {
-        use std::io::copy;
-
         // dump our new blocks and remaining FLAC data to temp file
-        let mut tmp = tempfile::tempfile().map_err(Error::Io)?;
-        write_blocks(&blocks, BufWriter::new(Write::by_ref(&mut tmp)))?;
-        copy(&mut r, &mut tmp).map_err(Error::Io)?;
+        let mut tmp = Vec::new();
+        write_blocks(&blocks, &mut tmp)?;
+        std::io::copy(&mut r, &mut tmp).map_err(Error::Io)?;
         drop(r);
 
         // open original file and rewrite it with tmp file contents
-        tmp.rewind().map_err(Error::Io)?;
-        copy(&mut tmp, &mut std::fs::File::create(p).map_err(Error::Io)?).map_err(Error::Io)?;
-
-        Ok(())
+        std::fs::File::create(p)
+            .and_then(|mut f| f.write_all(tmp.as_slice()))
+            .map_err(Error::Io)
     }
 
     /// Returns Ok if successful
@@ -792,6 +789,15 @@ impl ToBitStreamWith<'_> for Block {
 }
 
 /// A STREAMINFO metadata block
+///
+/// # Important
+///
+/// Changing any of these values to something that differs
+/// from the values of the file's frame headers will render it
+/// unplayable, as will moving it anywhere but the first
+/// metadata block in the file.
+/// Avoid modifying the position and contents of this block unless you
+/// know exactly what you are doing.
 #[derive(Debug, Clone)]
 pub struct Streaminfo {
     /// The minimum block size (in samples) used in the stream,
@@ -1055,6 +1061,95 @@ pub struct VorbisComment {
     pub vendor_string: String,
     /// The individual metadata comment strings
     pub fields: Vec<String>,
+}
+
+impl VorbisComment {
+    /// Name of current work
+    pub const TITLE: &str = "TITLE";
+
+    /// Name of the artist generally responsible for the current work
+    pub const ARTIST: &str = "ARTIST";
+
+    /// Name of the collection the current work belongs to
+    pub const ALBUM: &str = "ALBUM";
+
+    /// The channel mask of multi-channel audio streams
+    pub const CHANNEL_MASK: &str = "WAVEFORMATEXTENSIBLE_CHANNEL_MASK";
+
+    /// Given a field name, returns first matching value, if any
+    ///
+    /// Fields are matched case-insensitively
+    pub fn field(&self, field: &str) -> Option<&str> {
+        self.field_values(field).next()
+    }
+
+    /// Given a field name, iterates over any matching values
+    ///
+    /// Fields are matched case-insensitively
+    pub fn field_values(&self, field: &str) -> impl Iterator<Item = &str> {
+        self.fields.iter().filter_map(|f| {
+            f.split_once('=')
+                .and_then(|(key, value)| key.eq_ignore_ascii_case(field).then_some(value))
+        })
+    }
+
+    /// Adds new instance of field with the given value
+    ///
+    /// # Panics
+    ///
+    /// Panics if field contains the `=` character.
+    pub fn append_field<S>(&mut self, field: &str, value: S)
+    where
+        S: std::fmt::Display,
+    {
+        assert!(!field.contains('='), "field must not contain '='");
+
+        self.fields.push(format!("{field}={value}"));
+    }
+
+    /// Removes any matching instances of the given field
+    ///
+    /// Fields are matched case-insensitively
+    pub fn remove_field(&mut self, field: &str) {
+        self.fields.retain(|f| match f.split_once('=') {
+            Some((key, _)) => !key.eq_ignore_ascii_case(field),
+            None => true,
+        });
+    }
+
+    /// Replaces any instances of the given field with value
+    ///
+    /// Fields are matched case-insensitively
+    ///
+    /// # Panics
+    ///
+    /// Panics if field contains the `=` character.
+    pub fn set_field_value<S>(&mut self, field: &str, value: S)
+    where
+        S: std::fmt::Display,
+    {
+        self.remove_field(field);
+        self.append_field(field, value);
+    }
+
+    /// Replaces any instances of the given field with the given values
+    ///
+    /// Fields are matched case-insensitively
+    ///
+    /// # Panics
+    ///
+    /// Panics if field contains the `=` character
+    pub fn set_field_values<S, I>(&mut self, field: &str, values: I)
+    where
+        S: std::fmt::Display,
+        I: IntoIterator<Item = S>,
+    {
+        assert!(!field.contains('='), "field must not contain '='");
+
+        self.remove_field(field);
+        self.fields
+            .extend(values.into_iter().map(|value| format!("{field}={value}")));
+    }
 }
 
 impl MetadataBlock for VorbisComment {
