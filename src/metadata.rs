@@ -1672,6 +1672,8 @@ pub enum InvalidPicture {
     Png(&'static str),
     /// Invalid JPEG File
     Jpeg(&'static str),
+    /// Invalid GIF File
+    Gif(&'static str),
 }
 
 impl From<std::io::Error> for InvalidPicture {
@@ -1690,6 +1692,7 @@ impl std::fmt::Display for InvalidPicture {
             Self::Unsupported => "unsupported image format".fmt(f),
             Self::Png(s) => write!(f, "PNG parsing error : {s}"),
             Self::Jpeg(s) => write!(f, "JPEG parsing error : {s}"),
+            Self::Gif(s) => write!(f, "GIF parsing error : {s}"),
         }
     }
 }
@@ -1708,6 +1711,8 @@ impl PictureMetrics {
             Self::try_png(data)
         } else if data.starts_with(b"\xFF\xD8\xFF") {
             Self::try_jpeg(data)
+        } else if data.starts_with(b"GIF") {
+            Self::try_gif(data)
         } else {
             Err(InvalidPicture::Unsupported)
         }
@@ -1813,5 +1818,23 @@ impl PictureMetrics {
                 }
             }
         }
+    }
+
+    fn try_gif(data: &[u8]) -> Result<Self, InvalidPicture> {
+        let mut r = BitReader::endian(data, LittleEndian);
+
+        if &r.read_to::<[u8; 3]>()? != b"GIF" {
+            return Err(InvalidPicture::Gif("invalid GIF signature"));
+        }
+
+        r.skip(3 * 8)?; // ignore version bytes
+
+        Ok(Self {
+            media_type: "image/gif",
+            width: r.read::<16, _>()?,
+            height: r.read::<16, _>()?,
+            colors_used: 1 << (r.read::<3, u32>()? + 1),
+            color_depth: 0,
+        })
     }
 }

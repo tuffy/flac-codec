@@ -1,7 +1,7 @@
+use flac_codec::metadata::{Picture, PictureType};
+
 #[test]
 fn test_png() {
-    use flac_codec::metadata::{Picture, PictureType};
-
     fn test(width: u32, height: u32, color_depth: u32, colors_used: u32, data: &[u8]) {
         assert_eq!(
             Picture::new(PictureType::FrontCover, String::new(), Vec::from(data)).unwrap(),
@@ -37,8 +37,6 @@ fn test_png() {
 
 #[test]
 fn test_jpeg() {
-    use flac_codec::metadata::{Picture, PictureType};
-
     fn test(width: u32, height: u32, color_depth: u32, data: &[u8]) {
         assert_eq!(
             Picture::new(PictureType::FrontCover, String::new(), Vec::from(data)).unwrap(),
@@ -63,4 +61,27 @@ fn test_jpeg() {
         include_bytes!("data/sample-green-200x200.jpg"),
     );
     test(150, 150, 24, include_bytes!("data/sample-red-400x300.jpg"));
+}
+
+#[test]
+fn test_gif() {
+    fn test(width: u32, height: u32, colors_used: u32, data: &[u8]) {
+        assert_eq!(
+            Picture::new(PictureType::FrontCover, String::new(), Vec::from(data)).unwrap(),
+            Picture {
+                picture_type: PictureType::FrontCover,
+                media_type: "image/gif".to_owned(),
+                description: String::new(),
+                width,
+                height,
+                color_depth: 0,
+                colors_used,
+                data: Vec::from(data),
+            }
+        );
+    }
+
+    test(50, 38, 2, include_bytes!("data/sample-red-100x75.gif"));
+    test(100, 100, 2, include_bytes!("data/sample-green-200x200.gif"));
+    test(200, 150, 2, include_bytes!("data/sample-blue-400x300.gif"));
 }
