@@ -34,3 +34,33 @@ fn test_png() {
     test(32, 32, 64, 0, include_bytes!("data/basn6a16.png"));
     test(8, 8, 24, 0, include_bytes!("data/cdsn2c08.png"));
 }
+
+#[test]
+fn test_jpeg() {
+    use flac_codec::metadata::{Picture, PictureType};
+
+    fn test(width: u32, height: u32, color_depth: u32, data: &[u8]) {
+        assert_eq!(
+            Picture::new(PictureType::FrontCover, String::new(), Vec::from(data)).unwrap(),
+            Picture {
+                picture_type: PictureType::FrontCover,
+                media_type: "image/jpeg".to_owned(),
+                description: String::new(),
+                width,
+                height,
+                color_depth,
+                colors_used: 0,
+                data: Vec::from(data),
+            }
+        );
+    }
+
+    test(49, 37, 24, include_bytes!("data/sample-blue-100x75.jpg"));
+    test(
+        100,
+        100,
+        24,
+        include_bytes!("data/sample-green-200x200.jpg"),
+    );
+    test(150, 150, 24, include_bytes!("data/sample-red-400x300.jpg"));
+}

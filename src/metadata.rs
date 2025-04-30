@@ -1670,6 +1670,8 @@ pub enum InvalidPicture {
     Unsupported,
     /// Invalid PNG File
     Png(&'static str),
+    /// Invalid JPEG File
+    Jpeg(&'static str),
 }
 
 impl From<std::io::Error> for InvalidPicture {
@@ -1687,6 +1689,7 @@ impl std::fmt::Display for InvalidPicture {
             Self::Io(err) => err.fmt(f),
             Self::Unsupported => "unsupported image format".fmt(f),
             Self::Png(s) => write!(f, "PNG parsing error : {s}"),
+            Self::Jpeg(s) => write!(f, "JPEG parsing error : {s}"),
         }
     }
 }
@@ -1703,6 +1706,8 @@ impl PictureMetrics {
     fn try_new(data: &[u8]) -> Result<Self, InvalidPicture> {
         if data.starts_with(b"\x89\x50\x4E\x47\x0D\x0A\x1A\x0A") {
             Self::try_png(data)
+        } else if data.starts_with(b"\xFF\xD8\xFF") {
+            Self::try_jpeg(data)
         } else {
             Err(InvalidPicture::Unsupported)
         }
@@ -1770,5 +1775,43 @@ impl PictureMetrics {
             color_depth,
             colors_used,
         })
+    }
+
+    fn try_jpeg(data: &[u8]) -> Result<Self, InvalidPicture> {
+        let mut r = ByteReader::endian(data, BigEndian);
+
+        if r.read::<u8>()? != 0xFF || r.read::<u8>()? != 0xD8 {
+            return Err(InvalidPicture::Jpeg("invalid JPEG marker"));
+        }
+
+        loop {
+            if r.read::<u8>()? != 0xFF {
+                break Err(InvalidPicture::Jpeg("invalid JPEG marker"));
+            }
+            match r.read::<u8>()? {
+                0xC0 | 0xC1 | 0xC2 | 0xC3 | 0xC5 | 0xC6 | 0xC7 | 0xC9 | 0xCA | 0xCB | 0xCD
+                | 0xCE | 0xCF => {
+                    let _len = r.read::<u16>()?;
+                    let data_precision = r.read::<u8>()?;
+                    let height = r.read::<u16>()?;
+                    let width = r.read::<u16>()?;
+                    let components = r.read::<u8>()?;
+                    break Ok(Self {
+                        media_type: "image/jpeg",
+                        width: width.into(),
+                        height: height.into(),
+                        color_depth: (data_precision * components).into(),
+                        colors_used: 0,
+                    });
+                }
+                _ => {
+                    let segment_length = r
+                        .read::<u16>()?
+                        .checked_sub(2)
+                        .ok_or(InvalidPicture::Jpeg("invalid segment length"))?;
+                    r.skip(segment_length.into())?;
+                }
+            }
+        }
     }
 }
