@@ -441,18 +441,6 @@ pub fn read_blocks<R: std::io::Read>(r: R) -> BlockReader<R> {
     BlockReader::new(r)
 }
 
-/// Returns the STREAMINFO block
-pub fn read_streaminfo<R: std::io::Read>(r: R) -> Result<Option<Streaminfo>, Error> {
-    read_blocks(r)
-        .filter_map(|b| match b {
-            Ok(Block::Streaminfo(streaminfo)) => Some(Ok(streaminfo)),
-            Ok(_) => None,
-            Err(err) => Some(Err(err)),
-        })
-        .collect::<Result<Vec<_>, _>>()
-        .map(|mut v| v.pop())
-}
-
 /// Writes iterator of blocks to the given writer.
 ///
 /// Because this may perform many small writes,
@@ -557,43 +545,10 @@ where
     P: AsRef<Path>,
     E: From<Error>,
 {
+    use crate::Counter;
     use std::cmp::Ordering;
     use std::fs::OpenOptions;
     use std::io::{BufReader, BufWriter, Read, Seek, Write, sink};
-
-    struct Counter<F> {
-        stream: F,
-        count: u64,
-    }
-
-    impl<F> Counter<F> {
-        fn new(stream: F) -> Self {
-            Self { stream, count: 0 }
-        }
-    }
-
-    impl<F: Read> Read for Counter<F> {
-        #[inline]
-        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-            self.stream.read(buf).inspect(|bytes| {
-                self.count += u64::try_from(*bytes).unwrap();
-            })
-        }
-    }
-
-    impl<F: Write> Write for Counter<F> {
-        #[inline]
-        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-            self.stream.write(buf).inspect(|bytes| {
-                self.count += u64::try_from(*bytes).unwrap();
-            })
-        }
-
-        #[inline]
-        fn flush(&mut self) -> std::io::Result<()> {
-            self.stream.flush()
-        }
-    }
 
     fn rebuild_file<P, R>(p: P, mut r: R, blocks: Vec<Block>) -> Result<(), Error>
     where

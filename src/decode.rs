@@ -10,7 +10,7 @@
 
 use crate::Error;
 use crate::audio::Frame;
-use crate::metadata::Streaminfo;
+use crate::metadata::{SeekTable, Streaminfo};
 use bitstream_io::{BitCount, BitRead, SignedBitCount};
 use std::num::NonZero;
 
@@ -18,6 +18,9 @@ use std::num::NonZero;
 pub struct Decoder<R> {
     reader: R,
     streaminfo: Streaminfo,
+    seektable: Option<SeekTable>,
+    // the size of everything before the first frame, in bytes
+    frames_start: u64,
     samples_remaining: Option<u64>,
 }
 
@@ -33,13 +36,33 @@ impl<R: std::io::Read> Decoder<R> {
     /// is invalid or an I/O error occurs reading
     /// the initial metadata.
     pub fn new(mut reader: R) -> Result<Self, Error> {
-        use crate::metadata::read_streaminfo;
+        use crate::Counter;
+        use crate::metadata::{Block, read_blocks};
+        use std::io::Read;
 
-        match read_streaminfo(reader.by_ref())? {
+        let mut streaminfo = None;
+        let mut seektable = None;
+        let mut counter = Counter::new(reader.by_ref());
+
+        for block in read_blocks(counter.by_ref()) {
+            match block? {
+                Block::Streaminfo(block) => {
+                    streaminfo = Some(block);
+                }
+                Block::SeekTable(block) => {
+                    seektable = Some(block);
+                }
+                _ => { /* ignore other blocks */ }
+            }
+        }
+
+        match streaminfo {
             Some(streaminfo) => Ok(Self {
+                frames_start: counter.count,
                 reader,
                 samples_remaining: streaminfo.total_samples.map(|s| s.get()),
                 streaminfo,
+                seektable,
             }),
             // read_blocks should check for this already
             // but we'll add a second check to be certain
@@ -205,6 +228,55 @@ impl<R: std::io::Read> Decoder<R> {
                 Ok(buf)
             }
             false => Err(Error::Crc16Mismatch),
+        }
+    }
+}
+
+impl<R: std::io::Seek> Decoder<R> {
+    /// Attempts to seek to desired sample number
+    ///
+    /// Upon success, returns the actual sample number
+    /// the stream is positioned to, which may be less
+    /// than the desired sample.
+    ///
+    /// # Errors
+    ///
+    /// Passes along an I/O error that occurs when seeking
+    /// within the file.
+    pub fn seek(&mut self, sample: u64) -> Result<u64, Error> {
+        use crate::metadata::SeekPoint;
+        use std::io::SeekFrom;
+
+        match &self.seektable {
+            Some(SeekTable { points: seektable }) => {
+                match seektable
+                    .iter()
+                    .filter(|point| point.sample_offset.unwrap_or(u64::MAX) <= sample)
+                    .last()
+                {
+                    Some(SeekPoint {
+                        sample_offset: Some(sample_offset),
+                        byte_offset,
+                        ..
+                    }) => {
+                        assert!(*sample_offset <= sample);
+                        self.reader
+                            .seek(SeekFrom::Start(self.frames_start + byte_offset))?;
+                        Ok(*sample_offset)
+                    }
+                    _ => {
+                        // empty seektable so rewind to start of stream
+                        self.reader.seek(SeekFrom::Start(self.frames_start))?;
+                        Ok(0)
+                    }
+                }
+            }
+            None => {
+                // no seektable
+                // all we can do is rewind data to start of stream
+                self.reader.seek(SeekFrom::Start(self.frames_start))?;
+                Ok(0)
+            }
         }
     }
 }
