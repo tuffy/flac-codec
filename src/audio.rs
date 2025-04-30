@@ -22,8 +22,6 @@ pub struct Frame {
     // total length of each channel in samples
     channel_len: usize,
 
-    // channel_len = self.samples.len() / self.channels;
-
     // bits-per-sample
     bits_per_sample: u32,
 

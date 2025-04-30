@@ -217,18 +217,17 @@ impl<R: std::io::Read> Decoder<R> {
 
         reader.byte_align();
         reader.skip(16)?; // CRC-16 checksum
-
-        match crc16_reader.into_checksum().valid() {
-            true => {
-                if let Some(remaining) = self.samples_remaining.as_mut() {
-                    *remaining = remaining
-                        .checked_sub(u64::from(header.block_size))
-                        .ok_or(Error::TooManySamples)?;
-                }
-                Ok(buf)
-            }
-            false => Err(Error::Crc16Mismatch),
+        if !crc16_reader.into_checksum().valid() {
+            return Err(Error::Crc16Mismatch);
         }
+
+        if let Some(remaining) = self.samples_remaining.as_mut() {
+            *remaining = remaining
+                .checked_sub(u64::from(header.block_size))
+                .ok_or(Error::TooManySamples)?;
+        }
+
+        Ok(buf)
     }
 }
 
