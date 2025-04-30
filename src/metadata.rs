@@ -10,8 +10,8 @@
 
 use crate::Error;
 use bitstream_io::{
-    BigEndian, BitRead, BitReader, BitWrite, FromBitStream, FromBitStreamWith, LittleEndian,
-    SignedBitCount, ToBitStream, ToBitStreamWith,
+    BigEndian, BitRead, BitReader, BitWrite, ByteRead, ByteReader, FromBitStream,
+    FromBitStreamWith, LittleEndian, SignedBitCount, ToBitStream, ToBitStreamWith,
 };
 use std::num::NonZero;
 use std::path::Path;
@@ -1456,7 +1456,7 @@ impl ToBitStreamWith<'_> for CuesheetIndexPoint {
 }
 
 /// A PICTURE metadata block
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub struct Picture {
     /// The picture type
     pub picture_type: PictureType,
@@ -1478,6 +1478,32 @@ pub struct Picture {
 
 impl MetadataBlock for Picture {
     const TYPE: BlockType = BlockType::Picture;
+}
+
+impl Picture {
+    /// Attempt to create a new PICTURE block from raw image data
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if some problem occurs reading
+    /// or identifying the file.
+    pub fn new(
+        picture_type: PictureType,
+        description: String,
+        data: Vec<u8>,
+    ) -> Result<Self, InvalidPicture> {
+        let metrics = PictureMetrics::try_new(&data)?;
+        Ok(Self {
+            picture_type,
+            description,
+            data,
+            media_type: metrics.media_type.to_owned(),
+            width: metrics.width,
+            height: metrics.height,
+            color_depth: metrics.color_depth,
+            colors_used: metrics.colors_used,
+        })
+    }
 }
 
 impl FromBitStream for Picture {
@@ -1528,7 +1554,7 @@ impl ToBitStream for Picture {
 }
 
 /// Defined variants of PICTURE type
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub enum PictureType {
     /// Other
     Other,
@@ -1631,6 +1657,118 @@ impl ToBitStream for PictureType {
             Self::Illustration => 18,
             Self::BandLogo => 19,
             Self::PublisherLogo => 20,
+        })
+    }
+}
+
+/// An error when trying to identify a picture's metrics
+#[derive(Debug)]
+pub enum InvalidPicture {
+    /// An I/O Error
+    Io(std::io::Error),
+    /// Unsupported Image Format
+    Unsupported,
+    /// Invalid PNG File
+    Png(&'static str),
+}
+
+impl From<std::io::Error> for InvalidPicture {
+    #[inline]
+    fn from(err: std::io::Error) -> Self {
+        Self::Io(err)
+    }
+}
+
+impl std::error::Error for InvalidPicture {}
+
+impl std::fmt::Display for InvalidPicture {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            Self::Io(err) => err.fmt(f),
+            Self::Unsupported => "unsupported image format".fmt(f),
+            Self::Png(s) => write!(f, "PNG parsing error : {s}"),
+        }
+    }
+}
+
+struct PictureMetrics {
+    media_type: &'static str,
+    width: u32,
+    height: u32,
+    color_depth: u32,
+    colors_used: u32,
+}
+
+impl PictureMetrics {
+    fn try_new(data: &[u8]) -> Result<Self, InvalidPicture> {
+        if data.starts_with(b"\x89\x50\x4E\x47\x0D\x0A\x1A\x0A") {
+            Self::try_png(data)
+        } else {
+            Err(InvalidPicture::Unsupported)
+        }
+    }
+
+    fn try_png(data: &[u8]) -> Result<Self, InvalidPicture> {
+        // this is an *extremely* cut-down PNG parser
+        // that handles just enough of the format to get
+        // image metadata, but does *not* validate things
+        // like the block CRC32s
+
+        fn plte_colors<R: ByteRead>(mut r: R) -> Result<u32, InvalidPicture> {
+            loop {
+                let block_len = r.read::<u32>()?;
+                match r.read::<[u8; 4]>()?.as_slice() {
+                    b"PLTE" => {
+                        if block_len % 3 == 0 {
+                            break Ok(block_len / 3);
+                        } else {
+                            break Err(InvalidPicture::Png("invalid PLTE length"));
+                        }
+                    }
+                    _ => {
+                        r.skip(block_len)?;
+                        let _crc = r.read::<u32>()?;
+                    }
+                }
+            }
+        }
+
+        let mut r = ByteReader::endian(data, BigEndian);
+        if &r.read::<[u8; 8]>()? != b"\x89\x50\x4E\x47\x0D\x0A\x1A\x0A" {
+            return Err(InvalidPicture::Png("not a PNG image"));
+        }
+
+        // IHDR chunk must be first
+        if r.read::<u32>()? != 0x0d {
+            return Err(InvalidPicture::Png("invalid IHDR length"));
+        }
+        if &r.read::<[u8; 4]>()? != b"IHDR" {
+            return Err(InvalidPicture::Png("IHDR chunk not first"));
+        }
+        let width = r.read()?;
+        let height = r.read()?;
+        let bit_depth = r.read::<u8>()?;
+        let color_type = r.read::<u8>()?;
+        let _compression_method = r.read::<u8>()?;
+        let _filter_method = r.read::<u8>()?;
+        let _interlace_method = r.read::<u8>()?;
+        let _crc = r.read::<u32>()?;
+
+        let (color_depth, colors_used) = match color_type {
+            0 => (bit_depth.into(), 0),       // grayscale
+            2 => ((bit_depth * 3).into(), 0), // RGB
+            3 => (0, plte_colors(r)?),        // palette
+            4 => ((bit_depth * 2).into(), 0), // grayscale + alpha
+            6 => ((bit_depth * 4).into(), 0), // RGB + alpha
+            _ => return Err(InvalidPicture::Png("invalid color type")),
+        };
+
+        Ok(Self {
+            media_type: "image/png",
+            width,
+            height,
+            color_depth,
+            colors_used,
         })
     }
 }
