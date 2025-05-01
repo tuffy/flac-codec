@@ -799,6 +799,11 @@ pub struct Streaminfo {
     pub md5: Option<[u8; 16]>,
 }
 
+impl Streaminfo {
+    /// The maximum size of a frame, in bytes
+    pub const MAX_FRAME_SIZE: u32 = 1 << 24;
+}
+
 impl MetadataBlock for Streaminfo {
     const TYPE: BlockType = BlockType::Streaminfo;
 }

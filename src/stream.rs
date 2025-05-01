@@ -325,8 +325,21 @@ impl ChannelAssignment {
 }
 
 /// A frame number in the stream, as FLAC frames or samples
-#[derive(Debug)]
+#[derive(Copy, Clone, Debug, Default)]
 pub struct FrameNumber(pub u64);
+
+impl FrameNumber {
+    /// Attempt to increment frame number
+    ///
+    /// # Error
+    ///
+    /// Returns an error if the frame number is too large
+    pub fn try_increment(&mut self) -> Result<(), Error> {
+        // TODO - implement number check
+        self.0 += 1;
+        Ok(())
+    }
+}
 
 impl FromBitStream for FrameNumber {
     type Error = Error;

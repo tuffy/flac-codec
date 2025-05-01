@@ -4,4 +4,5 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-bitstream-io = "4.0.0"
+bitstream-io = "4.0"
+md5 = "0.7"

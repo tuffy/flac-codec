@@ -68,6 +68,16 @@ impl<W, C: Checksum> CrcWriter<W, C> {
     pub fn into_checksum(self) -> C {
         self.checksum
     }
+
+    /// Returns stream's current checksum
+    pub fn checksum(&self) -> C {
+        self.checksum
+    }
+
+    /// Consumes self and returns writer
+    pub fn into_writer(self) -> W {
+        self.writer
+    }
 }
 
 impl<W: std::io::Write, C: Checksum> std::io::Write for CrcWriter<W, C> {
@@ -132,6 +142,13 @@ impl From<Crc8> for u8 {
 /// A frame footer's CRC-16 checksum
 #[derive(Copy, Clone, Default, Debug)]
 pub struct Crc16(u16);
+
+impl From<Crc16> for u16 {
+    #[inline(always)]
+    fn from(Crc16(u): Crc16) -> Self {
+        u
+    }
+}
 
 impl Checksum for Crc16 {
     fn update(self, byte: u8) -> Self {

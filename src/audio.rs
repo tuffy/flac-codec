@@ -109,6 +109,11 @@ impl Frame {
             self.samples[channel * self.channel_len + sample]
         })
     }
+
+    /// Iterates over all channels
+    pub fn channels(&self) -> impl Iterator<Item = &[i32]> {
+        self.samples.chunks_exact(self.channel_len)
+    }
 }
 
 /// Returns given channel's samples
