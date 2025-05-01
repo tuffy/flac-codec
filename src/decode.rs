@@ -89,6 +89,11 @@ impl<R: std::io::Read> Decoder<R> {
         self.streaminfo.bits_per_sample
     }
 
+    /// Returns total number of channel-independent samples, if known
+    pub fn total_samples(&self) -> Option<NonZero<u64>> {
+        self.streaminfo.total_samples
+    }
+
     /// Returns MD5 of entire stream, if known
     pub fn md5(&self) -> Option<&[u8; 16]> {
         self.streaminfo.md5.as_ref()
@@ -217,6 +222,7 @@ impl<R: std::io::Read> Decoder<R> {
 
         reader.byte_align();
         reader.skip(16)?; // CRC-16 checksum
+
         if !crc16_reader.into_checksum().valid() {
             return Err(Error::Crc16Mismatch);
         }
@@ -251,7 +257,7 @@ impl<R: std::io::Seek> Decoder<R> {
                 match seektable
                     .iter()
                     .filter(|point| point.sample_offset.unwrap_or(u64::MAX) <= sample)
-                    .last()
+                    .next_back()
                 {
                     Some(SeekPoint {
                         sample_offset: Some(sample_offset),

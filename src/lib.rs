@@ -15,6 +15,7 @@
 pub mod audio;
 pub mod crc;
 pub mod decode;
+pub mod encode;
 pub mod metadata;
 pub mod stream;
 
@@ -90,6 +91,8 @@ pub enum Error {
     InvalidSampleRate,
     /// Mismatch between frame sample rate and STREAMINFO sample rate
     SampleRateMismatch,
+    /// Excessive channel count
+    ExcessiveChannels,
     /// Invalid frame channel assignment
     InvalidChannels,
     /// Channel count in frame differs from channel count in STREAMINFO
@@ -130,6 +133,8 @@ pub enum Error {
     AccumulatorOverflow,
     /// Too many samples encountered in stream
     TooManySamples,
+    /// Too many samples requested by encoder
+    ExcessiveTotalSamples,
 }
 
 impl From<std::io::Error> for Error {
@@ -189,6 +194,7 @@ impl std::fmt::Display for Error {
             Self::SampleRateMismatch => {
                 "sample rate in frame differs from sample rate in STREAMINFO".fmt(f)
             }
+            Self::ExcessiveChannels => "excessive channel count".fmt(f),
             Self::InvalidChannels => "invalid frame channel assignment".fmt(f),
             Self::ChannelsMismatch => {
                 "channel count in frame differs from channel count in STREAMINFO".fmt(f)
@@ -213,6 +219,7 @@ impl std::fmt::Display for Error {
             Self::NegativeLpcShift => "negative shift in LPC subframe".fmt(f),
             Self::AccumulatorOverflow => "accumulator overflow in LPC subframe".fmt(f),
             Self::TooManySamples => "more samples in stream than indicated in STREAMINFO".fmt(f),
+            Self::ExcessiveTotalSamples => "too many samples requested".fmt(f),
         }
     }
 }

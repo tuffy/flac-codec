@@ -690,6 +690,24 @@ pub enum Block {
     Picture(Picture),
 }
 
+macro_rules! to_block {
+    ($t:ty, $b:ident) => {
+        impl From<$t> for Block {
+            fn from(b: $t) -> Self {
+                Self::$b(b)
+            }
+        }
+    };
+}
+
+to_block!(Streaminfo, Streaminfo);
+to_block!(Padding, Padding);
+to_block!(Application, Application);
+to_block!(SeekTable, SeekTable);
+to_block!(VorbisComment, VorbisComment);
+to_block!(Cuesheet, Cuesheet);
+to_block!(Picture, Picture);
+
 impl FromBitStreamWith<'_> for Block {
     type Context = BlockHeader;
     type Error = Error;
