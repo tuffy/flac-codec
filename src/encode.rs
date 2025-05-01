@@ -37,6 +37,7 @@ impl Default for EncodingOptions {
 pub struct Encoder<W: std::io::Write + std::io::Seek> {
     writer: W,
     options: EncodingOptions,
+    partial_frame: Vec<Vec<i32>>,
     streaminfo: Streaminfo,
     frame_number: FrameNumber,
     samples_written: u64,
@@ -110,6 +111,7 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
         Ok(Self {
             writer,
             options,
+            partial_frame: vec![Vec::new(); streaminfo.channels.get().into()],
             streaminfo,
             frame_number: FrameNumber::default(),
             samples_written: 0,
@@ -170,8 +172,9 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
             self.md5.byte_align()
         })?;
 
-        // TODO - partial frame must also be empty
-        if frame.pcm_frames() % self.options.block_size as usize == 0 {
+        if self.partial_frame[0].is_empty()
+            && frame.pcm_frames() % self.options.block_size as usize == 0
+        {
             let mut buffers = frame.channels().collect::<Vec<_>>();
 
             MultiIterator(
@@ -180,81 +183,69 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
                     .map(|b| b.chunks_exact(self.options.block_size as usize))
                     .collect(),
             )
-            .try_for_each(|frame| self.encode_frame(frame))
+            .try_for_each(|frame| {
+                encode_frame(
+                    &mut self.writer,
+                    &mut self.streaminfo,
+                    &mut self.frame_number,
+                    frame,
+                )
+            })
         } else {
-            // TODO - populate partial frames
-            // TODO - encode any whole frames in partials
-            // TODO - retain any remainder of partials
-            todo!()
-        }
-    }
+            // populate partial frame with more samples
+            let mut buffers = self
+                .partial_frame
+                .iter_mut()
+                .zip(frame.channels())
+                .map(|(partial, new)| {
+                    partial.extend(new);
+                    partial
+                })
+                .collect::<Vec<_>>();
 
-    fn encode_frame(&mut self, frame: Vec<&[i32]>) -> Result<(), Error> {
-        use crate::Counter;
-        use crate::crc::{Crc16, CrcWriter};
-        use crate::stream::{ChannelAssignment, FrameHeader};
-        use bitstream_io::BigEndian;
+            // encode any whole frames in partials
+            MultiIterator(
+                buffers
+                    .iter_mut()
+                    .map(|b| b.chunks_exact(self.options.block_size as usize))
+                    .collect(),
+            )
+            .try_for_each(|frame| {
+                encode_frame(
+                    &mut self.writer,
+                    &mut self.streaminfo,
+                    &mut self.frame_number,
+                    frame,
+                )
+            })?;
 
-        debug_assert!(!frame.is_empty());
+            // retain any remaining samples not converted to FLAC frames
+            let remainder = buffers[0].len() % self.options.block_size as usize;
+            let range = (buffers[0].len() - remainder)..;
 
-        let size = Counter::new(self.writer.by_ref());
-        let mut w: CrcWriter<_, Crc16> = CrcWriter::new(size);
-
-        // TODO - channel assignment may vary
-        FrameHeader {
-            blocking_strategy: false,
-            frame_number: self.frame_number,
-            block_size: frame[0].len() as u16,
-            sample_rate: self.streaminfo.sample_rate,
-            bits_per_sample: self.streaminfo.bits_per_sample,
-            channel_assignment: ChannelAssignment::Independent(frame.len() as u8),
-        }
-        .write(&mut w, &self.streaminfo)?;
-
-        let mut w = BitWriter::endian(w, BigEndian);
-
-        for channel in frame {
-            encode_subframe(w.by_ref(), channel, self.streaminfo.bits_per_sample)?;
-        }
-
-        let crc16: u16 = w.aligned_writer()?.checksum().into();
-        w.write_from(crc16)?;
-
-        self.frame_number.try_increment()?;
-
-        // update minimum and maximum frame size values
-        if let s @ Some(size) = u32::try_from(w.into_writer().into_writer().count)
-            .ok()
-            .filter(|size| *size < Streaminfo::MAX_FRAME_SIZE)
-            .and_then(NonZero::new)
-        {
-            match &mut self.streaminfo.minimum_frame_size {
-                Some(min_size) => {
-                    *min_size = size.min(*min_size);
-                }
-                min_size @ None => {
-                    *min_size = s;
-                }
+            for buffer in buffers {
+                buffer.copy_within(range.clone(), 0);
+                buffer.truncate(remainder);
             }
 
-            match &mut self.streaminfo.maximum_frame_size {
-                Some(max_size) => {
-                    *max_size = size.max(*max_size);
-                }
-                max_size @ None => {
-                    *max_size = s;
-                }
-            }
+            Ok(())
         }
-
-        Ok(())
     }
 
     fn finalize_inner(&mut self) -> Result<(), Error> {
         if !self.finalized {
             self.finalized = true;
 
-            // TODO - output any partial frame
+            // output any remaining partial frame
+            if !self.partial_frame[0].is_empty() {
+                encode_frame(
+                    &mut self.writer,
+                    &mut self.streaminfo,
+                    &mut self.frame_number,
+                    self.partial_frame.iter().map(|s| s.as_slice()).collect(),
+                )?;
+            }
+
             // TODO - update seektable
 
             match &mut self.streaminfo.total_samples {
@@ -305,6 +296,75 @@ impl<W: std::io::Write + std::io::Seek> Drop for Encoder<W> {
     fn drop(&mut self) {
         let _ = self.finalize_inner();
     }
+}
+
+fn encode_frame<W>(
+    mut writer: W,
+    streaminfo: &mut Streaminfo,
+    frame_number: &mut FrameNumber,
+    frame: Vec<&[i32]>,
+) -> Result<(), Error>
+where
+    W: std::io::Write,
+{
+    use crate::Counter;
+    use crate::crc::{Crc16, CrcWriter};
+    use crate::stream::{ChannelAssignment, FrameHeader};
+    use bitstream_io::BigEndian;
+
+    debug_assert!(!frame.is_empty());
+
+    let size = Counter::new(writer.by_ref());
+    let mut w: CrcWriter<_, Crc16> = CrcWriter::new(size);
+
+    // TODO - channel assignment may vary
+    FrameHeader {
+        blocking_strategy: false,
+        frame_number: *frame_number,
+        block_size: frame[0].len() as u16,
+        sample_rate: streaminfo.sample_rate,
+        bits_per_sample: streaminfo.bits_per_sample,
+        channel_assignment: ChannelAssignment::Independent(frame.len() as u8),
+    }
+    .write(&mut w, &streaminfo)?;
+
+    let mut w = BitWriter::endian(w, BigEndian);
+
+    for channel in frame {
+        encode_subframe(w.by_ref(), channel, streaminfo.bits_per_sample)?;
+    }
+
+    let crc16: u16 = w.aligned_writer()?.checksum().into();
+    w.write_from(crc16)?;
+
+    frame_number.try_increment()?;
+
+    // update minimum and maximum frame size values
+    if let s @ Some(size) = u32::try_from(w.into_writer().into_writer().count)
+        .ok()
+        .filter(|size| *size < Streaminfo::MAX_FRAME_SIZE)
+        .and_then(NonZero::new)
+    {
+        match &mut streaminfo.minimum_frame_size {
+            Some(min_size) => {
+                *min_size = size.min(*min_size);
+            }
+            min_size @ None => {
+                *min_size = s;
+            }
+        }
+
+        match &mut streaminfo.maximum_frame_size {
+            Some(max_size) => {
+                *max_size = size.max(*max_size);
+            }
+            max_size @ None => {
+                *max_size = s;
+            }
+        }
+    }
+
+    Ok(())
 }
 
 fn encode_subframe<W: BitWrite>(
