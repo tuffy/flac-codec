@@ -147,7 +147,13 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
         }
 
         // sanity-check that frame's parameters match encoder's
-        // TODO
+        if frame.channel_count() != self.streaminfo.channels.get().into() {
+            return Err(Error::ChannelsMismatch);
+        } else if frame.bits_per_sample() != self.streaminfo.bits_per_sample.into() {
+            return Err(Error::BitsPerSampleMismatch);
+        } else if frame.sample_rate() != self.streaminfo.sample_rate {
+            return Err(Error::SampleRateMismatch);
+        }
 
         // update running total of samples written
         self.samples_written += frame.pcm_frames() as u64;
