@@ -213,18 +213,19 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
     /// Creates new encoder with the given parameters
     ///
     /// `sample_rate` must be between 0 (for non-audio streams)
-    /// and 1048576 (a 20 bit field).
+    /// and 1,048,576 (a 20 bit field).
     ///
     /// `bits_per_sample` must be between 1 and 32.
     ///
     /// `channels` must be between 1 and 8.
     ///
     /// `total_samples`, if known, must be between
-    /// 1 and 68_719_476_736 (a 36 bit field).
+    /// 1 and 68,719,476,736 (a 36 bit field).
     ///
     /// Note that if `total_samples` is indicated,
-    /// the number written *must* be equal to that value
-    /// or an error will occur when writing or finalizing the stream.
+    /// the number of channel-independent samples written *must*
+    /// be equal to that amount or an error will occur when writing
+    /// or finalizing the stream.
     ///
     /// # Errors
     ///
