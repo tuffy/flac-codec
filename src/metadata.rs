@@ -24,7 +24,9 @@ pub struct BlockHeader {
     size: BlockSize,
 }
 
-trait MetadataBlock: ToBitStream<Error: Into<Error>> {
+/// A type of FLAC metadata block
+pub trait MetadataBlock: ToBitStream<Error: Into<Error>> {
+    /// The metadata block's type
     const TYPE: BlockType;
 }
 
@@ -133,7 +135,7 @@ impl ToBitStream for BlockHeader {
 }
 
 /// A defined FLAC metadata block type
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, Ord, PartialOrd, Eq, PartialEq)]
 pub enum BlockType {
     /// The STREAMINFO block
     Streaminfo,
@@ -452,8 +454,8 @@ pub fn read_blocks<R: std::io::Read>(r: R) -> BlockReader<R> {
 /// Passes along any I/O errors from the underlying stream.
 /// May also generate an error if any of the blocks are invalid
 /// (e.g. STREAMINFO not being the first block, any block is too large, etc.).
-pub fn write_blocks<'b>(
-    blocks: impl IntoIterator<Item = &'b Block>,
+pub fn write_blocks<B: AsBlockRef>(
+    blocks: impl IntoIterator<Item = B>,
     mut w: impl std::io::Write,
 ) -> Result<(), Error> {
     fn iter_last<T>(i: impl Iterator<Item = T>) -> impl Iterator<Item = (bool, T)> {
@@ -480,8 +482,9 @@ pub fn write_blocks<'b>(
     let mut blocks = iter_last(blocks.into_iter());
 
     // STREAMINFO block must be present and must be first in file
-    match blocks.next() {
-        Some((last, streaminfo @ Block::Streaminfo(_))) => w.build_with(streaminfo, &last)?,
+    let next = blocks.next();
+    match next.as_ref().map(|(last, b)| (last, b.as_block_ref())) {
+        Some((last, streaminfo @ BlockRef::Streaminfo(_))) => w.build_with(&streaminfo, last)?,
         _ => return Err(Error::MissingStreaminfo),
     }
 
@@ -490,38 +493,38 @@ pub fn write_blocks<'b>(
     let mut png_read = false;
     let mut icon_read = false;
 
-    blocks.try_for_each(|(last, block)| match block {
-        Block::Streaminfo(_) => Err(Error::MultipleStreaminfo),
-        seektable @ Block::SeekTable(_) => match seektable_read {
+    blocks.try_for_each(|(last, block)| match block.as_block_ref() {
+        BlockRef::Streaminfo(_) => Err(Error::MultipleStreaminfo),
+        seektable @ BlockRef::SeekTable(_) => match seektable_read {
             false => {
                 seektable_read = true;
-                w.build_with(seektable, &last)
+                w.build_with(&seektable.as_block_ref(), &last)
             }
             true => Err(Error::MultipleSeekTable),
         },
-        picture @ Block::Picture(Picture {
+        picture @ BlockRef::Picture(Picture {
             picture_type: PictureType::Png32x32,
             ..
         }) => {
             if !png_read {
                 png_read = true;
-                w.build_with(picture, &last)
+                w.build_with(&picture.as_block_ref(), &last)
             } else {
                 Err(Error::MultiplePngIcon)
             }
         }
-        picture @ Block::Picture(Picture {
+        picture @ BlockRef::Picture(Picture {
             picture_type: PictureType::GeneralFileIcon,
             ..
         }) => {
             if !icon_read {
                 icon_read = true;
-                w.build_with(picture, &last)
+                w.build_with(&picture.as_block_ref(), &last)
             } else {
                 Err(Error::MultipleGeneralIcon)
             }
         }
-        block => w.build_with(block, &last),
+        block => w.build_with(&block.as_block_ref(), &last),
     })
 }
 
@@ -690,6 +693,20 @@ pub enum Block {
     Picture(Picture),
 }
 
+impl AsBlockRef for Block {
+    fn as_block_ref(&self) -> BlockRef<'_> {
+        match self {
+            Self::Streaminfo(s) => BlockRef::Streaminfo(s),
+            Self::Padding(p) => BlockRef::Padding(p),
+            Self::Application(a) => BlockRef::Application(a),
+            Self::SeekTable(s) => BlockRef::SeekTable(s),
+            Self::VorbisComment(v) => BlockRef::VorbisComment(v),
+            Self::Cuesheet(v) => BlockRef::Cuesheet(v),
+            Self::Picture(p) => BlockRef::Picture(p),
+        }
+    }
+}
+
 macro_rules! to_block {
     ($t:ty, $b:ident) => {
         impl From<$t> for Block {
@@ -757,6 +774,133 @@ impl ToBitStreamWith<'_> for Block {
             Self::Picture(picture) => w
                 .build(&BlockHeader::new(*is_last, picture)?)
                 .and_then(|()| w.build(picture)),
+        }
+    }
+}
+
+/// A shared reference to a metadata block
+#[derive(Debug, Copy, Clone)]
+pub enum BlockRef<'b> {
+    /// The STREAMINFO block
+    Streaminfo(&'b Streaminfo),
+    /// The PADDING block
+    Padding(&'b Padding),
+    /// The APPLICATION block
+    Application(&'b Application),
+    /// The SEEKTABLE block
+    SeekTable(&'b SeekTable),
+    /// The VORBIS_COMMENT block
+    VorbisComment(&'b VorbisComment),
+    /// The CUESHEET block
+    Cuesheet(&'b Cuesheet),
+    /// The PICTURE block
+    Picture(&'b Picture),
+}
+
+impl AsBlockRef for BlockRef<'_> {
+    fn as_block_ref(&self) -> BlockRef<'_> {
+        *self
+    }
+}
+
+macro_rules! as_block_ref {
+    ($t:ty, $b:ident) => {
+        impl AsBlockRef for $t {
+            fn as_block_ref(&self) -> BlockRef<'_> {
+                BlockRef::$b(self)
+            }
+        }
+    };
+}
+
+as_block_ref!(Streaminfo, Streaminfo);
+as_block_ref!(Padding, Padding);
+as_block_ref!(Application, Application);
+as_block_ref!(SeekTable, SeekTable);
+as_block_ref!(VorbisComment, VorbisComment);
+as_block_ref!(Cuesheet, Cuesheet);
+as_block_ref!(Picture, Picture);
+
+/// A trait for items which can make cheap [`BlockRef`] values.
+pub trait AsBlockRef {
+    /// Returns fresh reference to ourself.
+    fn as_block_ref(&self) -> BlockRef<'_>;
+}
+
+impl<T: AsBlockRef> AsBlockRef for &T {
+    fn as_block_ref(&self) -> BlockRef<'_> {
+        <T as AsBlockRef>::as_block_ref(*self)
+    }
+}
+
+impl ToBitStreamWith<'_> for BlockRef<'_> {
+    type Context = bool;
+    type Error = Error;
+
+    // builds to writer with header
+    fn to_writer<W: BitWrite + ?Sized>(&self, w: &mut W, is_last: &bool) -> Result<(), Error> {
+        match self {
+            Self::Streaminfo(streaminfo) => w
+                .build(&BlockHeader::new(*is_last, *streaminfo)?)
+                .and_then(|()| w.build(*streaminfo).map_err(Error::Io)),
+            Self::Padding(padding) => w
+                .build(&BlockHeader::new(*is_last, *padding)?)
+                .and_then(|()| w.build(*padding).map_err(Error::Io)),
+            Self::Application(application) => w
+                .build(&BlockHeader::new(*is_last, *application)?)
+                .and_then(|()| w.build(*application).map_err(Error::Io)),
+            Self::SeekTable(seektable) => w
+                .build(&BlockHeader::new(*is_last, *seektable)?)
+                .and_then(|()| w.build(*seektable)),
+            Self::VorbisComment(vorbis_comment) => w
+                .build(&BlockHeader::new(*is_last, *vorbis_comment)?)
+                .and_then(|()| w.build(*vorbis_comment)),
+            Self::Cuesheet(cuesheet) => w
+                .build(&BlockHeader::new(*is_last, *cuesheet)?)
+                .and_then(|()| w.build(*cuesheet)),
+            Self::Picture(picture) => w
+                .build(&BlockHeader::new(*is_last, *picture)?)
+                .and_then(|()| w.build(*picture)),
+        }
+    }
+}
+
+/// Any possible FLAC metadata block set
+///
+/// Certain metadata blocks may occur multiple times
+/// within a FLAC metadata block list, while others
+/// may only occur once.  This enforces that restriction
+/// at the type level.
+pub enum BlockSet {
+    /// STREAMINFO may only occur once
+    Streaminfo(Streaminfo),
+    /// PADDING may occur multiple times
+    Padding(Vec<Padding>),
+    /// APPLICATION may occur multiple times
+    Application(Vec<Application>),
+    /// SEEKTABLE may only occur once
+    SeekTable(SeekTable),
+    /// VORBIS_COMMENT may only occur once
+    VorbisComment(VorbisComment),
+    /// CUESHEET may occur multiple times
+    Cuesheet(Vec<Cuesheet>),
+    /// PICTURE may occur multiple times
+    Picture(Vec<Picture>),
+}
+
+impl BlockSet {
+    /// Iterates over all blocks in set
+    pub fn iter(&self) -> Box<dyn Iterator<Item = BlockRef<'_>> + '_> {
+        use std::iter::once;
+
+        match self {
+            Self::Streaminfo(s) => Box::new(once(BlockRef::Streaminfo(s))),
+            Self::Padding(p) => Box::new(p.iter().map(BlockRef::Padding)),
+            Self::Application(a) => Box::new(a.iter().map(BlockRef::Application)),
+            Self::SeekTable(s) => Box::new(once(BlockRef::SeekTable(s))),
+            Self::VorbisComment(v) => Box::new(once(BlockRef::VorbisComment(v))),
+            Self::Cuesheet(c) => Box::new(c.iter().map(BlockRef::Cuesheet)),
+            Self::Picture(p) => Box::new(p.iter().map(BlockRef::Picture)),
         }
     }
 }
@@ -1039,6 +1183,16 @@ pub struct VorbisComment {
     pub vendor_string: String,
     /// The individual metadata comment strings
     pub fields: Vec<String>,
+}
+
+impl Default for VorbisComment {
+    fn default() -> Self {
+        Self {
+            vendor_string: concat!(env!("CARGO_PKG_NAME"), " ", env!("CARGO_PKG_VERSION"))
+                .to_owned(),
+            fields: vec![],
+        }
+    }
 }
 
 impl VorbisComment {

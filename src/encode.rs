@@ -10,26 +10,188 @@
 
 use crate::Error;
 use crate::audio::Frame;
-use crate::metadata::{Streaminfo, write_blocks};
+use crate::metadata::{
+    Application, BlockSet, BlockSize, BlockType, Cuesheet, MetadataBlock, Picture, Streaminfo,
+    VorbisComment, write_blocks,
+};
 use crate::stream::FrameNumber;
 use bitstream_io::{BitWrite, BitWriter, LittleEndian, SignedBitCount};
+use std::collections::BTreeMap;
+use std::collections::btree_map::Entry;
 use std::num::NonZero;
 
 /// FLAC encoding options
 pub struct EncodingOptions {
     block_size: u16,
+    metadata: BTreeMap<BlockType, BlockSet>,
 }
 
 impl EncodingOptions {
-    /// Assigns new block size to options
+    /// Overrides default encoding block size of 4096 samples
     pub fn block_size(self, block_size: u16) -> Self {
-        Self { block_size }
+        // TODO - enforce minimum block size
+        Self { block_size, ..self }
+    }
+
+    /// Adds new PADDING block to metadata
+    ///
+    /// Files may contain multiple PADDING blocks,
+    /// and this adds a new block each time it is used.
+    ///
+    /// The default is to not add any padding to the output file,
+    /// which may be inconvenient if one wishes to modify metadata
+    /// later since it will likely require rewriting the whole file
+    /// instead of only metadata blocks.
+    pub fn padding<B: Into<BlockSize>>(mut self, size: B) -> Self {
+        use crate::metadata::Padding;
+
+        match self.metadata.entry(Padding::TYPE) {
+            Entry::Occupied(o) => {
+                match o.into_mut() {
+                    BlockSet::Padding(v) => {
+                        v.push(Padding { size: size.into() });
+                    }
+                    _ => {
+                        // this shouldn't happen
+                        panic!("Padding blockset not associated with Padding type");
+                    }
+                }
+            }
+            Entry::Vacant(v) => {
+                v.insert(BlockSet::Padding(vec![Padding { size: size.into() }]));
+            }
+        }
+
+        self
+    }
+
+    /// Adds new tag to comment metadata block
+    ///
+    /// Creates new comment block if not already present.
+    pub fn tag<S>(mut self, field: &str, value: S) -> Self
+    where
+        S: std::fmt::Display,
+    {
+        match self.metadata.entry(VorbisComment::TYPE) {
+            Entry::Occupied(o) => match o.into_mut() {
+                BlockSet::VorbisComment(c) => {
+                    c.append_field(field, value);
+                }
+                _ => {
+                    panic!("VorbisComment blockset not associated with VorbisComment type")
+                }
+            },
+            Entry::Vacant(v) => {
+                let mut comment = VorbisComment::default();
+                comment.append_field(field, value);
+                v.insert(BlockSet::VorbisComment(comment));
+            }
+        }
+
+        self
+    }
+
+    /// Replaces entire VORBIS COMMENT metadata block
+    ///
+    /// This may be more convenient when adding many fields at once.
+    pub fn comment(mut self, comment: VorbisComment) -> Self {
+        match self.metadata.entry(VorbisComment::TYPE) {
+            Entry::Occupied(o) => {
+                *o.into_mut() = BlockSet::VorbisComment(comment);
+            }
+            Entry::Vacant(v) => {
+                v.insert(BlockSet::VorbisComment(comment));
+            }
+        }
+
+        self
+    }
+
+    /// Add new PICTURE block to metadata
+    ///
+    /// Files may contain multiple PICTURE blocks,
+    /// and this adds a new block each time it is used.
+    pub fn picture(mut self, picture: Picture) -> Self {
+        match self.metadata.entry(Picture::TYPE) {
+            Entry::Occupied(o) => {
+                match o.into_mut() {
+                    BlockSet::Picture(v) => {
+                        v.push(picture);
+                    }
+                    _ => {
+                        // this shouldn't happen
+                        panic!("Picture blockset not associated with Picture type");
+                    }
+                }
+            }
+            Entry::Vacant(v) => {
+                v.insert(BlockSet::Picture(vec![picture]));
+            }
+        }
+
+        self
+    }
+
+    /// Add new CUESHEET block to metadata
+    ///
+    /// Files may (theoretically) contain multiple CUESHEET blocks,
+    /// and this adds a new block each time it is used.
+    ///
+    /// In practice, CD images almost always use only a single
+    /// cue sheet.
+    pub fn cuesheet(mut self, cuesheet: Cuesheet) -> Self {
+        match self.metadata.entry(Cuesheet::TYPE) {
+            Entry::Occupied(o) => {
+                match o.into_mut() {
+                    BlockSet::Cuesheet(v) => {
+                        v.push(cuesheet);
+                    }
+                    _ => {
+                        // this shouldn't happen
+                        panic!("Cuesheet blockset not associated with Cuesheet type");
+                    }
+                }
+            }
+            Entry::Vacant(v) => {
+                v.insert(BlockSet::Cuesheet(vec![cuesheet]));
+            }
+        }
+
+        self
+    }
+
+    /// Add new APPLICATION block to metadata
+    ///
+    /// Files may contain multiple APPLICATION blocks,
+    /// and this adds a new block each time it is used.
+    pub fn application(mut self, application: Application) -> Self {
+        match self.metadata.entry(Application::TYPE) {
+            Entry::Occupied(o) => {
+                match o.into_mut() {
+                    BlockSet::Application(v) => {
+                        v.push(application);
+                    }
+                    _ => {
+                        // this shouldn't happen
+                        panic!("Application blockset not associated with Application type");
+                    }
+                }
+            }
+            Entry::Vacant(v) => {
+                v.insert(BlockSet::Application(vec![application]));
+            }
+        }
+
+        self
     }
 }
 
 impl Default for EncodingOptions {
     fn default() -> Self {
-        Self { block_size: 4096 }
+        Self {
+            block_size: 4096,
+            metadata: BTreeMap::default(),
+        }
     }
 }
 
@@ -77,6 +239,8 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
         channels: NonZero<u8>,
         total_samples: Option<NonZero<u64>>,
     ) -> Result<Self, Error> {
+        use crate::metadata::AsBlockRef;
+
         let streaminfo = Streaminfo {
             minimum_block_size: options.block_size,
             maximum_block_size: options.block_size,
@@ -103,10 +267,11 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
             md5: None,
         };
 
-        // TODO - include SEEKTABLE block
-        // TODO - include PADDING block, if requested
-
-        write_blocks(std::iter::once(&streaminfo.clone().into()), writer.by_ref())?;
+        write_blocks(
+            std::iter::once(streaminfo.as_block_ref())
+                .chain(options.metadata.values().flat_map(|v| v.iter())),
+            writer.by_ref(),
+        )?;
 
         Ok(Self {
             writer,
@@ -234,6 +399,8 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
 
     fn finalize_inner(&mut self) -> Result<(), Error> {
         if !self.finalized {
+            use crate::metadata::AsBlockRef;
+
             self.finalized = true;
 
             // output any remaining partial frame
@@ -269,7 +436,8 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
             self.writer.rewind()?;
 
             write_blocks(
-                std::iter::once(&self.streaminfo.clone().into()),
+                std::iter::once(self.streaminfo.as_block_ref())
+                    .chain(self.options.metadata.values().flat_map(|v| v.iter())),
                 self.writer.by_ref(),
             )
         } else {
@@ -326,7 +494,7 @@ where
         bits_per_sample: streaminfo.bits_per_sample,
         channel_assignment: ChannelAssignment::Independent(frame.len() as u8),
     }
-    .write(&mut w, &streaminfo)?;
+    .write(&mut w, streaminfo)?;
 
     let mut w = BitWriter::endian(w, BigEndian);
 
