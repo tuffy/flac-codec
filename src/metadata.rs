@@ -490,11 +490,19 @@ pub fn write_blocks<B: AsBlockRef>(
 
     // certain other blocks in the file must only occur once at most
     let mut seektable_read = false;
+    let mut vorbiscomment_read = false;
     let mut png_read = false;
     let mut icon_read = false;
 
     blocks.try_for_each(|(last, block)| match block.as_block_ref() {
         BlockRef::Streaminfo(_) => Err(Error::MultipleStreaminfo),
+        vorbiscomment @ BlockRef::VorbisComment(_) => match vorbiscomment_read {
+            false => {
+                vorbiscomment_read = true;
+                w.build_with(&vorbiscomment.as_block_ref(), &last)
+            }
+            true => Err(Error::MultipleVorbisComment),
+        },
         seektable @ BlockRef::SeekTable(_) => match seektable_read {
             false => {
                 seektable_read = true;

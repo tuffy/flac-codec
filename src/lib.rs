@@ -178,14 +178,14 @@ impl std::fmt::Display for Error {
             Self::MultipleGeneralIcon => "multiple general file icons in PICTURE blocks".fmt(f),
             Self::ReservedMetadataBlock => "reserved metadata block".fmt(f),
             Self::InvalidMetadataBlock => "invalid metadata block".fmt(f),
-            Self::InvalidMetadataBlockSize => "invalid metadat block size".fmt(f),
+            Self::InvalidMetadataBlockSize => "invalid metadata block size".fmt(f),
             Self::InsufficientApplicationBlock => "APPLICATION block too small for data".fmt(f),
             Self::ExcessiveVorbisEntries => "excessive number of VORBIS_COMMENT entries".fmt(f),
             Self::ExcessiveStringLength => "excessive string length".fmt(f),
             Self::ExcessivePictureSize => "excessive PICTURE data size".fmt(f),
-            Self::ExcessiveCuesheetTracks => "excessuve number of CUESHEET tracks".fmt(f),
+            Self::ExcessiveCuesheetTracks => "excessive number of CUESHEET tracks".fmt(f),
             Self::ExcessiveCuesheetIndexPoints => {
-                "excessuve number of CUESHEET track index points".fmt(f)
+                "excessive number of CUESHEET track index points".fmt(f)
             }
             Self::ExcessiveBlockSize => "excessive metadata block size".fmt(f),
             Self::InvalidSyncCode => "invalid frame sync code".fmt(f),
