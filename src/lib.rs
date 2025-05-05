@@ -239,6 +239,10 @@ impl<F> Counter<F> {
     fn new(stream: F) -> Self {
         Self { stream, count: 0 }
     }
+
+    fn stream(&mut self) -> &mut F {
+        &mut self.stream
+    }
 }
 
 impl<F: std::io::Read> std::io::Read for Counter<F> {

@@ -8,13 +8,13 @@
 
 //! For encoding PCM samples to FLAC files
 
-use crate::Error;
 use crate::audio::Frame;
 use crate::metadata::{
-    Application, BlockSet, BlockSize, BlockType, Cuesheet, MetadataBlock, Picture, Streaminfo,
-    VorbisComment, write_blocks,
+    Application, BlockSet, BlockSize, BlockType, Cuesheet, MetadataBlock, Picture, SeekPoint,
+    Streaminfo, VorbisComment, write_blocks,
 };
 use crate::stream::FrameNumber;
+use crate::{Counter, Error};
 use bitstream_io::{BitWrite, BitWriter, LittleEndian, SignedBitCount};
 use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
@@ -24,6 +24,12 @@ use std::num::NonZero;
 pub struct EncodingOptions {
     block_size: u16,
     metadata: BTreeMap<BlockType, BlockSet>,
+    seektable_style: Option<SeektableStyle>,
+}
+
+enum SeektableStyle {
+    // Generate seekpoint every nth amount of samples
+    Samples(u64),
 }
 
 impl EncodingOptions {
@@ -184,6 +190,18 @@ impl EncodingOptions {
 
         self
     }
+
+    /// Generate SEEKTABLE with the given number of samples between seek points
+    ///
+    /// The interval between seek points may be larger than requested
+    /// if the encoder's block size is larger than the seekpoint interval.
+    pub fn seektable_samples(mut self, samples: u64) -> Self {
+        // note that we can't drop a placeholder seektable
+        // into the metadata blocks until we know
+        // the sample rate and total samples of our stream
+        self.seektable_style = Some(SeektableStyle::Samples(samples));
+        self
+    }
 }
 
 impl Default for EncodingOptions {
@@ -191,19 +209,30 @@ impl Default for EncodingOptions {
         Self {
             block_size: 4096,
             metadata: BTreeMap::default(),
+            seektable_style: None,
         }
     }
 }
 
 /// A FLAC encoder
 pub struct Encoder<W: std::io::Write + std::io::Seek> {
-    writer: W,
+    // the writer we're outputting to
+    writer: Counter<W>,
+    // various encoding options
     options: EncodingOptions,
+    // a partial frame of PCM samples, divided by channels and then samples
     partial_frame: Vec<Vec<i32>>,
+    // our STREAMINFO block information
     streaminfo: Streaminfo,
+    // the current frame number
     frame_number: FrameNumber,
+    // the number of channel-independent samples written
     samples_written: u64,
+    // all seekpoints
+    seekpoints: Vec<SeekPoint>,
+    // our running MD5 calculation
     md5: BitWriter<md5::Context, LittleEndian>,
+    // whether the encoder has finalized the file
     finalized: bool,
 }
 
@@ -234,7 +263,7 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
     /// Returns error if any of the encoding parameters are invalid.
     pub fn new(
         mut writer: W,
-        options: EncodingOptions,
+        mut options: EncodingOptions,
         sample_rate: u32,
         bits_per_sample: impl TryInto<SignedBitCount<32>>,
         channels: NonZero<u8>,
@@ -268,6 +297,35 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
             md5: None,
         };
 
+        // insert a dummy SeekTable to be populated later
+        match options.seektable_style {
+            Some(SeektableStyle::Samples(samples)) => {
+                if let Some(total_samples) = total_samples {
+                    use crate::metadata::SeekTable;
+
+                    options.metadata.insert(
+                        BlockType::SeekTable,
+                        BlockSet::SeekTable(SeekTable {
+                            points: vec![
+                                SeekPoint {
+                                    sample_offset: None,
+                                    byte_offset: 0,
+                                    frame_samples: 0,
+                                };
+                                total_samples
+                                    .get()
+                                    .div_ceil(samples)
+                                    .min(total_samples.get().div_ceil(options.block_size.into()))
+                                    .try_into()
+                                    .unwrap()
+                            ],
+                        }),
+                    );
+                }
+            }
+            None => { /* do nothing */ }
+        }
+
         write_blocks(
             std::iter::once(streaminfo.as_block_ref())
                 .chain(options.metadata.values().flat_map(|v| v.iter())),
@@ -275,12 +333,13 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
         )?;
 
         Ok(Self {
-            writer,
+            writer: Counter::new(writer),
             options,
             partial_frame: vec![Vec::new(); streaminfo.channels.get().into()],
             streaminfo,
             frame_number: FrameNumber::default(),
             samples_written: 0,
+            seekpoints: Vec::new(),
             md5: BitWriter::new(md5::Context::new()),
             finalized: false,
         })
@@ -313,6 +372,12 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
                 (!v.is_empty()).then_some(v)
             }
         }
+
+        self.seekpoints.push(SeekPoint {
+            sample_offset: Some(self.samples_written),
+            byte_offset: self.writer.count,
+            frame_samples: frame.pcm_frames() as u16,
+        });
 
         // sanity-check that frame's parameters match encoder's
         if frame.channel_count() != self.streaminfo.channels.get().into() {
@@ -400,7 +465,7 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
 
     fn finalize_inner(&mut self) -> Result<(), Error> {
         if !self.finalized {
-            use crate::metadata::AsBlockRef;
+            use crate::metadata::{AsBlockRef, BlockSet, SeekTable};
 
             self.finalized = true;
 
@@ -414,7 +479,33 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
                 )?;
             }
 
-            // TODO - update seektable
+            // update SEEKTABLE metadata block with final values
+            match self.options.seektable_style {
+                Some(SeektableStyle::Samples(samples)) => {
+                    // a placeholder SEEKTABLE should always be present
+                    if let Some(BlockSet::SeekTable(SeekTable { points })) =
+                        self.options.metadata.get_mut(&BlockType::SeekTable)
+                    {
+                        // grab only the seekpoints that span
+                        // "samples" boundaries of PCM samples
+
+                        let mut all_points = self.seekpoints.iter();
+
+                        points
+                            .iter_mut()
+                            .zip(0..)
+                            .for_each(|(seektable_point, frame)| {
+                                if let Some(point) = all_points.find(|point| {
+                                    point.sample_offset.unwrap() + u64::from(point.frame_samples)
+                                        > frame * samples
+                                }) {
+                                    *seektable_point = point.clone();
+                                }
+                            });
+                    }
+                }
+                None => { /* no seektable, so nothing to do */ }
+            }
 
             match &mut self.streaminfo.total_samples {
                 Some(expected) => {
@@ -434,12 +525,14 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
 
             self.streaminfo.md5 = Some(self.md5.aligned_writer()?.clone().compute().0);
 
-            self.writer.rewind()?;
+            let writer = self.writer.stream();
+
+            writer.rewind()?;
 
             write_blocks(
                 std::iter::once(self.streaminfo.as_block_ref())
                     .chain(self.options.metadata.values().flat_map(|v| v.iter())),
-                self.writer.by_ref(),
+                writer.by_ref(),
             )
         } else {
             Ok(())
