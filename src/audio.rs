@@ -71,35 +71,42 @@ impl Frame {
         self.samples.is_empty()
     }
 
+    fn resize(
+        &mut self,
+        sample_rate: u32,
+        bits_per_sample: u32,
+        channels: usize,
+        block_size: usize,
+    ) -> &mut [i32] {
+        self.sample_rate = sample_rate;
+        self.bits_per_sample = bits_per_sample;
+        self.channels = channels;
+        self.channel_len = block_size;
+        self.samples.resize(channels * block_size, 0);
+        &mut self.samples
+    }
+
     /// Resizes our frame with the given parameters and returns channel iterator
-    pub fn resize_for(
+    pub fn resized_channels(
         &mut self,
         sample_rate: u32,
         bits_per_sample: u32,
         channels: usize,
         block_size: usize,
     ) -> impl Iterator<Item = &mut [i32]> {
-        self.sample_rate = sample_rate;
-        self.bits_per_sample = bits_per_sample;
-        self.channels = channels;
-        self.channel_len = block_size;
-        self.samples.resize(channels * block_size, 0);
-        self.samples.chunks_exact_mut(block_size)
+        self.resize(sample_rate, bits_per_sample, channels, block_size)
+            .chunks_exact_mut(block_size)
     }
 
     /// Resizes our frame for two channels and returns both
-    pub fn resize_for_2(
+    pub fn resized_stereo(
         &mut self,
         sample_rate: u32,
         bits_per_sample: u32,
         block_size: usize,
     ) -> (&mut [i32], &mut [i32]) {
-        self.sample_rate = sample_rate;
-        self.bits_per_sample = bits_per_sample;
-        self.channels = 2;
-        self.channel_len = block_size;
-        self.samples.resize(2 * block_size, 0);
-        self.samples.split_at_mut(block_size)
+        self.resize(sample_rate, bits_per_sample, 2, block_size)
+            .split_at_mut(block_size)
     }
 
     /// Iterates over any samples in interleaved order
