@@ -630,18 +630,52 @@ where
 }
 
 fn encode_subframe<W: BitWrite>(
-    mut w: W,
+    w: W,
     channel: &[i32],
     bits_per_sample: SignedBitCount<32>,
 ) -> Result<(), Error> {
-    use crate::stream::{SubframeHeader, SubframeHeaderType};
+    // TODO - determine any wasted bits
+    let wasted_bps = 0;
 
     // TODO - try different subframe types
-    // TODO - determine any wasted bits
+
+    match channel {
+        [first] => encode_constant_subframe(w, *first, bits_per_sample, wasted_bps),
+        [first, rest @ ..] if rest.iter().all(|s| s == first) => {
+            encode_constant_subframe(w, *first, bits_per_sample, wasted_bps)
+        }
+        _ => encode_verbatim_subframe(w, channel, bits_per_sample, wasted_bps),
+    }
+}
+
+fn encode_constant_subframe<W: BitWrite>(
+    mut w: W,
+    sample: i32,
+    bits_per_sample: SignedBitCount<32>,
+    wasted_bps: u32,
+) -> Result<(), Error> {
+    use crate::stream::{SubframeHeader, SubframeHeaderType};
+
+    w.build(&SubframeHeader {
+        type_: SubframeHeaderType::Constant,
+        wasted_bps,
+    })?;
+
+    w.write_signed_counted(bits_per_sample, sample)
+        .map_err(Error::Io)
+}
+
+fn encode_verbatim_subframe<W: BitWrite>(
+    mut w: W,
+    channel: &[i32],
+    bits_per_sample: SignedBitCount<32>,
+    wasted_bps: u32,
+) -> Result<(), Error> {
+    use crate::stream::{SubframeHeader, SubframeHeaderType};
 
     w.build(&SubframeHeader {
         type_: SubframeHeaderType::Verbatim,
-        wasted_bps: 0,
+        wasted_bps,
     })?;
 
     channel
