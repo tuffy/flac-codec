@@ -738,25 +738,60 @@ fn write_residuals<W: BitWrite>(
     residuals: &[i32],
 ) -> Result<(), Error> {
     use crate::stream::ResidualPartitionHeader;
+    use bitstream_io::BitCount;
 
     struct Partition<'r, const RICE_MAX: u32> {
         header: ResidualPartitionHeader<RICE_MAX>,
         residuals: &'r [i32],
     }
 
+    impl<'r, const RICE_MAX: u32> Partition<'r, RICE_MAX> {
+        fn new(partition: &'r [i32], estimated_bits: &mut u32) -> Self {
+            debug_assert!(!partition.is_empty());
+
+            let partition_sum = partition.iter().map(|i| i.abs() as u32).sum::<u32>();
+
+            let rice = BitCount::try_from(
+                (partition_sum / partition.len() as u32)
+                    .checked_ilog(2)
+                    .unwrap_or(0),
+            )
+            .unwrap_or(BitCount::new::<RICE_MAX>());
+
+            // should double-check this estimated bits calculation
+            *estimated_bits += 4
+                + ((1 + u32::from(rice)) * partition.len() as u32)
+                + (partition_sum >> (u32::from(rice).checked_sub(1).unwrap_or(0)))
+                + ((partition.len() as u32) >> 1);
+
+            Partition {
+                header: ResidualPartitionHeader::Standard { rice },
+                residuals: partition,
+            }
+        }
+    }
+
+    // TODO - convert this to a SmallVec with a max of 64 (2 ** 6)
     fn best_partitions<const RICE_MAX: u32>(
-        _block_size: usize,
+        block_size: usize,
         residuals: &[i32],
     ) -> Vec<Partition<'_, RICE_MAX>> {
-        // TODO - try different partition size combinations
-        // based on block size and residuals length
-        // TODO - calculate best Rice parameters for different combinations
-        vec![Partition {
-            header: ResidualPartitionHeader::Escaped {
-                escape_size: SignedBitCount::new::<31>(),
-            },
-            residuals,
-        }]
+        (0..=block_size.trailing_zeros().min(6))
+            .map(|partition_order| 1 << partition_order)
+            .map(|partition_count| {
+                let mut estimated_bits = 0;
+
+                let partitions = residuals
+                    .rchunks(block_size / partition_count as usize)
+                    .rev()
+                    .map(|partition| Partition::new(partition, &mut estimated_bits))
+                    .collect();
+
+                (partitions, estimated_bits)
+            })
+            .min_by_key(|(_, estimated_bits)| *estimated_bits)
+            .map(|(partitions, _)| partitions)
+            .expect("no best set of partitions found")
     }
 
     fn write_block<const RICE_MAX: u32, W: BitWrite>(
