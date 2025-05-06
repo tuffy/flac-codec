@@ -763,22 +763,26 @@ fn write_residuals<W: BitWrite>(
 
             let partition_sum = partition.iter().map(|i| i.unsigned_abs()).sum::<u32>();
 
-            let rice = BitCount::try_from(
-                (partition_sum / partition.len() as u32)
-                    .checked_ilog(2)
-                    .unwrap_or(0),
-            )
-            .unwrap_or(BitCount::new::<RICE_MAX>());
+            match (partition_sum / partition.len() as u32).checked_ilog2() {
+                Some(rice) => {
+                    let rice = BitCount::try_from(rice).unwrap_or(BitCount::new::<RICE_MAX>());
 
-            // TODO - should double-check this estimated bits calculation
-            *estimated_bits += 4
-                + ((1 + u32::from(rice)) * partition.len() as u32)
-                + (partition_sum >> (u32::from(rice).saturating_sub(1)))
-                + ((partition.len() as u32) >> 1);
+                    // TODO - should double-check this estimated bits calculation
+                    *estimated_bits += 4
+                        + ((1 + u32::from(rice)) * partition.len() as u32)
+                        + (partition_sum >> (u32::from(rice).saturating_sub(1)))
+                        + ((partition.len() as u32) >> 1);
 
-            Partition {
-                header: ResidualPartitionHeader::Standard { rice },
-                residuals: partition,
+                    Partition {
+                        header: ResidualPartitionHeader::Standard { rice },
+                        residuals: partition,
+                    }
+                }
+                // all partition residuals are 0, so used a constant
+                None => Partition {
+                    header: ResidualPartitionHeader::Constant,
+                    residuals: partition,
+                },
             }
         }
     }
