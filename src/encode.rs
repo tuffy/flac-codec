@@ -634,8 +634,27 @@ fn encode_subframe<W: BitWrite>(
     channel: &[i32],
     bits_per_sample: SignedBitCount<32>,
 ) -> Result<(), Error> {
-    // TODO - determine any wasted bits
-    let wasted_bps = 0;
+    const WASTED_MAX: NonZero<u32> = NonZero::new(32).unwrap();
+
+    // determine any wasted bits
+    // FIXME - pull this from an external buffer?
+    let mut wasted = Vec::new();
+
+    let (channel, bits_per_sample, wasted_bps) =
+        match channel.iter().try_fold(WASTED_MAX, |acc, sample| {
+            NonZero::new(sample.trailing_zeros()).map(|sample| sample.min(acc))
+        }) {
+            None | Some(WASTED_MAX) => (channel, bits_per_sample, 0),
+            Some(wasted_bps) => {
+                let wasted_bps = wasted_bps.get();
+                wasted.extend(channel.iter().map(|sample| sample >> wasted_bps));
+                (
+                    wasted.as_slice(),
+                    bits_per_sample.checked_sub(wasted_bps).unwrap(),
+                    wasted_bps,
+                )
+            }
+        };
 
     // TODO - try different subframe types
 

@@ -487,7 +487,7 @@ impl ToBitStream for SubframeHeader {
             None => w.write_bit(false)?,
             Some(wasted) => {
                 w.write_bit(true)?;
-                w.write_unary::<1>(wasted - 1)?;
+                w.write_unary::<1>(wasted)?;
             }
         }
 
