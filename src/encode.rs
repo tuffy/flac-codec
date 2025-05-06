@@ -16,9 +16,12 @@ use crate::metadata::{
 use crate::stream::FrameNumber;
 use crate::{Counter, Error};
 use bitstream_io::{BitWrite, BitWriter, LittleEndian, SignedBitCount};
+use smallvec::SmallVec;
 use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
 use std::num::NonZero;
+
+const MAX_CHANNELS: usize = 8;
 
 /// FLAC encoding options
 pub struct EncodingOptions {
@@ -356,28 +359,20 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
     /// or if the frame's parameters are not a match
     /// for the encoder's.
     pub fn encode(&mut self, frame: &Frame) -> Result<(), Error> {
-        // TODO - this would be a good candidate to replace with smallvec
-        // since FLAC files are limited to 8 channels
-        struct MultiIterator<I>(Vec<I>);
+        struct MultiIterator<I>(SmallVec<[I; MAX_CHANNELS]>);
 
         impl<I: Iterator> Iterator for MultiIterator<I> {
-            type Item = Vec<I::Item>;
+            type Item = SmallVec<[I::Item; MAX_CHANNELS]>;
 
             fn next(&mut self) -> Option<Self::Item> {
                 let v = self
                     .0
                     .iter_mut()
                     .filter_map(|i| i.next())
-                    .collect::<Vec<_>>();
+                    .collect::<SmallVec<_>>();
                 (!v.is_empty()).then_some(v)
             }
         }
-
-        self.seekpoints.push(SeekPoint {
-            sample_offset: Some(self.samples_written),
-            byte_offset: self.writer.count,
-            frame_samples: frame.pcm_frames() as u16,
-        });
 
         // sanity-check that frame's parameters match encoder's
         if frame.channel_count() != self.streaminfo.channels.get().into() {
@@ -388,6 +383,13 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
             return Err(Error::SampleRateMismatch);
         }
 
+        // drop in a new seekpoint
+        self.seekpoints.push(SeekPoint {
+            sample_offset: Some(self.samples_written),
+            byte_offset: self.writer.count,
+            frame_samples: frame.pcm_frames() as u16,
+        });
+
         // update running total of samples written
         self.samples_written += frame.pcm_frames() as u64;
         if let Some(total_samples) = self.streaminfo.total_samples {
@@ -397,6 +399,10 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
         }
 
         // update MD5 calculation
+        // TODO - if we're encoding from raw LE PCM bytes already
+        // update the MD5 from those bytes and bypass this
+        // expensive re-conversion step
+        // (it might make sense to implement Write for the encoder)
         frame.iter().try_for_each(|i| {
             self.md5
                 .write_signed_counted(self.streaminfo.bits_per_sample, i)?;
@@ -406,6 +412,10 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
         if self.partial_frame[0].is_empty()
             && frame.pcm_frames() % self.options.block_size as usize == 0
         {
+            // no partial samples in the buffer
+            // and the input is a multiple of our block size,
+            // so encode whole FLAC frames from our input
+
             let mut buffers = frame.channels().collect::<Vec<_>>();
 
             MultiIterator(
@@ -564,7 +574,7 @@ fn encode_frame<W>(
     mut writer: W,
     streaminfo: &mut Streaminfo,
     frame_number: &mut FrameNumber,
-    frame: Vec<&[i32]>,
+    frame: SmallVec<[&[i32]; MAX_CHANNELS]>,
 ) -> Result<(), Error>
 where
     W: std::io::Write,
@@ -740,6 +750,8 @@ fn write_residuals<W: BitWrite>(
     use crate::stream::ResidualPartitionHeader;
     use bitstream_io::BitCount;
 
+    const MAX_PARTITIONS: usize = 64;
+
     struct Partition<'r, const RICE_MAX: u32> {
         header: ResidualPartitionHeader<RICE_MAX>,
         residuals: &'r [i32],
@@ -749,7 +761,7 @@ fn write_residuals<W: BitWrite>(
         fn new(partition: &'r [i32], estimated_bits: &mut u32) -> Self {
             debug_assert!(!partition.is_empty());
 
-            let partition_sum = partition.iter().map(|i| i.abs() as u32).sum::<u32>();
+            let partition_sum = partition.iter().map(|i| i.unsigned_abs()).sum::<u32>();
 
             let rice = BitCount::try_from(
                 (partition_sum / partition.len() as u32)
@@ -758,10 +770,10 @@ fn write_residuals<W: BitWrite>(
             )
             .unwrap_or(BitCount::new::<RICE_MAX>());
 
-            // should double-check this estimated bits calculation
+            // TODO - should double-check this estimated bits calculation
             *estimated_bits += 4
                 + ((1 + u32::from(rice)) * partition.len() as u32)
-                + (partition_sum >> (u32::from(rice).checked_sub(1).unwrap_or(0)))
+                + (partition_sum >> (u32::from(rice).saturating_sub(1)))
                 + ((partition.len() as u32) >> 1);
 
             Partition {
@@ -771,11 +783,10 @@ fn write_residuals<W: BitWrite>(
         }
     }
 
-    // TODO - convert this to a SmallVec with a max of 64 (2 ** 6)
     fn best_partitions<const RICE_MAX: u32>(
         block_size: usize,
         residuals: &[i32],
-    ) -> Vec<Partition<'_, RICE_MAX>> {
+    ) -> SmallVec<[Partition<'_, RICE_MAX>; MAX_PARTITIONS]> {
         (0..=block_size.trailing_zeros().min(6))
             .map(|partition_order| 1 << partition_order)
             .map(|partition_count| {
