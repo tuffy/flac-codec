@@ -11,7 +11,7 @@
 use crate::Error;
 use crate::audio::Frame;
 use crate::metadata::{SeekTable, Streaminfo};
-use bitstream_io::{BitCount, BitRead, SignedBitCount};
+use bitstream_io::{BitRead, SignedBitCount};
 use std::num::NonZero;
 
 /// A FLAC decoder
@@ -459,6 +459,8 @@ fn read_residuals<R: BitRead>(
         predictor_order: usize,
         mut residuals: &mut [i32],
     ) -> Result<(), Error> {
+        use crate::stream::ResidualPartitionHeader;
+
         let block_size = predictor_order + residuals.len();
         let partition_order = reader.read::<4, u32>()?;
         let partition_count = 1 << partition_order;
@@ -468,39 +470,33 @@ fn read_residuals<R: BitRead>(
                 .checked_sub(if p == 0 { predictor_order } else { 0 })
                 .ok_or(Error::InvalidPartitionOrder)?;
 
-            let rice = reader.read_count::<RICE_MAX>()?;
-
             let (partition, next) = residuals
                 .split_at_mut_checked(partition_size)
                 .ok_or(Error::InvalidPartitionOrder)?;
 
-            if rice == BitCount::new::<{ RICE_MAX }>() {
-                // escaped residuals
-
-                match reader.read_count::<0b11111>()?.signed_count() {
-                    None => {
-                        partition.fill(0);
-                    }
-                    Some(escape_size) => {
-                        partition.iter_mut().try_for_each(|s| {
-                            *s = reader.read_signed_counted(escape_size)?;
-                            Ok::<(), std::io::Error>(())
-                        })?;
-                    }
+            match reader.parse()? {
+                ResidualPartitionHeader::Standard { rice } => {
+                    partition.iter_mut().try_for_each(|s| {
+                        let msb = reader.read_unary::<1>()?;
+                        let lsb = reader.read_counted::<RICE_MAX, u32>(rice)?;
+                        let unsigned = msb << u32::from(rice) | lsb;
+                        *s = if (unsigned & 1) == 1 {
+                            -((unsigned >> 1) as i32) - 1
+                        } else {
+                            (unsigned >> 1) as i32
+                        };
+                        Ok::<(), std::io::Error>(())
+                    })?;
                 }
-            } else {
-                // regular residuals
-                partition.iter_mut().try_for_each(|s| {
-                    let msb = reader.read_unary::<1>()?;
-                    let lsb = reader.read_counted::<RICE_MAX, u32>(rice)?;
-                    let unsigned = msb << u32::from(rice) | lsb;
-                    *s = if (unsigned & 1) == 1 {
-                        -((unsigned >> 1) as i32) - 1
-                    } else {
-                        (unsigned >> 1) as i32
-                    };
-                    Ok::<(), std::io::Error>(())
-                })?;
+                ResidualPartitionHeader::Escaped { escape_size } => {
+                    partition.iter_mut().try_for_each(|s| {
+                        *s = reader.read_signed_counted(escape_size)?;
+                        Ok::<(), std::io::Error>(())
+                    })?;
+                }
+                ResidualPartitionHeader::Constant => {
+                    partition.fill(0);
+                }
             }
 
             residuals = next;

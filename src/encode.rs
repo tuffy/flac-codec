@@ -630,7 +630,7 @@ where
 }
 
 fn encode_subframe<W: BitWrite>(
-    w: W,
+    writer: &mut W,
     channel: &[i32],
     bits_per_sample: SignedBitCount<32>,
 ) -> Result<(), Error> {
@@ -647,7 +647,9 @@ fn encode_subframe<W: BitWrite>(
             NonZero::new(sample.trailing_zeros()).map(|sample| sample.min(acc))
         }) {
             None => (channel, bits_per_sample, 0),
-            Some(WASTED_MAX) => return encode_constant_subframe(w, channel[0], bits_per_sample, 0),
+            Some(WASTED_MAX) => {
+                return encode_constant_subframe(writer, channel[0], bits_per_sample, 0);
+            }
             Some(wasted_bps) => {
                 let wasted_bps = wasted_bps.get();
                 wasted.extend(channel.iter().map(|sample| sample >> wasted_bps));
@@ -661,48 +663,145 @@ fn encode_subframe<W: BitWrite>(
 
     // TODO - try different subframe types
 
-    match channel {
-        [first] => encode_constant_subframe(w, *first, bits_per_sample, wasted_bps),
-        [first, rest @ ..] if rest.iter().all(|s| s == first) => {
-            encode_constant_subframe(w, *first, bits_per_sample, wasted_bps)
-        }
-        _ => encode_verbatim_subframe(w, channel, bits_per_sample, wasted_bps),
-    }
+    encode_fixed_subframe(writer, channel, bits_per_sample, wasted_bps)
+    // match channel {
+    //     [first] => encode_constant_subframe(w, *first, bits_per_sample, wasted_bps),
+    //     [first, rest @ ..] if rest.iter().all(|s| s == first) => {
+    //         encode_constant_subframe(w, *first, bits_per_sample, wasted_bps)
+    //     }
+    //     _ => encode_verbatim_subframe(w, channel, bits_per_sample, wasted_bps),
+    // }
 }
 
 fn encode_constant_subframe<W: BitWrite>(
-    mut w: W,
+    writer: &mut W,
     sample: i32,
     bits_per_sample: SignedBitCount<32>,
     wasted_bps: u32,
 ) -> Result<(), Error> {
     use crate::stream::{SubframeHeader, SubframeHeaderType};
 
-    w.build(&SubframeHeader {
+    writer.build(&SubframeHeader {
         type_: SubframeHeaderType::Constant,
         wasted_bps,
     })?;
 
-    w.write_signed_counted(bits_per_sample, sample)
+    writer
+        .write_signed_counted(bits_per_sample, sample)
         .map_err(Error::Io)
 }
 
 fn encode_verbatim_subframe<W: BitWrite>(
-    mut w: W,
+    writer: &mut W,
     channel: &[i32],
     bits_per_sample: SignedBitCount<32>,
     wasted_bps: u32,
 ) -> Result<(), Error> {
     use crate::stream::{SubframeHeader, SubframeHeaderType};
 
-    w.build(&SubframeHeader {
+    writer.build(&SubframeHeader {
         type_: SubframeHeaderType::Verbatim,
         wasted_bps,
     })?;
 
     channel
         .iter()
-        .try_for_each(|i| w.write_signed_counted(bits_per_sample, *i))?;
+        .try_for_each(|i| writer.write_signed_counted(bits_per_sample, *i))?;
 
     Ok(())
+}
+
+fn encode_fixed_subframe<W: BitWrite>(
+    writer: &mut W,
+    channel: &[i32],
+    _bits_per_sample: SignedBitCount<32>,
+    wasted_bps: u32,
+) -> Result<(), Error> {
+    use crate::stream::{SubframeHeader, SubframeHeaderType};
+
+    // TODO - calculate this properly
+    let fixed_order = 0;
+
+    writer.build(&SubframeHeader {
+        type_: SubframeHeaderType::Fixed { order: fixed_order },
+        wasted_bps,
+    })?;
+
+    // TODO - output warm-up samples
+
+    write_residuals(writer, 0, channel)
+}
+
+fn write_residuals<W: BitWrite>(
+    writer: &mut W,
+    predictor_order: usize,
+    residuals: &[i32],
+) -> Result<(), Error> {
+    use crate::stream::ResidualPartitionHeader;
+
+    struct Partition<'r, const RICE_MAX: u32> {
+        header: ResidualPartitionHeader<RICE_MAX>,
+        residuals: &'r [i32],
+    }
+
+    fn best_partitions<const RICE_MAX: u32>(
+        _block_size: usize,
+        residuals: &[i32],
+    ) -> Vec<Partition<'_, RICE_MAX>> {
+        // TODO - try different partition size combinations
+        // based on block size and residuals length
+        // TODO - calculate best Rice parameters for different combinations
+        vec![Partition {
+            header: ResidualPartitionHeader::Escaped {
+                escape_size: SignedBitCount::new::<31>(),
+            },
+            residuals,
+        }]
+    }
+
+    fn write_block<const RICE_MAX: u32, W: BitWrite>(
+        writer: &mut W,
+        predictor_order: usize,
+        residuals: &[i32],
+    ) -> Result<(), Error> {
+        let block_size = predictor_order + residuals.len();
+
+        let partitions = best_partitions::<RICE_MAX>(block_size, residuals);
+        debug_assert!(!partitions.is_empty());
+        debug_assert!(partitions.len().is_power_of_two());
+
+        writer.write::<4, u32>(partitions.len().ilog2())?; // partition order
+
+        for Partition { header, residuals } in partitions {
+            writer.build(&header)?;
+            match header {
+                ResidualPartitionHeader::Standard { rice } => {
+                    use bitstream_io::{Numeric, UnsignedInteger};
+
+                    let mask = u32::ALL >> (u32::BITS_SIZE - u32::from(rice));
+
+                    residuals.iter().try_for_each(|s| {
+                        let unsigned = if s.is_negative() {
+                            ((-*s as u32 - 1) << 1) + 1
+                        } else {
+                            (*s as u32) << 1
+                        };
+                        writer.write_unary::<1>(unsigned >> u32::from(rice))?;
+                        writer.write_counted(rice, unsigned & mask)
+                    })?;
+                }
+                ResidualPartitionHeader::Escaped { escape_size } => {
+                    residuals
+                        .iter()
+                        .try_for_each(|s| writer.write_signed_counted(escape_size, *s))?;
+                }
+                ResidualPartitionHeader::Constant => { /* nothing left to do */ }
+            }
+        }
+        Ok(())
+    }
+
+    // TODO - we only support a coding method of 0
+    writer.write::<2, u8>(0)?;
+    write_block::<0b1111, W>(writer, predictor_order, residuals)
 }

@@ -11,7 +11,7 @@
 use crate::Error;
 use crate::metadata::Streaminfo;
 use bitstream_io::{
-    BitRead, BitWrite, FromBitStream, FromBitStreamWith, SignedBitCount, ToBitStream,
+    BitCount, BitRead, BitWrite, FromBitStream, FromBitStreamWith, SignedBitCount, ToBitStream,
     ToBitStreamWith,
 };
 use std::num::NonZero;
@@ -552,5 +552,57 @@ impl ToBitStream for SubframeHeaderType {
             Self::Lpc { order } => order.get() + 31,
         })?;
         Ok(())
+    }
+}
+
+/// A FLAC residual partition header
+#[derive(Debug)]
+pub enum ResidualPartitionHeader<const RICE_MAX: u32> {
+    /// Standard, un-escaped partition
+    Standard {
+        /// The partition's Rice parameter
+        rice: BitCount<RICE_MAX>,
+    },
+    /// Escaped partition
+    Escaped {
+        /// The size of each residual in bits
+        escape_size: SignedBitCount<0b11111>,
+    },
+    /// All residuals in partition are 0
+    Constant,
+}
+
+impl<const RICE_MAX: u32> FromBitStream for ResidualPartitionHeader<RICE_MAX> {
+    type Error = std::io::Error;
+
+    fn from_reader<R: BitRead + ?Sized>(r: &mut R) -> Result<Self, Self::Error> {
+        let rice = r.read_count()?;
+
+        if rice == BitCount::new::<{ RICE_MAX }>() {
+            match r.read_count()?.signed_count() {
+                Some(escape_size) => Ok(Self::Escaped { escape_size }),
+                None => Ok(Self::Constant),
+            }
+        } else {
+            Ok(Self::Standard { rice })
+        }
+    }
+}
+
+impl<const RICE_MAX: u32> ToBitStream for ResidualPartitionHeader<RICE_MAX> {
+    type Error = std::io::Error;
+
+    fn to_writer<W: BitWrite + ?Sized>(&self, w: &mut W) -> Result<(), Self::Error> {
+        match self {
+            Self::Standard { rice } => w.write_count(*rice),
+            Self::Escaped { escape_size } => {
+                w.write_count(BitCount::<RICE_MAX>::new::<{ RICE_MAX }>())?;
+                w.write_count(escape_size.count())
+            }
+            Self::Constant => {
+                w.write_count(BitCount::<RICE_MAX>::new::<{ RICE_MAX }>())?;
+                w.write_count(BitCount::<0b11111>::new::<0>())
+            }
+        }
     }
 }
