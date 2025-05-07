@@ -606,3 +606,314 @@ impl<const RICE_MAX: u32> ToBitStream for ResidualPartitionHeader<RICE_MAX> {
         }
     }
 }
+
+/// A whole FLAC frame
+#[derive(Debug)]
+pub struct Frame {
+    /// The FLAC frame's header
+    pub header: FrameHeader,
+    /// A FLAC frame's sub-frames
+    pub subframes: Vec<Subframe>,
+}
+
+impl Frame {
+    /// Reads new frame from the given reader
+    pub fn read<R: std::io::Read>(reader: &mut R, streaminfo: &Streaminfo) -> Result<Self, Error> {
+        use crate::crc::{Checksum, Crc16, CrcReader};
+        use bitstream_io::{BigEndian, BitReader};
+        use std::io::Read;
+
+        let mut crc16_reader: CrcReader<_, Crc16> = CrcReader::new(reader.by_ref());
+
+        let header = FrameHeader::read(crc16_reader.by_ref(), streaminfo)?;
+
+        let mut reader = BitReader::endian(crc16_reader.by_ref(), BigEndian);
+
+        let subframes = match header.channel_assignment {
+            ChannelAssignment::Independent(total_channels) => (0..total_channels)
+                .map(|_| {
+                    reader.parse_with::<Subframe>(&(header.block_size, header.bits_per_sample))
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+            ChannelAssignment::LeftSide => vec![
+                reader.parse_with(&(header.block_size, header.bits_per_sample))?,
+                reader.parse_with(&(
+                    header.block_size,
+                    header
+                        .bits_per_sample
+                        .checked_add(1)
+                        .ok_or(Error::ExcessiveBps)?,
+                ))?,
+            ],
+            ChannelAssignment::SideRight => vec![
+                reader.parse_with(&(
+                    header.block_size,
+                    header
+                        .bits_per_sample
+                        .checked_add(1)
+                        .ok_or(Error::ExcessiveBps)?,
+                ))?,
+                reader.parse_with(&(header.block_size, header.bits_per_sample))?,
+            ],
+            ChannelAssignment::MidSide => vec![
+                reader.parse_with(&(header.block_size, header.bits_per_sample))?,
+                reader.parse_with(&(
+                    header.block_size,
+                    header
+                        .bits_per_sample
+                        .checked_add(1)
+                        .ok_or(Error::ExcessiveBps)?,
+                ))?,
+            ],
+        };
+
+        reader.byte_align();
+        reader.skip(16)?; // CRC-16 checksum
+
+        if crc16_reader.into_checksum().valid() {
+            Ok(Self { header, subframes })
+        } else {
+            Err(Error::Crc16Mismatch)
+        }
+    }
+}
+
+/// A FLAC's frame's subframe, one per channel
+#[derive(Debug)]
+pub enum Subframe {
+    /// A CONSTANT subframe, in which all samples are identical
+    Constant {
+        /// The subframe's sample
+        sample: i32,
+        /// Any wasted bits-per-sample
+        wasted_bps: u32,
+    },
+    /// A VERBATIM subframe, in which all samples are stored uncompressed
+    Verbatim {
+        /// The subframe's samples
+        samples: Vec<i32>,
+        /// Any wasted bits-per-sample
+        wasted_bps: u32,
+    },
+    /// A FIXED subframe, encoded with a fixed set of parameters
+    Fixed {
+        /// The subframe's predictor order from 0 to 4 (inclusive)
+        order: u8,
+        /// The subframe's warm-up samples (one per order)
+        warm_up: Vec<i32>,
+        /// The subframe's residuals
+        residuals: Residuals,
+        /// Any wasted bits-per-sample
+        wasted_bps: u32,
+    },
+    /// An LPC subframe, encoded with a variable set of parameters
+    Lpc {
+        /// The subframe's warm-up samples (one per order)
+        warm_up: Vec<i32>,
+        /// The subframe's QLP precision
+        precision: SignedBitCount<15>,
+        /// The subframe's QLP shift
+        shift: u32,
+        /// The subframe's QLP coefficients (one per order)
+        coefficients: Vec<i32>,
+        /// The subframe's residuals
+        residuals: Residuals,
+        /// Any wasted bits-per-sample
+        wasted_bps: u32,
+    },
+}
+
+impl FromBitStreamWith<'_> for Subframe {
+    type Context = (u16, SignedBitCount<32>);
+    type Error = Error;
+
+    fn from_reader<R: BitRead + ?Sized>(
+        r: &mut R,
+        (block_size, bits_per_sample): &(u16, SignedBitCount<32>),
+    ) -> Result<Self, Error> {
+        match r.parse()? {
+            SubframeHeader {
+                type_: SubframeHeaderType::Constant,
+                wasted_bps,
+            } => Ok(Self::Constant {
+                sample: r.read_signed_counted(
+                    bits_per_sample
+                        .checked_sub::<32>(wasted_bps)
+                        .ok_or(Error::ExcessiveWastedBits)?,
+                )?,
+                wasted_bps,
+            }),
+            SubframeHeader {
+                type_: SubframeHeaderType::Verbatim,
+                wasted_bps,
+            } => {
+                let effective_bps = bits_per_sample
+                    .checked_sub::<32>(wasted_bps)
+                    .ok_or(Error::ExcessiveWastedBits)?;
+
+                Ok(Self::Verbatim {
+                    samples: (0..*block_size)
+                        .map(|_| r.read_signed_counted::<32, i32>(effective_bps))
+                        .collect::<Result<Vec<_>, _>>()?,
+                    wasted_bps,
+                })
+            }
+            SubframeHeader {
+                type_: SubframeHeaderType::Fixed { order },
+                wasted_bps,
+            } => {
+                let effective_bps = bits_per_sample
+                    .checked_sub::<32>(wasted_bps)
+                    .ok_or(Error::ExcessiveWastedBits)?;
+
+                Ok(Self::Fixed {
+                    order,
+                    warm_up: (0..order)
+                        .map(|_| r.read_signed_counted::<32, i32>(effective_bps))
+                        .collect::<Result<Vec<_>, _>>()?,
+                    residuals: r.parse_with(&((*block_size).into(), order.into()))?,
+                    wasted_bps,
+                })
+            }
+            SubframeHeader {
+                type_: SubframeHeaderType::Lpc { order },
+                wasted_bps,
+            } => {
+                let effective_bps = bits_per_sample
+                    .checked_sub::<32>(wasted_bps)
+                    .ok_or(Error::ExcessiveWastedBits)?;
+
+                let warm_up = (0..order.get())
+                    .map(|_| r.read_signed_counted::<32, i32>(effective_bps))
+                    .collect::<Result<Vec<_>, _>>()?;
+
+                let precision: SignedBitCount<15> = r
+                    .read_count::<0b1111>()?
+                    .checked_add(1)
+                    .and_then(|c| c.signed_count())
+                    .ok_or(Error::InvalidQlpPrecision)?;
+
+                let shift: u32 = r
+                    .read::<5, i32>()?
+                    .try_into()
+                    .map_err(|_| Error::NegativeLpcShift)?;
+
+                let coefficients = (0..order.get())
+                    .map(|_| r.read_signed_counted(precision))
+                    .collect::<Result<Vec<_>, _>>()?;
+
+                Ok(Self::Lpc {
+                    warm_up,
+                    precision,
+                    shift,
+                    coefficients,
+                    residuals: r.parse_with(&((*block_size).into(), order.get().into()))?,
+                    wasted_bps,
+                })
+            }
+        }
+    }
+}
+
+/// Residual values for FIXED or LPC subframes
+#[derive(Debug)]
+pub enum Residuals {
+    /// Coding method 0
+    Method0 {
+        /// The residual partitions
+        partitions: Vec<ResidualPartition<0b1111>>,
+    },
+    /// Coding method 1
+    Method1 {
+        /// The residual partitions
+        partitions: Vec<ResidualPartition<0b11111>>,
+    },
+}
+
+impl FromBitStreamWith<'_> for Residuals {
+    type Context = (usize, usize);
+    type Error = Error;
+
+    fn from_reader<R: BitRead + ?Sized>(r: &mut R, params: &(usize, usize)) -> Result<Self, Error> {
+        fn read_partitions<const RICE_MAX: u32, R: BitRead + ?Sized>(
+            reader: &mut R,
+            (block_size, predictor_order): &(usize, usize),
+        ) -> Result<Vec<ResidualPartition<RICE_MAX>>, Error> {
+            let partition_order = reader.read::<4, u32>()?;
+            let partition_count = 1 << partition_order;
+
+            (0..partition_count)
+                .map(|p| {
+                    let partition_size = (block_size / partition_count)
+                        .checked_sub(if p == 0 { *predictor_order } else { 0 })
+                        .ok_or(Error::InvalidPartitionOrder)?;
+
+                    reader.parse_with(&partition_size)
+                })
+                .collect()
+        }
+
+        match r.read::<2, u8>()? {
+            0 => Ok(Self::Method0 {
+                partitions: read_partitions::<0b1111, R>(r, params)?,
+            }),
+            1 => Ok(Self::Method1 {
+                partitions: read_partitions::<0b11111, R>(r, params)?,
+            }),
+            _ => Err(Error::InvalidCodingMethod),
+        }
+    }
+}
+
+/// An individual residual block partition
+#[derive(Debug)]
+pub enum ResidualPartition<const RICE_MAX: u32> {
+    /// A standard residual partition
+    Standard {
+        /// The partition's Rice parameter
+        rice: BitCount<RICE_MAX>,
+        /// The partition's residuals
+        residuals: Vec<i32>,
+    },
+    /// An escaped residual partition
+    Escaped {
+        /// The size of each residual in bits
+        escape_size: SignedBitCount<0b11111>,
+        /// The partition's residuals
+        residuals: Vec<i32>,
+    },
+    /// A partition in which all residuals are 0
+    Constant,
+}
+
+impl<const RICE_MAX: u32> FromBitStreamWith<'_> for ResidualPartition<RICE_MAX> {
+    type Context = usize;
+    type Error = Error;
+
+    fn from_reader<R: BitRead + ?Sized>(r: &mut R, partition_len: &usize) -> Result<Self, Error> {
+        match r.parse::<ResidualPartitionHeader<RICE_MAX>>()? {
+            ResidualPartitionHeader::Standard { rice } => Ok(Self::Standard {
+                residuals: (0..*partition_len)
+                    .map(|_| {
+                        let msb = r.read_unary::<1>()?;
+                        let lsb = r.read_counted::<RICE_MAX, u32>(rice)?;
+                        let unsigned = msb << u32::from(rice) | lsb;
+                        Ok::<_, Error>(if (unsigned & 1) == 1 {
+                            -((unsigned >> 1) as i32) - 1
+                        } else {
+                            (unsigned >> 1) as i32
+                        })
+                    })
+                    .collect::<Result<Vec<_>, _>>()?,
+                rice,
+            }),
+            ResidualPartitionHeader::Escaped { escape_size } => Ok(Self::Escaped {
+                residuals: (0..*partition_len)
+                    .map(|_| r.read_signed_counted(escape_size))
+                    .collect::<Result<Vec<_>, _>>()?,
+                escape_size,
+            }),
+            ResidualPartitionHeader::Constant => Ok(Self::Constant),
+        }
+    }
+}
