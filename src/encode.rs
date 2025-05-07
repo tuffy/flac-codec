@@ -724,22 +724,67 @@ fn encode_verbatim_subframe<W: BitWrite>(
 fn encode_fixed_subframe<W: BitWrite>(
     writer: &mut W,
     channel: &[i32],
-    _bits_per_sample: SignedBitCount<32>,
+    bits_per_sample: SignedBitCount<32>,
     wasted_bps: u32,
 ) -> Result<(), Error> {
     use crate::stream::{SubframeHeader, SubframeHeaderType};
+    use smallvec::smallvec;
 
-    // TODO - calculate this properly
-    let fixed_order = 0;
+    // TODO - reuse buffers between calls
+    let mut buffers: SmallVec<[Vec<i32>; 4]> = smallvec![vec![]; 4];
+
+    // calculate residuals for FIXED subframe orders 0-4
+    // (or fewer, if we don't have enough samples)
+    let (order, warm_up, residuals) = {
+        let mut fixed_orders: SmallVec<[&[i32]; 5]> = smallvec![channel; 1];
+
+        // accumulate a set of FIXED diffs
+        for buf in buffers.iter_mut() {
+            let prev_order = fixed_orders.last().unwrap();
+            match prev_order.split_at_checked(1) {
+                Some((_, r)) => {
+                    buf.extend(
+                        r.iter()
+                            .zip(*prev_order)
+                            .map(|(n, p)| n - p)
+                            .collect::<Vec<_>>(),
+                    );
+                    if buf.is_empty() {
+                        break;
+                    } else {
+                        fixed_orders.push(buf.as_slice());
+                    }
+                }
+                None => break,
+            }
+        }
+
+        let min_fixed = fixed_orders.last().unwrap().len();
+
+        // choose diff with the smallest abs sum
+        fixed_orders
+            .into_iter()
+            .enumerate()
+            .min_by_key(|(_, residuals)| {
+                residuals[(residuals.len() - min_fixed)..]
+                    .iter()
+                    .map(|r| r.unsigned_abs())
+                    .sum::<u32>()
+            })
+            .map(|(order, residuals)| (order as u8, &channel[0..order], residuals))
+            .unwrap()
+    };
 
     writer.build(&SubframeHeader {
-        type_: SubframeHeaderType::Fixed { order: fixed_order },
+        type_: SubframeHeaderType::Fixed { order },
         wasted_bps,
     })?;
 
-    // TODO - output warm-up samples
+    warm_up
+        .iter()
+        .try_for_each(|sample: &i32| writer.write_signed_counted(bits_per_sample, *sample))?;
 
-    write_residuals(writer, 0, channel)
+    write_residuals(writer, 0, residuals)
 }
 
 fn write_residuals<W: BitWrite>(
@@ -765,7 +810,8 @@ fn write_residuals<W: BitWrite>(
 
             match (partition_sum / partition.len() as u32).checked_ilog2() {
                 Some(rice) => {
-                    let rice = BitCount::try_from(rice).unwrap_or(BitCount::new::<RICE_MAX>());
+                    let rice = BitCount::try_from(rice).expect("excessive Rice parameters");
+                    assert!(u32::from(rice) < u32::from(BitCount::<RICE_MAX>::new::<RICE_MAX>()));
 
                     // TODO - should double-check this estimated bits calculation
                     *estimated_bits += 4
@@ -773,12 +819,16 @@ fn write_residuals<W: BitWrite>(
                         + (partition_sum >> (u32::from(rice).saturating_sub(1)))
                         + ((partition.len() as u32) >> 1);
 
+                    // TODO - if estimated bits is larger than
+                    // a verbatim (escaped) partition,
+                    // just escape the residuals instead
+
                     Partition {
                         header: ResidualPartitionHeader::Standard { rice },
                         residuals: partition,
                     }
                 }
-                // all partition residuals are 0, so used a constant
+                // all partition residuals are 0, so use a constant
                 None => Partition {
                     header: ResidualPartitionHeader::Constant,
                     residuals: partition,
@@ -826,9 +876,9 @@ fn write_residuals<W: BitWrite>(
             writer.build(&header)?;
             match header {
                 ResidualPartitionHeader::Standard { rice } => {
-                    use bitstream_io::{Numeric, UnsignedInteger};
+                    // use bitstream_io::{Numeric, UnsignedInteger};
 
-                    let mask = u32::ALL >> (u32::BITS_SIZE - u32::from(rice));
+                    let shift = 1 << u32::from(rice);
 
                     residuals.iter().try_for_each(|s| {
                         let unsigned = if s.is_negative() {
@@ -836,8 +886,9 @@ fn write_residuals<W: BitWrite>(
                         } else {
                             (*s as u32) << 1
                         };
-                        writer.write_unary::<1>(unsigned >> u32::from(rice))?;
-                        writer.write_counted(rice, unsigned & mask)
+                        let (quot, rem) = (unsigned / shift, unsigned % shift);
+                        writer.write_unary::<1>(quot)?;
+                        writer.write_counted(rice, rem)
                     })?;
                 }
                 ResidualPartitionHeader::Escaped { escape_size } => {
