@@ -13,7 +13,7 @@ use crate::metadata::{
     Application, BlockSet, BlockSize, BlockType, Cuesheet, MetadataBlock, Picture, SeekPoint,
     Streaminfo, VorbisComment, write_blocks,
 };
-use crate::stream::FrameNumber;
+use crate::stream::{FrameNumber, SampleRate};
 use crate::{Counter, Error};
 use bitstream_io::{BitWrite, BitWriter, LittleEndian, SignedBitCount};
 use smallvec::SmallVec;
@@ -227,6 +227,8 @@ pub struct Encoder<W: std::io::Write + std::io::Seek> {
     partial_frame: Vec<Vec<i32>>,
     // our STREAMINFO block information
     streaminfo: Streaminfo,
+    // our stream's sample rate
+    sample_rate: SampleRate<u32>,
     // the current frame number
     frame_number: FrameNumber,
     // the number of channel-independent samples written
@@ -339,6 +341,10 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
             writer: Counter::new(writer),
             options,
             partial_frame: vec![Vec::new(); streaminfo.channels.get().into()],
+            sample_rate: streaminfo
+                .sample_rate
+                .try_into()
+                .expect("invalid sample rate"),
             streaminfo,
             frame_number: FrameNumber::default(),
             samples_written: 0,
@@ -429,6 +435,7 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
                     &mut self.writer,
                     &mut self.streaminfo,
                     &mut self.frame_number,
+                    self.sample_rate,
                     frame,
                 )
             })
@@ -456,6 +463,7 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
                     &mut self.writer,
                     &mut self.streaminfo,
                     &mut self.frame_number,
+                    self.sample_rate,
                     frame,
                 )
             })?;
@@ -485,6 +493,7 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
                     &mut self.writer,
                     &mut self.streaminfo,
                     &mut self.frame_number,
+                    self.sample_rate,
                     self.partial_frame.iter().map(|s| s.as_slice()).collect(),
                 )?;
             }
@@ -574,6 +583,7 @@ fn encode_frame<W>(
     mut writer: W,
     streaminfo: &mut Streaminfo,
     frame_number: &mut FrameNumber,
+    sample_rate: SampleRate<u32>,
     frame: SmallVec<[&[i32]; MAX_CHANNELS]>,
 ) -> Result<(), Error>
 where
@@ -593,8 +603,8 @@ where
     FrameHeader {
         blocking_strategy: false,
         frame_number: *frame_number,
-        block_size: frame[0].len() as u16,
-        sample_rate: streaminfo.sample_rate,
+        block_size: (frame[0].len() as u16).try_into().expect("frame cannot be empty"),
+        sample_rate,
         bits_per_sample: streaminfo.bits_per_sample,
         channel_assignment: ChannelAssignment::Independent(frame.len() as u8),
     }
@@ -876,8 +886,6 @@ fn write_residuals<W: BitWrite>(
             writer.build(&header)?;
             match header {
                 ResidualPartitionHeader::Standard { rice } => {
-                    // use bitstream_io::{Numeric, UnsignedInteger};
-
                     let shift = 1 << u32::from(rice);
 
                     residuals.iter().try_for_each(|s| {

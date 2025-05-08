@@ -120,7 +120,8 @@ impl<R: std::io::Read> Decoder<R> {
             Some(remaining) => FrameHeader::read(crc16_reader.by_ref(), &self.streaminfo)
                 .and_then(|header| {
                     // only the last block in a stream may contain <= 14 samples
-                    (u64::from(header.block_size) == remaining || header.block_size > 14)
+                    let block_size = u16::from(header.block_size);
+                    (u64::from(block_size) == remaining || block_size > 14)
                         .then_some(header)
                         .ok_or(Error::ShortBlock)
                 })?,
@@ -141,10 +142,10 @@ impl<R: std::io::Read> Decoder<R> {
         match header.channel_assignment {
             ChannelAssignment::Independent(total_channels) => {
                 buf.resized_channels(
-                    header.sample_rate,
+                    header.sample_rate.into(),
                     header.bits_per_sample.into(),
                     total_channels.into(),
-                    header.block_size.into(),
+                    u16::from(header.block_size).into(),
                 )
                 .try_for_each(|channel| {
                     read_subframe(&mut reader, header.bits_per_sample, channel)
@@ -152,9 +153,9 @@ impl<R: std::io::Read> Decoder<R> {
             }
             ChannelAssignment::LeftSide => {
                 let (left, side) = buf.resized_stereo(
-                    header.sample_rate,
+                    header.sample_rate.into(),
                     header.bits_per_sample.into(),
-                    header.block_size.into(),
+                    u16::from(header.block_size).into(),
                 );
 
                 read_subframe(&mut reader, header.bits_per_sample, left)?;
@@ -174,9 +175,9 @@ impl<R: std::io::Read> Decoder<R> {
             }
             ChannelAssignment::SideRight => {
                 let (side, right) = buf.resized_stereo(
-                    header.sample_rate,
+                    header.sample_rate.into(),
                     header.bits_per_sample.into(),
-                    header.block_size.into(),
+                    u16::from(header.block_size).into(),
                 );
 
                 read_subframe(
@@ -196,9 +197,9 @@ impl<R: std::io::Read> Decoder<R> {
             }
             ChannelAssignment::MidSide => {
                 let (mid, side) = buf.resized_stereo(
-                    header.sample_rate,
+                    header.sample_rate.into(),
                     header.bits_per_sample.into(),
-                    header.block_size.into(),
+                    u16::from(header.block_size).into(),
                 );
 
                 read_subframe(&mut reader, header.bits_per_sample, mid)?;
@@ -229,7 +230,7 @@ impl<R: std::io::Read> Decoder<R> {
 
         if let Some(remaining) = self.samples_remaining.as_mut() {
             *remaining = remaining
-                .checked_sub(u64::from(header.block_size))
+                .checked_sub(u16::from(header.block_size) as u64)
                 .ok_or(Error::TooManySamples)?;
         }
 
