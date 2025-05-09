@@ -13,9 +13,9 @@ use crate::metadata::{
     Application, BlockSet, BlockSize, BlockType, Cuesheet, MetadataBlock, Picture, SeekPoint,
     Streaminfo, VorbisComment, write_blocks,
 };
-use crate::stream::{FrameNumber, SampleRate};
+use crate::stream::{ChannelAssignment, FrameNumber, SampleRate};
 use crate::{Counter, Error};
-use bitstream_io::{BitWrite, BitWriter, LittleEndian, SignedBitCount};
+use bitstream_io::{BigEndian, BitRecorder, BitWrite, BitWriter, LittleEndian, SignedBitCount};
 use smallvec::SmallVec;
 use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
@@ -219,7 +219,24 @@ impl Default for EncodingOptions {
 
 #[derive(Default)]
 struct EncodingCaches {
+    correlation: CorrelationCache,
     fixed: FixedCache,
+}
+
+#[derive(Default)]
+struct CorrelationCache {
+    // the average channel samples
+    average_samples: Vec<i32>,
+    // the difference channel samples
+    difference_samples: Vec<i32>,
+    // the left channel
+    left: BitRecorder<u32, BigEndian>,
+    // the right channel
+    right: BitRecorder<u32, BigEndian>,
+    // the average channel
+    average: BitRecorder<u32, BigEndian>,
+    // the difference channel
+    difference: BitRecorder<u32, BigEndian>,
 }
 
 #[derive(Default)]
@@ -609,40 +626,75 @@ where
 {
     use crate::Counter;
     use crate::crc::{Crc16, CrcWriter};
-    use crate::stream::{ChannelAssignment, FrameHeader};
+    use crate::stream::FrameHeader;
     use bitstream_io::BigEndian;
 
     debug_assert!(!frame.is_empty());
 
     let size = Counter::new(writer.by_ref());
     let mut w: CrcWriter<_, Crc16> = CrcWriter::new(size);
+    let mut bw: BitWriter<CrcWriter<Counter<&mut W>, Crc16>, BigEndian>;
 
-    // TODO - channel assignment may vary
-    FrameHeader {
-        blocking_strategy: false,
-        frame_number: *frame_number,
-        block_size: (frame[0].len() as u16)
-            .try_into()
-            .expect("frame cannot be empty"),
-        sample_rate,
-        bits_per_sample: streaminfo.bits_per_sample,
-        channel_assignment: ChannelAssignment::Independent(frame.len() as u8),
+    match frame.as_slice() {
+        [left, right] => {
+            let Correlated {
+                channel_assignment,
+                channels,
+            } = correlate_channels(cache, [left, right], streaminfo.bits_per_sample)?;
+
+            FrameHeader {
+                blocking_strategy: false,
+                frame_number: *frame_number,
+                block_size: (frame[0].len() as u16)
+                    .try_into()
+                    .expect("frame cannot be empty"),
+                sample_rate,
+                bits_per_sample: streaminfo.bits_per_sample,
+                channel_assignment,
+            }
+            .write(&mut w, streaminfo)?;
+
+            bw = BitWriter::new(w);
+
+            for channel in channels {
+                channel.playback(&mut bw)?;
+            }
+        }
+        frame => {
+            // non-stereo frames are always encoded independently
+
+            FrameHeader {
+                blocking_strategy: false,
+                frame_number: *frame_number,
+                block_size: (frame[0].len() as u16)
+                    .try_into()
+                    .expect("frame cannot be empty"),
+                sample_rate,
+                bits_per_sample: streaminfo.bits_per_sample,
+                channel_assignment: ChannelAssignment::Independent(frame.len() as u8),
+            }
+            .write(&mut w, streaminfo)?;
+
+            bw = BitWriter::new(w);
+
+            for channel in frame {
+                encode_subframe(
+                    &mut cache.fixed,
+                    bw.by_ref(),
+                    channel,
+                    streaminfo.bits_per_sample,
+                )?;
+            }
+        }
     }
-    .write(&mut w, streaminfo)?;
 
-    let mut w = BitWriter::endian(w, BigEndian);
-
-    for channel in frame {
-        encode_subframe(cache, w.by_ref(), channel, streaminfo.bits_per_sample)?;
-    }
-
-    let crc16: u16 = w.aligned_writer()?.checksum().into();
-    w.write_from(crc16)?;
+    let crc16: u16 = bw.aligned_writer()?.checksum().into();
+    bw.write_from(crc16)?;
 
     frame_number.try_increment()?;
 
     // update minimum and maximum frame size values
-    if let s @ Some(size) = u32::try_from(w.into_writer().into_writer().count)
+    if let s @ Some(size) = u32::try_from(bw.into_writer().into_writer().count)
         .ok()
         .filter(|size| *size < Streaminfo::MAX_FRAME_SIZE)
         .and_then(NonZero::new)
@@ -669,8 +721,83 @@ where
     Ok(())
 }
 
+struct Correlated<'c> {
+    channel_assignment: ChannelAssignment,
+    channels: [&'c mut BitRecorder<u32, BigEndian>; 2],
+}
+
+fn correlate_channels<'c>(
+    EncodingCaches {
+        correlation:
+            CorrelationCache {
+                left: left_channel,
+                right: right_channel,
+                average_samples,
+                average,
+                difference_samples,
+                difference,
+            },
+        fixed: fixed_cache,
+    }: &'c mut EncodingCaches,
+    [left, right]: [&[i32]; 2],
+    bits_per_sample: SignedBitCount<32>,
+) -> Result<Correlated<'c>, Error> {
+    left_channel.clear();
+    encode_subframe(fixed_cache, left_channel, left, bits_per_sample)?;
+
+    right_channel.clear();
+    encode_subframe(fixed_cache, right_channel, right, bits_per_sample)?;
+
+    average_samples.clear();
+    average_samples.extend(left.iter().zip(right).map(|(l, r)| (l + r) >> 1));
+    average.clear();
+    encode_subframe(fixed_cache, average, average_samples, bits_per_sample)?;
+
+    difference_samples.clear();
+    difference_samples.extend(left.iter().zip(right).map(|(l, r)| l - r));
+    difference.clear();
+    encode_subframe(
+        fixed_cache,
+        difference,
+        difference_samples,
+        bits_per_sample.checked_add(1).ok_or(Error::ExcessiveBps)?,
+    )?;
+
+    let left_difference = left_channel.written() + difference.written();
+    let difference_right = difference.written() + right_channel.written();
+    let average_difference = average.written() + difference.written();
+    let independent = left_channel.written() + right_channel.written();
+
+    Ok(
+        if left_difference < difference_right
+            && left_difference < average_difference
+            && left_difference < independent
+        {
+            Correlated {
+                channel_assignment: ChannelAssignment::LeftSide,
+                channels: [left_channel, difference],
+            }
+        } else if difference_right < average_difference && difference_right < independent {
+            Correlated {
+                channel_assignment: ChannelAssignment::SideRight,
+                channels: [difference, right_channel],
+            }
+        } else if average_difference < independent {
+            Correlated {
+                channel_assignment: ChannelAssignment::MidSide,
+                channels: [average, difference],
+            }
+        } else {
+            Correlated {
+                channel_assignment: ChannelAssignment::Independent(2),
+                channels: [left_channel, right_channel],
+            }
+        },
+    )
+}
+
 fn encode_subframe<W: BitWrite>(
-    EncodingCaches { fixed: fixed_cache }: &mut EncodingCaches,
+    fixed_cache: &mut FixedCache,
     writer: &mut W,
     channel: &[i32],
     bits_per_sample: SignedBitCount<32>,
