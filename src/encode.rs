@@ -217,12 +217,25 @@ impl Default for EncodingOptions {
     }
 }
 
+#[derive(Default)]
+struct EncodingCaches {
+    fixed: FixedCache,
+}
+
+#[derive(Default)]
+struct FixedCache {
+    // FIXED subframe buffers
+    fixed_buffers: [Vec<i32>; 4],
+}
+
 /// A FLAC encoder
 pub struct Encoder<W: std::io::Write + std::io::Seek> {
     // the writer we're outputting to
     writer: Counter<W>,
     // various encoding options
     options: EncodingOptions,
+    // various encoder caches
+    caches: EncodingCaches,
     // a partial frame of PCM samples, divided by channels and then samples
     partial_frame: Vec<Vec<i32>>,
     // our STREAMINFO block information
@@ -340,6 +353,7 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
         Ok(Self {
             writer: Counter::new(writer),
             options,
+            caches: EncodingCaches::default(),
             partial_frame: vec![Vec::new(); streaminfo.channels.get().into()],
             sample_rate: streaminfo
                 .sample_rate
@@ -432,6 +446,7 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
             )
             .try_for_each(|frame| {
                 encode_frame(
+                    &mut self.caches,
                     &mut self.writer,
                     &mut self.streaminfo,
                     &mut self.frame_number,
@@ -460,6 +475,7 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
             )
             .try_for_each(|frame| {
                 encode_frame(
+                    &mut self.caches,
                     &mut self.writer,
                     &mut self.streaminfo,
                     &mut self.frame_number,
@@ -490,6 +506,7 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
             // output any remaining partial frame
             if !self.partial_frame[0].is_empty() {
                 encode_frame(
+                    &mut self.caches,
                     &mut self.writer,
                     &mut self.streaminfo,
                     &mut self.frame_number,
@@ -580,6 +597,7 @@ impl<W: std::io::Write + std::io::Seek> Drop for Encoder<W> {
 }
 
 fn encode_frame<W>(
+    cache: &mut EncodingCaches,
     mut writer: W,
     streaminfo: &mut Streaminfo,
     frame_number: &mut FrameNumber,
@@ -615,7 +633,7 @@ where
     let mut w = BitWriter::endian(w, BigEndian);
 
     for channel in frame {
-        encode_subframe(w.by_ref(), channel, streaminfo.bits_per_sample)?;
+        encode_subframe(cache, w.by_ref(), channel, streaminfo.bits_per_sample)?;
     }
 
     let crc16: u16 = w.aligned_writer()?.checksum().into();
@@ -652,6 +670,7 @@ where
 }
 
 fn encode_subframe<W: BitWrite>(
+    EncodingCaches { fixed: fixed_cache }: &mut EncodingCaches,
     writer: &mut W,
     channel: &[i32],
     bits_per_sample: SignedBitCount<32>,
@@ -685,7 +704,7 @@ fn encode_subframe<W: BitWrite>(
 
     // TODO - try different subframe types
 
-    encode_fixed_subframe(writer, channel, bits_per_sample, wasted_bps)
+    encode_fixed_subframe(fixed_cache, writer, channel, bits_per_sample, wasted_bps)
     // match channel {
     //     [first] => encode_constant_subframe(w, *first, bits_per_sample, wasted_bps),
     //     [first, rest @ ..] if rest.iter().all(|s| s == first) => {
@@ -734,6 +753,9 @@ fn encode_verbatim_subframe<W: BitWrite>(
 }
 
 fn encode_fixed_subframe<W: BitWrite>(
+    FixedCache {
+        fixed_buffers: buffers,
+    }: &mut FixedCache,
     writer: &mut W,
     channel: &[i32],
     bits_per_sample: SignedBitCount<32>,
@@ -741,9 +763,6 @@ fn encode_fixed_subframe<W: BitWrite>(
 ) -> Result<(), Error> {
     use crate::stream::{SubframeHeader, SubframeHeaderType};
     use smallvec::smallvec;
-
-    // TODO - reuse buffers between calls
-    let mut buffers: SmallVec<[Vec<i32>; 4]> = smallvec![vec![]; 4];
 
     // calculate residuals for FIXED subframe orders 0-4
     // (or fewer, if we don't have enough samples)
@@ -755,6 +774,7 @@ fn encode_fixed_subframe<W: BitWrite>(
             let prev_order = fixed_orders.last().unwrap();
             match prev_order.split_at_checked(1) {
                 Some((_, r)) => {
+                    buf.clear();
                     buf.extend(
                         r.iter()
                             .zip(*prev_order)
@@ -859,6 +879,7 @@ fn write_residuals<W: BitWrite>(
         block_size: usize,
         residuals: &[i32],
     ) -> SmallVec<[Partition<'_, RICE_MAX>; MAX_PARTITIONS]> {
+        // TODO - make max partition order configurable
         (0..=block_size.trailing_zeros().min(6))
             .map(|partition_order| 1 << partition_order)
             .map(|partition_count| {
@@ -870,10 +891,9 @@ fn write_residuals<W: BitWrite>(
                     .map(|partition| Partition::new(partition, &mut estimated_bits))
                     .collect();
 
-                assert_eq!(partition_count, partitions.len());
-
                 (partitions, estimated_bits)
             })
+            .take_while(|(partitions, _)| partitions.len().is_power_of_two())
             .min_by_key(|(_, estimated_bits)| *estimated_bits)
             .map(|(partitions, _)| partitions)
             .expect("no best set of partitions found")
@@ -887,7 +907,6 @@ fn write_residuals<W: BitWrite>(
         let block_size = predictor_order + residuals.len();
 
         let partitions = best_partitions::<RICE_MAX>(block_size, residuals);
-        partitions.len();
         debug_assert!(!partitions.is_empty());
         debug_assert!(partitions.len().is_power_of_two());
 
