@@ -147,8 +147,12 @@ impl FrameHeader {
 
         // uncommon block size
         match self.block_size {
-            BlockSize::Read8(size) => w.write::<8, _>(size.checked_sub(1).ok_or(Error::InvalidBlockSize)?)?,
-            BlockSize::Read16(size) => w.write::<16, _>(size.checked_sub(1).ok_or(Error::InvalidBlockSize)?)?,
+            BlockSize::Read8(size) => {
+                w.write::<8, _>(size.checked_sub(1).ok_or(Error::InvalidBlockSize)?)?
+            }
+            BlockSize::Read16(size) => {
+                w.write::<16, _>(size.checked_sub(1).ok_or(Error::InvalidBlockSize)?)?
+            }
             _ => { /* do nothing */ }
         }
 
@@ -809,7 +813,8 @@ impl Frame {
         let subframes = match header.channel_assignment {
             ChannelAssignment::Independent(total_channels) => (0..total_channels)
                 .map(|_| {
-                    reader.parse_with::<Subframe>(&(header.block_size.into(), header.bits_per_sample))
+                    reader
+                        .parse_with::<Subframe>(&(header.block_size.into(), header.bits_per_sample))
                 })
                 .collect::<Result<Vec<_>, _>>()?,
             ChannelAssignment::LeftSide => vec![

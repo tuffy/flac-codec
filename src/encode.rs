@@ -603,7 +603,9 @@ where
     FrameHeader {
         blocking_strategy: false,
         frame_number: *frame_number,
-        block_size: (frame[0].len() as u16).try_into().expect("frame cannot be empty"),
+        block_size: (frame[0].len() as u16)
+            .try_into()
+            .expect("frame cannot be empty"),
         sample_rate,
         bits_per_sample: streaminfo.bits_per_sample,
         channel_assignment: ChannelAssignment::Independent(frame.len() as u8),
@@ -794,7 +796,7 @@ fn encode_fixed_subframe<W: BitWrite>(
         .iter()
         .try_for_each(|sample: &i32| writer.write_signed_counted(bits_per_sample, *sample))?;
 
-    write_residuals(writer, 0, residuals)
+    write_residuals(writer, order.into(), residuals)
 }
 
 fn write_residuals<W: BitWrite>(
@@ -807,6 +809,7 @@ fn write_residuals<W: BitWrite>(
 
     const MAX_PARTITIONS: usize = 64;
 
+    #[derive(Debug)]
     struct Partition<'r, const RICE_MAX: u32> {
         header: ResidualPartitionHeader<RICE_MAX>,
         residuals: &'r [i32],
@@ -818,31 +821,36 @@ fn write_residuals<W: BitWrite>(
 
             let partition_sum = partition.iter().map(|i| i.unsigned_abs()).sum::<u32>();
 
-            match (partition_sum / partition.len() as u32).checked_ilog2() {
-                Some(rice) => {
-                    let rice = BitCount::try_from(rice).expect("excessive Rice parameters");
-                    assert!(u32::from(rice) < u32::from(BitCount::<RICE_MAX>::new::<RICE_MAX>()));
+            if partition_sum > 0 {
+                let rice = BitCount::try_from(
+                    (partition_sum / partition.len() as u32)
+                        .checked_ilog2()
+                        .unwrap_or_default(),
+                )
+                .expect("excessive Rice parameters");
 
-                    // TODO - should double-check this estimated bits calculation
-                    *estimated_bits += 4
-                        + ((1 + u32::from(rice)) * partition.len() as u32)
-                        + (partition_sum >> (u32::from(rice).saturating_sub(1)))
-                        + ((partition.len() as u32) >> 1);
+                assert!(u32::from(rice) < u32::from(BitCount::<RICE_MAX>::new::<RICE_MAX>()));
 
-                    // TODO - if estimated bits is larger than
-                    // a verbatim (escaped) partition,
-                    // just escape the residuals instead
+                // TODO - should double-check this estimated bits calculation
+                *estimated_bits += 4
+                    + ((1 + u32::from(rice)) * partition.len() as u32)
+                    + (partition_sum >> (u32::from(rice).saturating_sub(1)))
+                    + ((partition.len() as u32) >> 1);
 
-                    Partition {
-                        header: ResidualPartitionHeader::Standard { rice },
-                        residuals: partition,
-                    }
+                // TODO - if estimated bits is larger than
+                // a verbatim (escaped) partition,
+                // just escape the residuals instead
+
+                Partition {
+                    header: ResidualPartitionHeader::Standard { rice },
+                    residuals: partition,
                 }
+            } else {
                 // all partition residuals are 0, so use a constant
-                None => Partition {
+                Partition {
                     header: ResidualPartitionHeader::Constant,
                     residuals: partition,
-                },
+                }
             }
         }
     }
@@ -856,11 +864,13 @@ fn write_residuals<W: BitWrite>(
             .map(|partition_count| {
                 let mut estimated_bits = 0;
 
-                let partitions = residuals
+                let partitions: SmallVec<_> = residuals
                     .rchunks(block_size / partition_count as usize)
                     .rev()
                     .map(|partition| Partition::new(partition, &mut estimated_bits))
                     .collect();
+
+                assert_eq!(partition_count, partitions.len());
 
                 (partitions, estimated_bits)
             })
@@ -877,6 +887,7 @@ fn write_residuals<W: BitWrite>(
         let block_size = predictor_order + residuals.len();
 
         let partitions = best_partitions::<RICE_MAX>(block_size, residuals);
+        partitions.len();
         debug_assert!(!partitions.is_empty());
         debug_assert!(partitions.len().is_power_of_two());
 
@@ -911,6 +922,6 @@ fn write_residuals<W: BitWrite>(
     }
 
     // TODO - we only support a coding method of 0
-    writer.write::<2, u8>(0)?;
+    writer.write::<2, u8>(0)?; // coding method
     write_block::<0b1111, W>(writer, predictor_order, residuals)
 }
