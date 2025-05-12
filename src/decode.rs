@@ -22,6 +22,7 @@ pub struct Decoder<R> {
     // the size of everything before the first frame, in bytes
     frames_start: u64,
     samples_remaining: Option<u64>,
+    buf: Frame,
 }
 
 impl<R: std::io::Read> Decoder<R> {
@@ -63,6 +64,7 @@ impl<R: std::io::Read> Decoder<R> {
                 samples_remaining: streaminfo.total_samples.map(|s| s.get()),
                 streaminfo,
                 seektable,
+                buf: Frame::default(),
             }),
             // read_blocks should check for this already
             // but we'll add a second check to be certain
@@ -99,15 +101,12 @@ impl<R: std::io::Read> Decoder<R> {
         self.streaminfo.md5.as_ref()
     }
 
-    /// Given a frame buffer, returns a decoded frame.
-    ///
-    /// `Frame::default` may be used if no frame buffer
-    /// exists to be reused.
+    /// Returns decoded frame, if any.
     ///
     /// # Errors
     ///
     /// Returns any decoding error from the stream.
-    pub fn read_frame(&mut self, mut buf: Frame) -> Result<Frame, Error> {
+    pub fn read_frame(&mut self) -> Result<Option<&Frame>, Error> {
         use crate::crc::{Checksum, Crc16, CrcReader};
         use crate::stream::{ChannelAssignment, FrameHeader};
         use bitstream_io::{BigEndian, BitReader};
@@ -116,7 +115,7 @@ impl<R: std::io::Read> Decoder<R> {
         let mut crc16_reader: CrcReader<_, Crc16> = CrcReader::new(self.reader.by_ref());
 
         let header = match self.samples_remaining {
-            Some(0) => return Ok(buf.empty()),
+            Some(0) => return Ok(None),
             Some(remaining) => FrameHeader::read(crc16_reader.by_ref(), &self.streaminfo)
                 .and_then(|header| {
                     // only the last block in a stream may contain <= 14 samples
@@ -131,13 +130,14 @@ impl<R: std::io::Read> Decoder<R> {
             None => match FrameHeader::read(crc16_reader.by_ref(), &self.streaminfo) {
                 Ok(header) => header,
                 Err(Error::Io(err)) if err.kind() == std::io::ErrorKind::UnexpectedEof => {
-                    return Ok(buf.empty());
+                    return Ok(None);
                 }
                 Err(err) => return Err(err),
             },
         };
 
         let mut reader = BitReader::endian(crc16_reader.by_ref(), BigEndian);
+        let buf = &mut self.buf;
 
         match header.channel_assignment {
             ChannelAssignment::Independent(total_channels) => {
@@ -234,7 +234,7 @@ impl<R: std::io::Read> Decoder<R> {
                 .ok_or(Error::TooManySamples)?;
         }
 
-        Ok(buf)
+        Ok(Some(buf))
     }
 }
 
