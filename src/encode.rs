@@ -15,7 +15,7 @@ use crate::metadata::{
 };
 use crate::stream::{ChannelAssignment, FrameNumber, SampleRate};
 use crate::{Counter, Error};
-use bitstream_io::{BigEndian, BitRecorder, BitWrite, BitWriter, LittleEndian, SignedBitCount};
+use bitstream_io::{BigEndian, BitRecorder, BitWrite, BitWriter, SignedBitCount};
 use smallvec::SmallVec;
 use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
@@ -25,7 +25,6 @@ const MAX_CHANNELS: usize = 8;
 
 /// FLAC encoding options
 pub struct EncodingOptions {
-    block_size: u16,
     metadata: BTreeMap<BlockType, BlockSet>,
     seektable_style: Option<SeektableStyle>,
 }
@@ -36,12 +35,6 @@ enum SeektableStyle {
 }
 
 impl EncodingOptions {
-    /// Overrides default encoding block size of 4096 samples
-    pub fn block_size(self, block_size: u16) -> Self {
-        // TODO - enforce minimum block size
-        Self { block_size, ..self }
-    }
-
     /// Adds new PADDING block to metadata
     ///
     /// Files may contain multiple PADDING blocks,
@@ -210,7 +203,6 @@ impl EncodingOptions {
 impl Default for EncodingOptions {
     fn default() -> Self {
         Self {
-            block_size: 4096,
             metadata: BTreeMap::default(),
             seektable_style: None,
         }
@@ -253,8 +245,6 @@ pub struct Encoder<W: std::io::Write + std::io::Seek> {
     options: EncodingOptions,
     // various encoder caches
     caches: EncodingCaches,
-    // a partial frame of PCM samples, divided by channels and then samples
-    partial_frame: Vec<Vec<i32>>,
     // our STREAMINFO block information
     streaminfo: Streaminfo,
     // our stream's sample rate
@@ -266,7 +256,7 @@ pub struct Encoder<W: std::io::Write + std::io::Seek> {
     // all seekpoints
     seekpoints: Vec<SeekPoint>,
     // our running MD5 calculation
-    md5: BitWriter<md5::Context, LittleEndian>,
+    md5: md5::Context,
     // whether the encoder has finalized the file
     finalized: bool,
 }
@@ -302,13 +292,14 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
         sample_rate: u32,
         bits_per_sample: impl TryInto<SignedBitCount<32>>,
         channels: NonZero<u8>,
+        block_size: u16,
         total_samples: Option<NonZero<u64>>,
     ) -> Result<Self, Error> {
         use crate::metadata::AsBlockRef;
 
         let streaminfo = Streaminfo {
-            minimum_block_size: options.block_size,
-            maximum_block_size: options.block_size,
+            minimum_block_size: block_size,
+            maximum_block_size: block_size,
             minimum_frame_size: None,
             maximum_frame_size: None,
             sample_rate: (0..1048576)
@@ -350,7 +341,7 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
                                 total_samples
                                     .get()
                                     .div_ceil(samples)
-                                    .min(total_samples.get().div_ceil(options.block_size.into()))
+                                    .min(total_samples.get().div_ceil(block_size.into()))
                                     .try_into()
                                     .unwrap()
                             ],
@@ -371,7 +362,6 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
             writer: Counter::new(writer),
             options,
             caches: EncodingCaches::default(),
-            partial_frame: vec![Vec::new(); streaminfo.channels.get().into()],
             sample_rate: streaminfo
                 .sample_rate
                 .try_into()
@@ -380,9 +370,14 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
             frame_number: FrameNumber::default(),
             samples_written: 0,
             seekpoints: Vec::new(),
-            md5: BitWriter::new(md5::Context::new()),
+            md5: md5::Context::new(),
             finalized: false,
         })
+    }
+
+    /// Updates running MD5 calculation with signed, little-endian bytes
+    pub fn update_md5(&mut self, frame_bytes: &[u8]) {
+        self.md5.consume(frame_bytes)
     }
 
     /// Encodes an audio frame of PCM samples
@@ -396,21 +391,6 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
     /// or if the frame's parameters are not a match
     /// for the encoder's.
     pub fn encode(&mut self, frame: &Frame) -> Result<(), Error> {
-        struct MultiIterator<I>(SmallVec<[I; MAX_CHANNELS]>);
-
-        impl<I: Iterator> Iterator for MultiIterator<I> {
-            type Item = SmallVec<[I::Item; MAX_CHANNELS]>;
-
-            fn next(&mut self) -> Option<Self::Item> {
-                let v = self
-                    .0
-                    .iter_mut()
-                    .filter_map(|i| i.next())
-                    .collect::<SmallVec<_>>();
-                (!v.is_empty()).then_some(v)
-            }
-        }
-
         // sanity-check that frame's parameters match encoder's
         if frame.channel_count() != self.streaminfo.channels.get().into() {
             return Err(Error::ChannelsMismatch);
@@ -435,83 +415,14 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
             }
         }
 
-        // update MD5 calculation
-        // TODO - if we're encoding from raw LE PCM bytes already
-        // update the MD5 from those bytes and bypass this
-        // expensive re-conversion step
-        // (it might make sense to implement Write for the encoder)
-        frame.iter().try_for_each(|i| {
-            self.md5
-                .write_signed_counted(self.streaminfo.bits_per_sample, i)?;
-            self.md5.byte_align()
-        })?;
-
-        if self.partial_frame[0].is_empty()
-            && frame.pcm_frames() % self.options.block_size as usize == 0
-        {
-            // no partial samples in the buffer
-            // and the input is a multiple of our block size,
-            // so encode whole FLAC frames from our input
-
-            let mut buffers = frame.channels().collect::<Vec<_>>();
-
-            MultiIterator(
-                buffers
-                    .iter_mut()
-                    .map(|b| b.chunks_exact(self.options.block_size as usize))
-                    .collect(),
-            )
-            .try_for_each(|frame| {
-                encode_frame(
-                    &mut self.caches,
-                    &mut self.writer,
-                    &mut self.streaminfo,
-                    &mut self.frame_number,
-                    self.sample_rate,
-                    frame,
-                )
-            })
-        } else {
-            // populate partial frame with more samples
-            let mut buffers = self
-                .partial_frame
-                .iter_mut()
-                .zip(frame.channels())
-                .map(|(partial, new)| {
-                    partial.extend(new);
-                    partial
-                })
-                .collect::<Vec<_>>();
-
-            // encode any whole frames in partials
-            MultiIterator(
-                buffers
-                    .iter_mut()
-                    .map(|b| b.chunks_exact(self.options.block_size as usize))
-                    .collect(),
-            )
-            .try_for_each(|frame| {
-                encode_frame(
-                    &mut self.caches,
-                    &mut self.writer,
-                    &mut self.streaminfo,
-                    &mut self.frame_number,
-                    self.sample_rate,
-                    frame,
-                )
-            })?;
-
-            // retain any remaining samples not converted to FLAC frames
-            let remainder = buffers[0].len() % self.options.block_size as usize;
-            let range = (buffers[0].len() - remainder)..;
-
-            for buffer in buffers {
-                buffer.copy_within(range.clone(), 0);
-                buffer.truncate(remainder);
-            }
-
-            Ok(())
-        }
+        encode_frame(
+            &mut self.caches,
+            &mut self.writer,
+            &mut self.streaminfo,
+            &mut self.frame_number,
+            self.sample_rate,
+            frame.channels().collect(),
+        )
     }
 
     fn finalize_inner(&mut self) -> Result<(), Error> {
@@ -519,18 +430,6 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
             use crate::metadata::{AsBlockRef, BlockSet, SeekTable};
 
             self.finalized = true;
-
-            // output any remaining partial frame
-            if !self.partial_frame[0].is_empty() {
-                encode_frame(
-                    &mut self.caches,
-                    &mut self.writer,
-                    &mut self.streaminfo,
-                    &mut self.frame_number,
-                    self.sample_rate,
-                    self.partial_frame.iter().map(|s| s.as_slice()).collect(),
-                )?;
-            }
 
             // update SEEKTABLE metadata block with final values
             match self.options.seektable_style {
@@ -576,7 +475,7 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
                 }
             }
 
-            self.streaminfo.md5 = Some(self.md5.aligned_writer()?.clone().compute().0);
+            self.streaminfo.md5 = Some(self.md5.clone().compute().0);
 
             let writer = self.writer.stream();
 
