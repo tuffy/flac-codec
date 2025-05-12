@@ -12,7 +12,97 @@ use crate::Error;
 use crate::audio::Frame;
 use crate::metadata::{SeekTable, Streaminfo};
 use bitstream_io::{BitRead, SignedBitCount};
+use std::collections::VecDeque;
 use std::num::NonZero;
+
+/// A FLAC reader
+pub struct Reader<R, E> {
+    decoder: Decoder<R>,
+    endianness: std::marker::PhantomData<E>,
+    buf: VecDeque<u8>,
+}
+
+impl<R: std::io::Read, E> Reader<R, E> {
+    /// Opens new FLAC reader
+    pub fn new(reader: R) -> Result<Self, Error> {
+        Ok(Self {
+            decoder: Decoder::new(reader)?,
+            endianness: std::marker::PhantomData,
+            buf: VecDeque::default(),
+        })
+    }
+
+    /// Returns channel count
+    ///
+    /// From 1 to 8
+    pub fn channel_count(&self) -> NonZero<u8> {
+        self.decoder.streaminfo.channels
+    }
+
+    /// Returns sample rate, in Hz
+    pub fn sample_rate(&self) -> u32 {
+        self.decoder.streaminfo.sample_rate
+    }
+
+    /// Returns decoder's bits-per-sample
+    ///
+    /// From 1 to 32
+    pub fn bits_per_sample(&self) -> SignedBitCount<32> {
+        self.decoder.streaminfo.bits_per_sample
+    }
+
+    /// Returns total number of channel-independent samples, if known
+    pub fn total_samples(&self) -> Option<NonZero<u64>> {
+        self.decoder.streaminfo.total_samples
+    }
+
+    /// Returns MD5 of entire stream, if known
+    pub fn md5(&self) -> Option<&[u8; 16]> {
+        self.decoder.streaminfo.md5.as_ref()
+    }
+}
+
+impl<R: std::io::Read, E: crate::audio::Endianness> std::io::Read for Reader<R, E> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.buf.is_empty() {
+            match self.decoder.read_frame()? {
+                Some(frame) => {
+                    self.buf.resize(frame.bytes_len(), 0);
+                    frame.fill_buf::<E>(self.buf.make_contiguous());
+                    self.buf.read(buf)
+                }
+                None => {
+                    return Ok(0);
+                }
+            }
+        } else {
+            self.buf.read(buf)
+        }
+    }
+}
+
+impl<R: std::io::Read, E: crate::audio::Endianness> std::io::BufRead for Reader<R, E> {
+    fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
+        if self.buf.is_empty() {
+            match self.decoder.read_frame()? {
+                Some(frame) => {
+                    self.buf.resize(frame.bytes_len(), 0);
+                    frame.fill_buf::<E>(self.buf.make_contiguous());
+                    self.buf.fill_buf()
+                }
+                None => {
+                    return Ok(&[]);
+                }
+            }
+        } else {
+            self.buf.fill_buf()
+        }
+    }
+
+    fn consume(&mut self, amt: usize) {
+        self.buf.consume(amt)
+    }
+}
 
 /// A FLAC decoder
 pub struct Decoder<R> {

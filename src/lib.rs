@@ -230,6 +230,16 @@ impl std::fmt::Display for Error {
     }
 }
 
+impl From<Error> for std::io::Error {
+    fn from(err: Error) -> Self {
+        match err {
+            Error::Io(io) => io,
+            Error::Utf8(e) => std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()),
+            other => std::io::Error::new(std::io::ErrorKind::InvalidData, other.to_string()),
+        }
+    }
+}
+
 struct Counter<F> {
     stream: F,
     count: u64,

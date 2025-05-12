@@ -10,6 +10,95 @@
 
 use std::ops::Index;
 
+/// Sample byte order
+pub trait Endianness {
+    /// Converts 8-bit sample to bytes in this byte order
+    fn i8_to_bytes(sample: i8) -> [u8; 1];
+
+    /// Converts 16-bit sample to bytes in this byte order
+    fn i16_to_bytes(sample: i16) -> [u8; 2];
+
+    /// Converts 24-bit sample to bytes in this byte order
+    fn i24_to_bytes(sample: i32) -> [u8; 3];
+
+    /// Converts 32-bit sample to bytes in this byte order
+    fn i32_to_bytes(sample: i32) -> [u8; 4];
+}
+
+/// Little-endian byte order
+pub struct LittleEndian;
+
+impl Endianness for LittleEndian {
+    fn i8_to_bytes(sample: i8) -> [u8; 1] {
+        sample.to_le_bytes()
+    }
+
+    fn i16_to_bytes(sample: i16) -> [u8; 2] {
+        sample.to_le_bytes()
+    }
+
+    fn i24_to_bytes(sample: i32) -> [u8; 3] {
+        let unsigned: u32 = if sample >= 0 {
+            sample as u32
+        } else {
+            0x800000 | ((sample - (-1 << 23)) as u32)
+        };
+
+        [
+            (unsigned & 0xFF) as u8,
+            ((unsigned & 0xFF00) >> 8) as u8,
+            (unsigned >> 16) as u8,
+        ]
+    }
+
+    fn i32_to_bytes(sample: i32) -> [u8; 4] {
+        sample.to_le_bytes()
+    }
+}
+
+#[allow(unused)]
+fn test_endianness<F: bitstream_io::Endianness, E: Endianness>() {
+    use bitstream_io::{BitWrite, BitWriter};
+
+    // 8 bits-per-sample
+    for i in i8::MIN..=i8::MAX {
+        let mut buf1 = [0; 1];
+        let mut w: BitWriter<_, F> = BitWriter::new(buf1.as_mut_slice());
+        w.write::<8, i8>(i).unwrap();
+
+        let buf2 = E::i8_to_bytes(i);
+
+        assert_eq!(buf1, buf2);
+    }
+
+    // 16 bits-per-sample
+    for i in i16::MIN..=i16::MAX {
+        let mut buf1 = [0; 2];
+        let mut w: BitWriter<_, F> = BitWriter::new(buf1.as_mut_slice());
+        w.write::<16, i16>(i).unwrap();
+
+        let buf2 = E::i16_to_bytes(i);
+
+        assert_eq!(buf1, buf2);
+    }
+
+    // 24 bits-per-sample
+    for i in (-1 << 23)..=((1 << 23) - 1) {
+        let mut buf1 = [0; 3];
+        let mut w: BitWriter<_, F> = BitWriter::new(buf1.as_mut_slice());
+        w.write::<24, i32>(i).unwrap();
+
+        let buf2 = E::i24_to_bytes(i);
+
+        assert_eq!(buf1, buf2);
+    }
+}
+
+#[test]
+fn test_samples_le() {
+    test_endianness::<bitstream_io::LittleEndian, LittleEndian>()
+}
+
 /// A decoded set of audio samples
 #[derive(Clone, Default, Debug)]
 pub struct Frame {
@@ -120,6 +209,44 @@ impl Frame {
     /// Iterates over all channels
     pub fn channels(&self) -> impl Iterator<Item = &[i32]> {
         self.samples.chunks_exact(self.channel_len)
+    }
+
+    /// Returns bytes-per-sample
+    pub fn bytes_per_sample(&self) -> usize {
+        self.bits_per_sample().div_ceil(8) as usize
+    }
+
+    /// Returns total length of buffer in bytes
+    #[inline]
+    pub fn bytes_len(&self) -> usize {
+        self.bytes_per_sample() * self.samples.len()
+    }
+
+    /// Fills buffer with our samples in the given endianness
+    pub fn fill_buf<E: Endianness>(&self, buf: &mut [u8]) {
+        match self.bytes_per_sample() {
+            1 => {
+                for (sample, bytes) in self.iter().zip(buf.chunks_exact_mut(1)) {
+                    bytes.copy_from_slice(&E::i8_to_bytes(sample as i8));
+                }
+            }
+            2 => {
+                for (sample, bytes) in self.iter().zip(buf.chunks_exact_mut(2)) {
+                    bytes.copy_from_slice(&E::i16_to_bytes(sample as i16));
+                }
+            }
+            3 => {
+                for (sample, bytes) in self.iter().zip(buf.chunks_exact_mut(3)) {
+                    bytes.copy_from_slice(&E::i24_to_bytes(sample));
+                }
+            }
+            4 => {
+                for (sample, bytes) in self.iter().zip(buf.chunks_exact_mut(4)) {
+                    bytes.copy_from_slice(&E::i32_to_bytes(sample));
+                }
+            }
+            _ => panic!("unsupported number of bytes per samples"),
+        }
     }
 }
 
