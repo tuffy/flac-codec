@@ -68,11 +68,11 @@ impl<R: std::io::Read, E: crate::audio::Endianness> std::io::Read for Reader<R, 
             match self.decoder.read_frame()? {
                 Some(frame) => {
                     self.buf.resize(frame.bytes_len(), 0);
-                    frame.fill_buf::<E>(self.buf.make_contiguous());
+                    frame.to_buf::<E>(self.buf.make_contiguous());
                     self.buf.read(buf)
                 }
                 None => {
-                    return Ok(0);
+                    Ok(0)
                 }
             }
         } else {
@@ -87,11 +87,11 @@ impl<R: std::io::Read, E: crate::audio::Endianness> std::io::BufRead for Reader<
             match self.decoder.read_frame()? {
                 Some(frame) => {
                     self.buf.resize(frame.bytes_len(), 0);
-                    frame.fill_buf::<E>(self.buf.make_contiguous());
+                    frame.to_buf::<E>(self.buf.make_contiguous());
                     self.buf.fill_buf()
                 }
                 None => {
-                    return Ok(&[]);
+                    Ok(&[])
                 }
             }
         } else {

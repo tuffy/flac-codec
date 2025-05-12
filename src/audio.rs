@@ -23,6 +23,18 @@ pub trait Endianness {
 
     /// Converts 32-bit sample to bytes in this byte order
     fn i32_to_bytes(sample: i32) -> [u8; 4];
+
+    /// Converts bytes to 8-bit samples in this byte order
+    fn bytes_to_i8(bytes: [u8; 1]) -> i8;
+
+    /// Converts bytes to 16-bit samples in this byte order
+    fn bytes_to_i16(bytes: [u8; 2]) -> i16;
+
+    /// Converts bytes to 24-bit samples in this byte order
+    fn bytes_to_i24(bytes: [u8; 3]) -> i32;
+
+    /// Converts bytes to 32-bit samples in this byte order
+    fn bytes_to_i32(bytes: [u8; 4]) -> i32;
 }
 
 /// Little-endian byte order
@@ -54,13 +66,35 @@ impl Endianness for LittleEndian {
     fn i32_to_bytes(sample: i32) -> [u8; 4] {
         sample.to_le_bytes()
     }
+
+    fn bytes_to_i8(bytes: [u8; 1]) -> i8 {
+        i8::from_le_bytes(bytes)
+    }
+
+    fn bytes_to_i16(bytes: [u8; 2]) -> i16 {
+        i16::from_le_bytes(bytes)
+    }
+
+    fn bytes_to_i24(bytes: [u8; 3]) -> i32 {
+        let unsigned = ((bytes[2] as u32) << 16) | ((bytes[1] as u32) << 8) | bytes[0] as u32;
+
+        if unsigned & 0x800000 == 0 {
+            unsigned as i32
+        } else {
+            (unsigned & 0x7FFFFF) as i32 + (-1 << 23)
+        }
+    }
+
+    fn bytes_to_i32(bytes: [u8; 4]) -> i32 {
+        i32::from_le_bytes(bytes)
+    }
 }
 
 #[allow(unused)]
 fn test_endianness<F: bitstream_io::Endianness, E: Endianness>() {
     use bitstream_io::{BitWrite, BitWriter};
 
-    // 8 bits-per-sample
+    // 8 bits-per-sample to bytes
     for i in i8::MIN..=i8::MAX {
         let mut buf1 = [0; 1];
         let mut w: BitWriter<_, F> = BitWriter::new(buf1.as_mut_slice());
@@ -69,9 +103,12 @@ fn test_endianness<F: bitstream_io::Endianness, E: Endianness>() {
         let buf2 = E::i8_to_bytes(i);
 
         assert_eq!(buf1, buf2);
+
+        let j = E::bytes_to_i8(buf2);
+        assert_eq!(i, j);
     }
 
-    // 16 bits-per-sample
+    // 16 bits-per-sample to bytes
     for i in i16::MIN..=i16::MAX {
         let mut buf1 = [0; 2];
         let mut w: BitWriter<_, F> = BitWriter::new(buf1.as_mut_slice());
@@ -80,9 +117,12 @@ fn test_endianness<F: bitstream_io::Endianness, E: Endianness>() {
         let buf2 = E::i16_to_bytes(i);
 
         assert_eq!(buf1, buf2);
+
+        let j = E::bytes_to_i16(buf2);
+        assert_eq!(i, j);
     }
 
-    // 24 bits-per-sample
+    // 24 bits-per-sample to bytes
     for i in (-1 << 23)..=((1 << 23) - 1) {
         let mut buf1 = [0; 3];
         let mut w: BitWriter<_, F> = BitWriter::new(buf1.as_mut_slice());
@@ -91,6 +131,9 @@ fn test_endianness<F: bitstream_io::Endianness, E: Endianness>() {
         let buf2 = E::i24_to_bytes(i);
 
         assert_eq!(buf1, buf2);
+
+        let j = E::bytes_to_i24(buf2);
+        assert_eq!(i, j);
     }
 }
 
@@ -100,7 +143,7 @@ fn test_samples_le() {
 }
 
 /// A decoded set of audio samples
-#[derive(Clone, Default, Debug)]
+#[derive(Clone, Default, Debug, Eq, PartialEq)]
 pub struct Frame {
     // all samples, stacked by channel
     samples: Vec<i32>,
@@ -143,21 +186,16 @@ impl Frame {
         self.channel_len
     }
 
-    /// Empties frame of its contents and returns it
+    /// Returns empty Frame which can be filled as needed
     #[inline]
-    pub fn empty(mut self) -> Self {
-        self.samples.clear();
-        self.channels = 0;
-        self.channel_len = 0;
-        self.sample_rate = 0;
-        self.bits_per_sample = 0;
-        self
-    }
-
-    /// Returns true if frame is empty
-    #[inline]
-    pub fn is_empty(&self) -> bool {
-        self.samples.is_empty()
+    pub fn empty(channels: usize, bits_per_sample: u32, sample_rate: u32) -> Self {
+        Self {
+            samples: Vec::new(),
+            channels,
+            channel_len: 0,
+            bits_per_sample,
+            sample_rate,
+        }
     }
 
     fn resize(
@@ -223,7 +261,9 @@ impl Frame {
     }
 
     /// Fills buffer with our samples in the given endianness
-    pub fn fill_buf<E: Endianness>(&self, buf: &mut [u8]) {
+    pub fn to_buf<E: Endianness>(&self, buf: &mut [u8]) {
+        // TODO - replace these with array_chunks_mut once that stabilizes
+
         match self.bytes_per_sample() {
             1 => {
                 for (sample, bytes) in self.iter().zip(buf.chunks_exact_mut(1)) {
@@ -245,9 +285,142 @@ impl Frame {
                     bytes.copy_from_slice(&E::i32_to_bytes(sample));
                 }
             }
-            _ => panic!("unsupported number of bytes per samples"),
+            _ => panic!("unsupported number of bytes per sample"),
         }
     }
+
+    /// Fills frame samples from bytes of the given endianness
+    pub fn from_buf<E: Endianness>(&mut self, buf: &[u8]) {
+        fn buf_chunks<const BYTES_PER_SAMPLE: usize>(
+            channels: usize,
+            channel_len: usize,
+            buf: &[u8],
+        ) -> impl Iterator<Item = [u8; BYTES_PER_SAMPLE]> {
+            (0..channels).flat_map(move |c| {
+                (0..channel_len).map(move |s| {
+                    buf[((s * channels) + c) * BYTES_PER_SAMPLE
+                        ..((s * channels) + c + 1) * BYTES_PER_SAMPLE]
+                        .try_into()
+                        .unwrap()
+                })
+            })
+        }
+
+        match self.bytes_per_sample() {
+            1 => {
+                self.channel_len = buf.len() / self.channels;
+                self.samples.resize(buf.len(), 0);
+
+                for (sample, bytes) in self.samples.iter_mut().zip(buf_chunks::<1>(
+                    self.channels,
+                    self.channel_len,
+                    buf,
+                )) {
+                    *sample = E::bytes_to_i8(bytes) as i32
+                }
+            }
+            2 => {
+                self.channel_len = (buf.len() / 2) / self.channels;
+                self.samples.resize(buf.len() / 2, 0);
+
+                for (sample, bytes) in self.samples.iter_mut().zip(buf_chunks::<2>(
+                    self.channels,
+                    self.channel_len,
+                    buf,
+                )) {
+                    *sample = E::bytes_to_i16(bytes) as i32
+                }
+            }
+            3 => {
+                self.channel_len = (buf.len() / 3) / self.channels;
+                self.samples.resize(buf.len() / 3, 0);
+
+                for (sample, bytes) in self.samples.iter_mut().zip(buf_chunks::<3>(
+                    self.channels,
+                    self.channel_len,
+                    buf,
+                )) {
+                    *sample = E::bytes_to_i24(bytes)
+                }
+            }
+            4 => {
+                self.channel_len = (buf.len() / 4) / self.channels;
+                self.samples.resize(buf.len() / 4, 0);
+
+                for (sample, bytes) in self.samples.iter_mut().zip(buf_chunks::<4>(
+                    self.channels,
+                    self.channel_len,
+                    buf,
+                )) {
+                    *sample = E::bytes_to_i32(bytes)
+                }
+            }
+            _ => panic!("unsupported number of bytes per sample"),
+        }
+    }
+}
+
+#[allow(unused)]
+fn test_buf<const BYTES_PER_SAMPLE: usize, E: Endianness>(channels: usize, samples: usize) {
+    let frame1 = Frame {
+        samples: (0..samples).map(|i| i as i32).collect(),
+        channels,
+        channel_len: samples / channels,
+        bits_per_sample: (BYTES_PER_SAMPLE * 8) as u32,
+        sample_rate: 44100,
+    };
+
+    let mut buf = vec![0; frame1.bytes_len()];
+
+    frame1.to_buf::<E>(&mut buf);
+
+    let mut frame2 = Frame::empty(channels, (BYTES_PER_SAMPLE * 8) as u32, 44100);
+    frame2.from_buf::<E>(&buf);
+
+    assert_eq!(frame1, frame2);
+}
+
+#[test]
+fn test_buffer_le() {
+    test_buf::<1, LittleEndian>(1, 50);
+    test_buf::<2, LittleEndian>(1, 50);
+    test_buf::<3, LittleEndian>(1, 50);
+    test_buf::<4, LittleEndian>(1, 50);
+
+    test_buf::<1, LittleEndian>(2, 50);
+    test_buf::<2, LittleEndian>(2, 50);
+    test_buf::<3, LittleEndian>(2, 50);
+    test_buf::<4, LittleEndian>(2, 50);
+
+    test_buf::<1, LittleEndian>(3, 60);
+    test_buf::<2, LittleEndian>(3, 60);
+    test_buf::<3, LittleEndian>(3, 60);
+    test_buf::<4, LittleEndian>(3, 60);
+
+    test_buf::<1, LittleEndian>(4, 80);
+    test_buf::<2, LittleEndian>(4, 80);
+    test_buf::<3, LittleEndian>(4, 80);
+    test_buf::<4, LittleEndian>(4, 80);
+
+    test_buf::<1, LittleEndian>(5, 80);
+    test_buf::<2, LittleEndian>(5, 80);
+    test_buf::<3, LittleEndian>(5, 80);
+    test_buf::<4, LittleEndian>(5, 80);
+
+    test_buf::<1, LittleEndian>(6, 60);
+    test_buf::<2, LittleEndian>(6, 60);
+    test_buf::<3, LittleEndian>(6, 60);
+    test_buf::<4, LittleEndian>(6, 60);
+
+    test_buf::<1, LittleEndian>(7, 70);
+    test_buf::<2, LittleEndian>(7, 70);
+    test_buf::<3, LittleEndian>(7, 70);
+    test_buf::<4, LittleEndian>(7, 70);
+
+    test_buf::<1, LittleEndian>(8, 80);
+    test_buf::<2, LittleEndian>(8, 80);
+    test_buf::<3, LittleEndian>(8, 80);
+    test_buf::<4, LittleEndian>(8, 80);
 }
 
 /// Returns given channel's samples
