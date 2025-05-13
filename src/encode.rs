@@ -17,13 +17,150 @@ use crate::stream::{ChannelAssignment, FrameNumber, SampleRate};
 use crate::{Counter, Error};
 use bitstream_io::{BigEndian, BitRecorder, BitWrite, BitWriter, SignedBitCount};
 use smallvec::SmallVec;
-use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
+use std::collections::{BTreeMap, VecDeque};
 use std::num::NonZero;
 
 const MAX_CHANNELS: usize = 8;
 
+/// A FLAC writer
+pub struct Writer<W: std::io::Write + std::io::Seek> {
+    // the wrapped encoder
+    encoder: Encoder<W>,
+    // bytes that make up a partial FLAC frame
+    buf: VecDeque<u8>,
+    // a whole set of samples for a FLAC frame
+    frame: Frame,
+    // size of single set of channel-independent samples in bytes
+    pcm_frame_size: usize,
+    // size of whole FLAC frame's samples in bytes
+    frame_byte_size: usize,
+    // whether the encoder has finalized the file
+    finalized: bool,
+}
+
+impl<W: std::io::Write + std::io::Seek> Writer<W> {
+    /// Opens new FLAC writer
+    pub fn new(
+        writer: W,
+        options: EncodingOptions,
+        sample_rate: u32,
+        bits_per_sample: impl TryInto<SignedBitCount<32>>,
+        channels: NonZero<u8>,
+        block_size: u16,
+        total_samples: Option<NonZero<u64>>,
+    ) -> Result<Self, Error> {
+        let bits_per_sample = bits_per_sample
+            .try_into()
+            .map_err(|_| Error::InvalidBitsPerSample)?;
+
+        let pcm_frame_size =
+            u32::from(bits_per_sample).div_ceil(8) as usize * channels.get() as usize;
+
+        Ok(Self {
+            buf: VecDeque::default(),
+            frame: Frame::empty(channels.get().into(), bits_per_sample.into(), sample_rate),
+            pcm_frame_size,
+            frame_byte_size: pcm_frame_size * block_size as usize,
+            encoder: Encoder::new(
+                writer,
+                options,
+                sample_rate,
+                bits_per_sample,
+                channels,
+                block_size,
+                total_samples,
+            )?,
+            finalized: false,
+        })
+    }
+
+    fn finalize_inner(&mut self) -> Result<(), Error> {
+        if !self.finalized {
+            self.finalized = true;
+
+            // encode as many bytes as possible into final frame, if necessary
+            if !self.buf.is_empty() {
+                use crate::audio::LittleEndian;
+
+                // truncate buffer to whole PCM frames
+                let buf = self.buf.make_contiguous();
+
+                self.encoder.encode(self.frame.from_buf::<LittleEndian>(
+                    &buf[..(buf.len() - buf.len() % self.pcm_frame_size)],
+                ))?;
+            }
+
+            self.encoder.finalize_inner()
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Attempt to finalize stream
+    ///
+    /// It is necessary to finalize the FLAC encoder
+    /// so that it will write any partially unwritten samples
+    /// to the stream and update the STREAMINFO and SEEKTABLE blocks
+    /// with their final values.
+    ///
+    /// Dropping the encoder will attempt to finalize the stream
+    /// automatically, but will ignore any errors that may occur.
+    pub fn finalize(mut self) -> Result<(), Error> {
+        self.finalize_inner()?;
+        Ok(())
+    }
+}
+
+impl<W: std::io::Write + std::io::Seek> std::io::Write for Writer<W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        use std::io::BufRead;
+
+        // update MD5 sum with little-endian bytes
+        self.encoder.update_md5(buf);
+
+        // dump whole set of bytes into our internal buffer
+        self.buf.extend(buf);
+
+        self.buf.make_contiguous();
+
+        // encode as many FLAC frames as possible (which may be 0)
+        loop {
+            match self.buf.fill_buf() {
+                Ok(buf) if buf.len() >= self.frame_byte_size => {
+                    use crate::audio::LittleEndian;
+
+                    self.encoder.encode(
+                        self.frame
+                            .from_buf::<LittleEndian>(&buf[0..self.frame_byte_size]),
+                    )?;
+
+                    self.buf.consume(self.frame_byte_size);
+                }
+                _ => break,
+            }
+        }
+
+        // indicate whole buffer's been consumed
+        Ok(buf.len())
+    }
+
+    #[inline]
+    fn flush(&mut self) -> std::io::Result<()> {
+        // nothing to do since we don't want to flush a partial
+        // FLAC frame to disk until we're done with the whole stream
+        Ok(())
+    }
+}
+
+impl<W: std::io::Write + std::io::Seek> Drop for Writer<W> {
+    fn drop(&mut self) {
+        let _ = self.finalize_inner();
+    }
+}
+
 /// FLAC encoding options
+#[derive(Default)]
 pub struct EncodingOptions {
     metadata: BTreeMap<BlockType, BlockSet>,
     seektable_style: Option<SeektableStyle>,
@@ -197,15 +334,6 @@ impl EncodingOptions {
         // the sample rate and total samples of our stream
         self.seektable_style = Some(SeektableStyle::Samples(samples));
         self
-    }
-}
-
-impl Default for EncodingOptions {
-    fn default() -> Self {
-        Self {
-            metadata: BTreeMap::default(),
-            seektable_style: None,
-        }
     }
 }
 

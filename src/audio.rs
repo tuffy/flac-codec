@@ -364,7 +364,7 @@ impl Frame {
     }
 
     /// Fills frame samples from bytes of the given endianness
-    pub fn from_buf<E: Endianness>(&mut self, buf: &[u8]) {
+    pub fn from_buf<E: Endianness>(&mut self, buf: &[u8]) -> &Self {
         fn buf_chunks<const BYTES_PER_SAMPLE: usize>(
             channels: usize,
             channel_len: usize,
@@ -431,6 +431,8 @@ impl Frame {
             }
             _ => panic!("unsupported number of bytes per sample"),
         }
+
+        self
     }
 }
 
