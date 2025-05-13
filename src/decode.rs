@@ -107,7 +107,8 @@ pub struct Decoder<R> {
     seektable: Option<SeekTable>,
     // the size of everything before the first frame, in bytes
     frames_start: u64,
-    samples_remaining: Option<u64>,
+    // the current sample, in channel-independent samples
+    current_sample: u64,
     buf: Frame,
 }
 
@@ -147,7 +148,7 @@ impl<R: std::io::Read> Decoder<R> {
             Some(streaminfo) => Ok(Self {
                 frames_start: counter.count,
                 reader,
-                samples_remaining: streaminfo.total_samples.map(|s| s.get()),
+                current_sample: 0,
                 streaminfo,
                 seektable,
                 buf: Frame::default(),
@@ -200,7 +201,11 @@ impl<R: std::io::Read> Decoder<R> {
 
         let mut crc16_reader: CrcReader<_, Crc16> = CrcReader::new(self.reader.by_ref());
 
-        let header = match self.samples_remaining {
+        let header = match self
+            .streaminfo
+            .total_samples
+            .map(|total| total.get() - self.current_sample)
+        {
             Some(0) => return Ok(None),
             Some(remaining) => FrameHeader::read(crc16_reader.by_ref(), &self.streaminfo)
                 .and_then(|header| {
@@ -314,11 +319,7 @@ impl<R: std::io::Read> Decoder<R> {
             return Err(Error::Crc16Mismatch);
         }
 
-        if let Some(remaining) = self.samples_remaining.as_mut() {
-            *remaining = remaining
-                .checked_sub(u16::from(header.block_size) as u64)
-                .ok_or(Error::TooManySamples)?;
-        }
+        self.current_sample += u64::from(u16::from(header.block_size));
 
         Ok(Some(buf))
     }
