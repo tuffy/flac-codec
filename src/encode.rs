@@ -114,7 +114,7 @@ impl<W: std::io::Write + std::io::Seek, E: crate::audio::Endianness> Writer<W, E
     ///
     /// It is necessary to finalize the FLAC encoder
     /// so that it will write any partially unwritten samples
-    /// to the stream and update the STREAMINFO and SEEKTABLE blocks
+    /// to the stream and update the [`crate::metadata::Streaminfo`] and [`crate::metadata::SeekTable`] blocks
     /// with their final values.
     ///
     /// Dropping the encoder will attempt to finalize the stream
@@ -186,9 +186,9 @@ enum SeektableStyle {
 }
 
 impl EncodingOptions {
-    /// Adds new PADDING block to metadata
+    /// Adds new [`crate::metadata::Padding`] block to metadata
     ///
-    /// Files may contain multiple PADDING blocks,
+    /// Files may contain multiple [`crate::metadata::Padding`] blocks,
     /// and this adds a new block each time it is used.
     ///
     /// The default is to not add any padding to the output file,
@@ -220,7 +220,7 @@ impl EncodingOptions {
 
     /// Adds new tag to comment metadata block
     ///
-    /// Creates new comment block if not already present.
+    /// Creates new [`crate::metadata::VorbisComment`] block if not already present.
     pub fn tag<S>(mut self, field: &str, value: S) -> Self
     where
         S: std::fmt::Display,
@@ -244,7 +244,7 @@ impl EncodingOptions {
         self
     }
 
-    /// Replaces entire VORBIS COMMENT metadata block
+    /// Replaces entire [`crate::metadata::VorbisComment`] metadata block
     ///
     /// This may be more convenient when adding many fields at once.
     pub fn comment(mut self, comment: VorbisComment) -> Self {
@@ -260,9 +260,9 @@ impl EncodingOptions {
         self
     }
 
-    /// Add new PICTURE block to metadata
+    /// Add new [`crate::metadata::Picture`] block to metadata
     ///
-    /// Files may contain multiple PICTURE blocks,
+    /// Files may contain multiple [`crate::metadata::Picture`] blocks,
     /// and this adds a new block each time it is used.
     pub fn picture(mut self, picture: Picture) -> Self {
         match self.metadata.entry(Picture::TYPE) {
@@ -285,9 +285,9 @@ impl EncodingOptions {
         self
     }
 
-    /// Add new CUESHEET block to metadata
+    /// Add new [`crate::metadata::Cuesheet`] block to metadata
     ///
-    /// Files may (theoretically) contain multiple CUESHEET blocks,
+    /// Files may (theoretically) contain multiple [`crate::metadata::Cuesheet`] blocks,
     /// and this adds a new block each time it is used.
     ///
     /// In practice, CD images almost always use only a single
@@ -313,9 +313,9 @@ impl EncodingOptions {
         self
     }
 
-    /// Add new APPLICATION block to metadata
+    /// Add new [`crate::metadata::Application`] block to metadata
     ///
-    /// Files may contain multiple APPLICATION blocks,
+    /// Files may contain multiple [`crate::metadata::Application`] blocks,
     /// and this adds a new block each time it is used.
     pub fn application(mut self, application: Application) -> Self {
         match self.metadata.entry(Application::TYPE) {
@@ -338,7 +338,7 @@ impl EncodingOptions {
         self
     }
 
-    /// Generate SEEKTABLE with the given number of samples between seek points
+    /// Generate [`crate::metadata::SeekTable`] with the given number of samples between seek points
     ///
     /// The interval between seek points may be larger than requested
     /// if the encoder's block size is larger than the seekpoint interval.
@@ -637,7 +637,7 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
     ///
     /// It is necessary to finalize the FLAC encoder
     /// so that it will write any partially unwritten samples
-    /// to the stream and update the STREAMINFO and SEEKTABLE blocks
+    /// to the stream and update the [`crate::metadata::Streaminfo`] and [`crate::metadata::SeekTable`] blocks
     /// with their final values.
     ///
     /// Dropping the encoder will attempt to finalize the stream
