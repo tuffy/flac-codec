@@ -35,6 +35,12 @@ pub trait Endianness {
 
     /// Converts bytes to 32-bit samples in this byte order
     fn bytes_to_i32(bytes: [u8; 4]) -> i32;
+
+    /// Converts bytes in this byte order to big-endian
+    fn bytes_to_be(buf: &mut [u8], bytes_per_sample: usize);
+
+    /// Converts bytes in this byte order to little-endian
+    fn bytes_to_le(buf: &mut [u8], bytes_per_sample: usize);
 }
 
 /// Little-endian byte order
@@ -96,6 +102,16 @@ impl Endianness for LittleEndian {
     fn bytes_to_i32(bytes: [u8; 4]) -> i32 {
         i32::from_le_bytes(bytes)
     }
+
+    fn bytes_to_be(buf: &mut [u8], bytes_per_sample: usize) {
+        for chunk in buf.chunks_exact_mut(bytes_per_sample) {
+            chunk.reverse();
+        }
+    }
+
+    fn bytes_to_le(_buf: &mut [u8], _bytes_per_sample: usize) {
+        // already little-endian, so nothing to do
+    }
 }
 
 /// Big-endian byte order
@@ -156,6 +172,16 @@ impl Endianness for BigEndian {
     #[inline]
     fn bytes_to_i32(bytes: [u8; 4]) -> i32 {
         i32::from_be_bytes(bytes)
+    }
+
+    fn bytes_to_be(_buf: &mut [u8], _bytes_per_sample: usize) {
+        // already big-endian, so nothing to do
+    }
+
+    fn bytes_to_le(buf: &mut [u8], bytes_per_sample: usize) {
+        for chunk in buf.chunks_exact_mut(bytes_per_sample) {
+            chunk.reverse();
+        }
     }
 }
 

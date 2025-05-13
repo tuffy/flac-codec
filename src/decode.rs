@@ -16,17 +16,19 @@ use std::collections::VecDeque;
 use std::num::NonZero;
 
 /// A FLAC reader
-pub struct Reader<R> {
+pub struct Reader<R, E> {
     decoder: Decoder<R>,
     buf: VecDeque<u8>,
+    endianness: std::marker::PhantomData<E>,
 }
 
-impl<R: std::io::Read> Reader<R> {
+impl<R: std::io::Read, E: crate::audio::Endianness> Reader<R, E> {
     /// Opens new FLAC reader
     pub fn new(reader: R) -> Result<Self, Error> {
         Ok(Self {
             decoder: Decoder::new(reader)?,
             buf: VecDeque::default(),
+            endianness: std::marker::PhantomData,
         })
     }
 
@@ -60,15 +62,13 @@ impl<R: std::io::Read> Reader<R> {
     }
 }
 
-impl<R: std::io::Read> std::io::Read for Reader<R> {
+impl<R: std::io::Read, E: crate::audio::Endianness> std::io::Read for Reader<R, E> {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         if self.buf.is_empty() {
             match self.decoder.read_frame()? {
                 Some(frame) => {
-                    use crate::audio::LittleEndian;
-
                     self.buf.resize(frame.bytes_len(), 0);
-                    frame.to_buf::<LittleEndian>(self.buf.make_contiguous());
+                    frame.to_buf::<E>(self.buf.make_contiguous());
                     self.buf.read(buf)
                 }
                 None => Ok(0),
@@ -79,15 +79,13 @@ impl<R: std::io::Read> std::io::Read for Reader<R> {
     }
 }
 
-impl<R: std::io::Read> std::io::BufRead for Reader<R> {
+impl<R: std::io::Read, E: crate::audio::Endianness> std::io::BufRead for Reader<R, E> {
     fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
         if self.buf.is_empty() {
             match self.decoder.read_frame()? {
                 Some(frame) => {
-                    use crate::audio::LittleEndian;
-
                     self.buf.resize(frame.bytes_len(), 0);
-                    frame.to_buf::<LittleEndian>(self.buf.make_contiguous());
+                    frame.to_buf::<E>(self.buf.make_contiguous());
                     self.buf.fill_buf()
                 }
                 None => Ok(&[]),

@@ -24,22 +24,26 @@ use std::num::NonZero;
 const MAX_CHANNELS: usize = 8;
 
 /// A FLAC writer
-pub struct Writer<W: std::io::Write + std::io::Seek> {
+pub struct Writer<W: std::io::Write + std::io::Seek, E: crate::audio::Endianness> {
     // the wrapped encoder
     encoder: Encoder<W>,
     // bytes that make up a partial FLAC frame
     buf: VecDeque<u8>,
     // a whole set of samples for a FLAC frame
     frame: Frame,
+    // size of a single sample in bytes
+    bytes_per_sample: usize,
     // size of single set of channel-independent samples in bytes
     pcm_frame_size: usize,
     // size of whole FLAC frame's samples in bytes
     frame_byte_size: usize,
     // whether the encoder has finalized the file
     finalized: bool,
+    // the input bytes' endianness
+    endianness: std::marker::PhantomData<E>,
 }
 
-impl<W: std::io::Write + std::io::Seek> Writer<W> {
+impl<W: std::io::Write + std::io::Seek, E: crate::audio::Endianness> Writer<W, E> {
     /// Opens new FLAC writer
     pub fn new(
         writer: W,
@@ -54,12 +58,14 @@ impl<W: std::io::Write + std::io::Seek> Writer<W> {
             .try_into()
             .map_err(|_| Error::InvalidBitsPerSample)?;
 
-        let pcm_frame_size =
-            u32::from(bits_per_sample).div_ceil(8) as usize * channels.get() as usize;
+        let bytes_per_sample = u32::from(bits_per_sample).div_ceil(8) as usize;
+
+        let pcm_frame_size = bytes_per_sample * channels.get() as usize;
 
         Ok(Self {
             buf: VecDeque::default(),
             frame: Frame::empty(channels.get().into(), bits_per_sample.into(), sample_rate),
+            bytes_per_sample,
             pcm_frame_size,
             frame_byte_size: pcm_frame_size * block_size as usize,
             encoder: Encoder::new(
@@ -72,6 +78,7 @@ impl<W: std::io::Write + std::io::Seek> Writer<W> {
                 total_samples,
             )?,
             finalized: false,
+            endianness: std::marker::PhantomData,
         })
     }
 
@@ -85,6 +92,12 @@ impl<W: std::io::Write + std::io::Seek> Writer<W> {
 
                 // truncate buffer to whole PCM frames
                 let buf = self.buf.make_contiguous();
+
+                // convert buffer to little-endian bytes
+                E::bytes_to_le(buf, self.bytes_per_sample);
+
+                // update MD5 sum with little-endian bytes
+                self.encoder.update_md5(buf);
 
                 self.encoder.encode(self.frame.from_buf::<LittleEndian>(
                     &buf[..(buf.len() - buf.len() % self.pcm_frame_size)],
@@ -112,23 +125,35 @@ impl<W: std::io::Write + std::io::Seek> Writer<W> {
     }
 }
 
-impl<W: std::io::Write + std::io::Seek> std::io::Write for Writer<W> {
+impl<W: std::io::Write + std::io::Seek, E: crate::audio::Endianness> std::io::Write
+    for Writer<W, E>
+{
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         use crate::audio::LittleEndian;
-
-        // update MD5 sum with little-endian bytes
-        self.encoder.update_md5(buf);
 
         // dump whole set of bytes into our internal buffer
         self.buf.extend(buf);
 
         // encode as many FLAC frames as possible (which may be 0)
         let mut encoded_frames = 0;
-        for buf in self.buf.make_contiguous().chunks_exact(self.frame_byte_size) {
-            self.encoder.encode(self.frame.from_buf::<LittleEndian>(buf))?;
+        for buf in self
+            .buf
+            .make_contiguous()
+            .chunks_exact_mut(self.frame_byte_size)
+        {
+            // convert buffer to little-endian bytes
+            E::bytes_to_le(buf, self.bytes_per_sample);
+
+            // update MD5 sum with little-endian bytes
+            self.encoder.update_md5(buf);
+
+            // encode fresh FLAC frame
+            self.encoder
+                .encode(self.frame.from_buf::<LittleEndian>(buf))?;
+
             encoded_frames += 1;
         }
-        self.buf.drain(0..self.frame_byte_size * encode_frames);
+        self.buf.drain(0..self.frame_byte_size * encoded_frames);
 
         // indicate whole buffer's been consumed
         Ok(buf.len())
@@ -142,7 +167,7 @@ impl<W: std::io::Write + std::io::Seek> std::io::Write for Writer<W> {
     }
 }
 
-impl<W: std::io::Write + std::io::Seek> Drop for Writer<W> {
+impl<W: std::io::Write + std::io::Seek, E: crate::audio::Endianness> Drop for Writer<W, E> {
     fn drop(&mut self) {
         let _ = self.finalize_inner();
     }
