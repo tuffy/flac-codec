@@ -92,6 +92,8 @@ impl<W: std::io::Write + std::io::Seek, E: crate::audio::Endianness> Writer<W, E
 
                 // truncate buffer to whole PCM frames
                 let buf = self.buf.make_contiguous();
+                let buf_len = buf.len();
+                let buf = &mut buf[..(buf_len - buf_len % self.pcm_frame_size)];
 
                 // convert buffer to little-endian bytes
                 E::bytes_to_le(buf, self.bytes_per_sample);
@@ -99,9 +101,8 @@ impl<W: std::io::Write + std::io::Seek, E: crate::audio::Endianness> Writer<W, E
                 // update MD5 sum with little-endian bytes
                 self.encoder.update_md5(buf);
 
-                self.encoder.encode(self.frame.from_buf::<LittleEndian>(
-                    &buf[..(buf.len() - buf.len() % self.pcm_frame_size)],
-                ))?;
+                self.encoder
+                    .encode(self.frame.from_buf::<LittleEndian>(buf))?;
             }
 
             self.encoder.finalize_inner()
