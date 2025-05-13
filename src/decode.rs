@@ -71,9 +71,7 @@ impl<R: std::io::Read, E: crate::audio::Endianness> std::io::Read for Reader<R, 
                     frame.to_buf::<E>(self.buf.make_contiguous());
                     self.buf.read(buf)
                 }
-                None => {
-                    Ok(0)
-                }
+                None => Ok(0),
             }
         } else {
             self.buf.read(buf)
@@ -90,9 +88,7 @@ impl<R: std::io::Read, E: crate::audio::Endianness> std::io::BufRead for Reader<
                     frame.to_buf::<E>(self.buf.make_contiguous());
                     self.buf.fill_buf()
                 }
-                None => {
-                    Ok(&[])
-                }
+                None => Ok(&[]),
             }
         } else {
             self.buf.fill_buf()

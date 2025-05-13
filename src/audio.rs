@@ -41,14 +41,17 @@ pub trait Endianness {
 pub struct LittleEndian;
 
 impl Endianness for LittleEndian {
+    #[inline]
     fn i8_to_bytes(sample: i8) -> [u8; 1] {
         sample.to_le_bytes()
     }
 
+    #[inline]
     fn i16_to_bytes(sample: i16) -> [u8; 2] {
         sample.to_le_bytes()
     }
 
+    #[inline]
     fn i24_to_bytes(sample: i32) -> [u8; 3] {
         let unsigned: u32 = if sample >= 0 {
             sample as u32
@@ -63,18 +66,22 @@ impl Endianness for LittleEndian {
         ]
     }
 
+    #[inline]
     fn i32_to_bytes(sample: i32) -> [u8; 4] {
         sample.to_le_bytes()
     }
 
+    #[inline]
     fn bytes_to_i8(bytes: [u8; 1]) -> i8 {
         i8::from_le_bytes(bytes)
     }
 
+    #[inline]
     fn bytes_to_i16(bytes: [u8; 2]) -> i16 {
         i16::from_le_bytes(bytes)
     }
 
+    #[inline]
     fn bytes_to_i24(bytes: [u8; 3]) -> i32 {
         let unsigned = ((bytes[2] as u32) << 16) | ((bytes[1] as u32) << 8) | bytes[0] as u32;
 
@@ -85,8 +92,70 @@ impl Endianness for LittleEndian {
         }
     }
 
+    #[inline]
     fn bytes_to_i32(bytes: [u8; 4]) -> i32 {
         i32::from_le_bytes(bytes)
+    }
+}
+
+/// Big-endian byte order
+pub struct BigEndian;
+
+impl Endianness for BigEndian {
+    #[inline]
+    fn i8_to_bytes(sample: i8) -> [u8; 1] {
+        sample.to_be_bytes()
+    }
+
+    #[inline]
+    fn i16_to_bytes(sample: i16) -> [u8; 2] {
+        sample.to_be_bytes()
+    }
+
+    #[inline]
+    fn i24_to_bytes(sample: i32) -> [u8; 3] {
+        let unsigned: u32 = if sample >= 0 {
+            sample as u32
+        } else {
+            0x800000 | ((sample - (-1 << 23)) as u32)
+        };
+
+        [
+            (unsigned >> 16) as u8,
+            ((unsigned & 0xFF00) >> 8) as u8,
+            (unsigned & 0xFF) as u8,
+        ]
+    }
+
+    #[inline]
+    fn i32_to_bytes(sample: i32) -> [u8; 4] {
+        sample.to_be_bytes()
+    }
+
+    #[inline]
+    fn bytes_to_i8(bytes: [u8; 1]) -> i8 {
+        i8::from_be_bytes(bytes)
+    }
+
+    #[inline]
+    fn bytes_to_i16(bytes: [u8; 2]) -> i16 {
+        i16::from_be_bytes(bytes)
+    }
+
+    #[inline]
+    fn bytes_to_i24(bytes: [u8; 3]) -> i32 {
+        let unsigned = ((bytes[0] as u32) << 16) | ((bytes[1] as u32) << 8) | bytes[2] as u32;
+
+        if unsigned & 0x800000 == 0 {
+            unsigned as i32
+        } else {
+            (unsigned & 0x7FFFFF) as i32 + (-1 << 23)
+        }
+    }
+
+    #[inline]
+    fn bytes_to_i32(bytes: [u8; 4]) -> i32 {
+        i32::from_be_bytes(bytes)
     }
 }
 
@@ -140,6 +209,11 @@ fn test_endianness<F: bitstream_io::Endianness, E: Endianness>() {
 #[test]
 fn test_samples_le() {
     test_endianness::<bitstream_io::LittleEndian, LittleEndian>()
+}
+
+#[test]
+fn test_samples_be() {
+    test_endianness::<bitstream_io::BigEndian, BigEndian>()
 }
 
 /// A decoded set of audio samples
@@ -361,66 +435,75 @@ impl Frame {
 }
 
 #[allow(unused)]
-fn test_buf<const BYTES_PER_SAMPLE: usize, E: Endianness>(channels: usize, samples: usize) {
-    let frame1 = Frame {
-        samples: (0..samples).map(|i| i as i32).collect(),
-        channels,
-        channel_len: samples / channels,
-        bits_per_sample: (BYTES_PER_SAMPLE * 8) as u32,
-        sample_rate: 44100,
-    };
+fn test_buffer<E: Endianness>() {
+    fn test_buf<const BYTES_PER_SAMPLE: usize, E: Endianness>(channels: usize, samples: usize) {
+        let frame1 = Frame {
+            samples: (0..samples).map(|i| i as i32).collect(),
+            channels,
+            channel_len: samples / channels,
+            bits_per_sample: (BYTES_PER_SAMPLE * 8) as u32,
+            sample_rate: 44100,
+        };
 
-    let mut buf = vec![0; frame1.bytes_len()];
+        let mut buf = vec![0; frame1.bytes_len()];
 
-    frame1.to_buf::<E>(&mut buf);
+        frame1.to_buf::<E>(&mut buf);
 
-    let mut frame2 = Frame::empty(channels, (BYTES_PER_SAMPLE * 8) as u32, 44100);
-    frame2.from_buf::<E>(&buf);
+        let mut frame2 = Frame::empty(channels, (BYTES_PER_SAMPLE * 8) as u32, 44100);
+        frame2.from_buf::<E>(&buf);
 
-    assert_eq!(frame1, frame2);
+        assert_eq!(frame1, frame2);
+    }
+
+    test_buf::<1, E>(1, 50);
+    test_buf::<2, E>(1, 50);
+    test_buf::<3, E>(1, 50);
+    test_buf::<4, E>(1, 50);
+
+    test_buf::<1, E>(2, 50);
+    test_buf::<2, E>(2, 50);
+    test_buf::<3, E>(2, 50);
+    test_buf::<4, E>(2, 50);
+
+    test_buf::<1, E>(3, 60);
+    test_buf::<2, E>(3, 60);
+    test_buf::<3, E>(3, 60);
+    test_buf::<4, E>(3, 60);
+
+    test_buf::<1, E>(4, 80);
+    test_buf::<2, E>(4, 80);
+    test_buf::<3, E>(4, 80);
+    test_buf::<4, E>(4, 80);
+
+    test_buf::<1, E>(5, 80);
+    test_buf::<2, E>(5, 80);
+    test_buf::<3, E>(5, 80);
+    test_buf::<4, E>(5, 80);
+
+    test_buf::<1, E>(6, 60);
+    test_buf::<2, E>(6, 60);
+    test_buf::<3, E>(6, 60);
+    test_buf::<4, E>(6, 60);
+
+    test_buf::<1, E>(7, 70);
+    test_buf::<2, E>(7, 70);
+    test_buf::<3, E>(7, 70);
+    test_buf::<4, E>(7, 70);
+
+    test_buf::<1, E>(8, 80);
+    test_buf::<2, E>(8, 80);
+    test_buf::<3, E>(8, 80);
+    test_buf::<4, E>(8, 80);
 }
 
 #[test]
 fn test_buffer_le() {
-    test_buf::<1, LittleEndian>(1, 50);
-    test_buf::<2, LittleEndian>(1, 50);
-    test_buf::<3, LittleEndian>(1, 50);
-    test_buf::<4, LittleEndian>(1, 50);
+    test_buffer::<LittleEndian>()
+}
 
-    test_buf::<1, LittleEndian>(2, 50);
-    test_buf::<2, LittleEndian>(2, 50);
-    test_buf::<3, LittleEndian>(2, 50);
-    test_buf::<4, LittleEndian>(2, 50);
-
-    test_buf::<1, LittleEndian>(3, 60);
-    test_buf::<2, LittleEndian>(3, 60);
-    test_buf::<3, LittleEndian>(3, 60);
-    test_buf::<4, LittleEndian>(3, 60);
-
-    test_buf::<1, LittleEndian>(4, 80);
-    test_buf::<2, LittleEndian>(4, 80);
-    test_buf::<3, LittleEndian>(4, 80);
-    test_buf::<4, LittleEndian>(4, 80);
-
-    test_buf::<1, LittleEndian>(5, 80);
-    test_buf::<2, LittleEndian>(5, 80);
-    test_buf::<3, LittleEndian>(5, 80);
-    test_buf::<4, LittleEndian>(5, 80);
-
-    test_buf::<1, LittleEndian>(6, 60);
-    test_buf::<2, LittleEndian>(6, 60);
-    test_buf::<3, LittleEndian>(6, 60);
-    test_buf::<4, LittleEndian>(6, 60);
-
-    test_buf::<1, LittleEndian>(7, 70);
-    test_buf::<2, LittleEndian>(7, 70);
-    test_buf::<3, LittleEndian>(7, 70);
-    test_buf::<4, LittleEndian>(7, 70);
-
-    test_buf::<1, LittleEndian>(8, 80);
-    test_buf::<2, LittleEndian>(8, 80);
-    test_buf::<3, LittleEndian>(8, 80);
-    test_buf::<4, LittleEndian>(8, 80);
+#[test]
+fn test_buffer_be() {
+    test_buffer::<BigEndian>()
 }
 
 /// Returns given channel's samples
