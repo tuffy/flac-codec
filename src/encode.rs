@@ -114,7 +114,7 @@ impl<W: std::io::Write + std::io::Seek> Writer<W> {
 
 impl<W: std::io::Write + std::io::Seek> std::io::Write for Writer<W> {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        use std::io::BufRead;
+        use crate::audio::LittleEndian;
 
         // update MD5 sum with little-endian bytes
         self.encoder.update_md5(buf);
@@ -122,24 +122,13 @@ impl<W: std::io::Write + std::io::Seek> std::io::Write for Writer<W> {
         // dump whole set of bytes into our internal buffer
         self.buf.extend(buf);
 
-        self.buf.make_contiguous();
-
         // encode as many FLAC frames as possible (which may be 0)
-        loop {
-            match self.buf.fill_buf() {
-                Ok(buf) if buf.len() >= self.frame_byte_size => {
-                    use crate::audio::LittleEndian;
-
-                    self.encoder.encode(
-                        self.frame
-                            .from_buf::<LittleEndian>(&buf[0..self.frame_byte_size]),
-                    )?;
-
-                    self.buf.consume(self.frame_byte_size);
-                }
-                _ => break,
-            }
+        let mut encoded_frames = 0;
+        for buf in self.buf.make_contiguous().chunks_exact(self.frame_byte_size) {
+            self.encoder.encode(self.frame.from_buf::<LittleEndian>(buf))?;
+            encoded_frames += 1;
         }
+        self.buf.drain(0..self.frame_byte_size * encode_frames);
 
         // indicate whole buffer's been consumed
         Ok(buf.len())
