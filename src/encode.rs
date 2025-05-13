@@ -1028,23 +1028,33 @@ fn write_residuals<W: BitWrite>(
         fn new(partition: &'r [i32], estimated_bits: &mut u32) -> Self {
             debug_assert!(!partition.is_empty());
 
+            let partition_samples = partition.len() as u32;
             let partition_sum = partition.iter().map(|i| i.unsigned_abs()).sum::<u32>();
 
             if partition_sum > 0 {
-                let rice = BitCount::try_from(
-                    (partition_sum / partition.len() as u32)
-                        .checked_ilog2()
-                        .unwrap_or_default(),
-                )
-                .expect("excessive Rice parameters");
+                let rice = if partition_sum > partition_samples {
+                    BitCount::try_from(
+                        ((partition_sum as f32) / (partition_samples as f32))
+                            .log2()
+                            .ceil() as u32,
+                    )
+                    .expect("excessive Rice parameters")
+                } else {
+                    BitCount::new::<0>()
+                };
 
                 debug_assert!(u32::from(rice) < u32::from(BitCount::<RICE_MAX>::new::<RICE_MAX>()));
 
-                // TODO - should double-check this estimated bits calculation
-                *estimated_bits += 4
-                    + ((1 + u32::from(rice)) * partition.len() as u32)
-                    + (partition_sum >> (u32::from(rice).saturating_sub(1)))
-                    + ((partition.len() as u32) >> 1);
+                let partition_size: u32 = 4u32
+                    + ((1 + u32::from(rice)) * partition_samples)
+                    + if u32::from(rice) > 0 {
+                        partition_sum >> (u32::from(rice) - 1)
+                    } else {
+                        partition_sum << 1
+                    }
+                    - (partition_samples / 2);
+
+                *estimated_bits += partition_size;
 
                 // TODO - if estimated bits is larger than
                 // a verbatim (escaped) partition,
