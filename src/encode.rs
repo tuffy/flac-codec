@@ -783,58 +783,79 @@ fn correlate_channels<'c>(
     [left, right]: [&[i32]; 2],
     bits_per_sample: SignedBitCount<32>,
 ) -> Result<Correlated<'c>, Error> {
-    left_channel.clear();
-    encode_subframe(fixed_cache, left_channel, left, bits_per_sample)?;
+    match bits_per_sample.checked_add(1) {
+        Some(difference_bits_per_sample) => {
+            // TODO - calculate these in parallel
 
-    right_channel.clear();
-    encode_subframe(fixed_cache, right_channel, right, bits_per_sample)?;
+            left_channel.clear();
+            encode_subframe(fixed_cache, left_channel, left, bits_per_sample)?;
 
-    average_samples.clear();
-    average_samples.extend(left.iter().zip(right).map(|(l, r)| (l + r) >> 1));
-    average.clear();
-    encode_subframe(fixed_cache, average, average_samples, bits_per_sample)?;
+            right_channel.clear();
+            encode_subframe(fixed_cache, right_channel, right, bits_per_sample)?;
 
-    difference_samples.clear();
-    difference_samples.extend(left.iter().zip(right).map(|(l, r)| l - r));
-    difference.clear();
-    encode_subframe(
-        fixed_cache,
-        difference,
-        difference_samples,
-        bits_per_sample.checked_add(1).ok_or(Error::ExcessiveBps)?,
-    )?;
+            average_samples.clear();
+            average_samples.extend(left.iter().zip(right).map(|(l, r)| (l + r) >> 1));
+            average.clear();
+            encode_subframe(fixed_cache, average, average_samples, bits_per_sample)?;
 
-    let left_difference = left_channel.written() + difference.written();
-    let difference_right = difference.written() + right_channel.written();
-    let average_difference = average.written() + difference.written();
-    let independent = left_channel.written() + right_channel.written();
+            difference_samples.clear();
+            difference_samples.extend(left.iter().zip(right).map(|(l, r)| l - r));
+            difference.clear();
+            encode_subframe(
+                fixed_cache,
+                difference,
+                difference_samples,
+                difference_bits_per_sample,
+            )?;
 
-    Ok(
-        if left_difference < difference_right
-            && left_difference < average_difference
-            && left_difference < independent
-        {
-            Correlated {
-                channel_assignment: ChannelAssignment::LeftSide,
-                channels: [left_channel, difference],
-            }
-        } else if difference_right < average_difference && difference_right < independent {
-            Correlated {
-                channel_assignment: ChannelAssignment::SideRight,
-                channels: [difference, right_channel],
-            }
-        } else if average_difference < independent {
-            Correlated {
-                channel_assignment: ChannelAssignment::MidSide,
-                channels: [average, difference],
-            }
-        } else {
-            Correlated {
+            let left_difference = left_channel.written() + difference.written();
+            let difference_right = difference.written() + right_channel.written();
+            let average_difference = average.written() + difference.written();
+            let independent = left_channel.written() + right_channel.written();
+
+            Ok(
+                if left_difference < difference_right
+                    && left_difference < average_difference
+                    && left_difference < independent
+                {
+                    Correlated {
+                        channel_assignment: ChannelAssignment::LeftSide,
+                        channels: [left_channel, difference],
+                    }
+                } else if difference_right < average_difference && difference_right < independent {
+                    Correlated {
+                        channel_assignment: ChannelAssignment::SideRight,
+                        channels: [difference, right_channel],
+                    }
+                } else if average_difference < independent {
+                    Correlated {
+                        channel_assignment: ChannelAssignment::MidSide,
+                        channels: [average, difference],
+                    }
+                } else {
+                    Correlated {
+                        channel_assignment: ChannelAssignment::Independent(2),
+                        channels: [left_channel, right_channel],
+                    }
+                },
+            )
+        }
+        None => {
+            // 32 bps stream, so forego difference channel
+            // and encode them both indepedently
+
+            left_channel.clear();
+            encode_subframe(fixed_cache, left_channel, left, bits_per_sample)?;
+
+            right_channel.clear();
+            encode_subframe(fixed_cache, right_channel, right, bits_per_sample)?;
+
+            Ok(Correlated {
                 channel_assignment: ChannelAssignment::Independent(2),
                 channels: [left_channel, right_channel],
-            }
-        },
-    )
+            })
+        }
+    }
 }
 
 fn encode_subframe<W: BitWrite>(
@@ -1017,7 +1038,7 @@ fn write_residuals<W: BitWrite>(
                 )
                 .expect("excessive Rice parameters");
 
-                assert!(u32::from(rice) < u32::from(BitCount::<RICE_MAX>::new::<RICE_MAX>()));
+                debug_assert!(u32::from(rice) < u32::from(BitCount::<RICE_MAX>::new::<RICE_MAX>()));
 
                 // TODO - should double-check this estimated bits calculation
                 *estimated_bits += 4
