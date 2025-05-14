@@ -369,8 +369,8 @@ impl EncodingOptions {
 
 #[derive(Default)]
 struct EncodingCaches {
-    correlation: CorrelationCache,
-    fixed: FixedCache,
+    independent: ChannelCache,
+    correlated: CorrelationCache,
 }
 
 #[derive(Default)]
@@ -380,18 +380,29 @@ struct CorrelationCache {
     // the difference channel samples
     difference_samples: Vec<i32>,
     // the left channel
-    left: BitRecorder<u32, BigEndian>,
+    left: CorrelationChannel,
     // the right channel
-    right: BitRecorder<u32, BigEndian>,
+    right: CorrelationChannel,
     // the average channel
-    average: BitRecorder<u32, BigEndian>,
+    average: CorrelationChannel,
     // the difference channel
-    difference: BitRecorder<u32, BigEndian>,
+    difference: CorrelationChannel,
+}
+
+#[derive(Default)]
+struct CorrelationChannel {
+    cache: ChannelCache,
+    output: BitRecorder<u32, BigEndian>,
+}
+
+#[derive(Default)]
+struct ChannelCache {
+    fixed: FixedCache,
 }
 
 #[derive(Default)]
 struct FixedCache {
-    // FIXED subframe buffers
+    // FIXED subframe buffers, one per order 1-4
     fixed_buffers: [Vec<i32>; 4],
 }
 
@@ -735,7 +746,7 @@ where
 
             for channel in frame {
                 encode_subframe(
-                    &mut cache.fixed,
+                    &mut cache.independent,
                     bw.by_ref(),
                     channel,
                     streaminfo.bits_per_sample,
@@ -784,44 +795,93 @@ struct Correlated<'c> {
 
 fn correlate_channels<'c>(
     EncodingCaches {
-        correlation:
+        correlated:
             CorrelationCache {
-                left: left_channel,
-                right: right_channel,
+                left:
+                    CorrelationChannel {
+                        output: left_channel,
+                        cache: left_channel_cache,
+                    },
+                right:
+                    CorrelationChannel {
+                        output: right_channel,
+                        cache: right_channel_cache,
+                    },
                 average_samples,
-                average,
+                average:
+                    CorrelationChannel {
+                        output: average,
+                        cache: average_cache,
+                    },
                 difference_samples,
-                difference,
+                difference:
+                    CorrelationChannel {
+                        output: difference,
+                        cache: difference_cache,
+                    },
             },
-        fixed: fixed_cache,
+        independent,
     }: &'c mut EncodingCaches,
     [left, right]: [&[i32]; 2],
     bits_per_sample: SignedBitCount<32>,
 ) -> Result<Correlated<'c>, Error> {
+    struct EncodeArgs<'a> {
+        cache: &'a mut ChannelCache,
+        writer: &'a mut BitRecorder<u32, BigEndian>,
+        channel: &'a [i32],
+        bits_per_sample: SignedBitCount<32>,
+    }
+
+    fn mass_encode(args: [EncodeArgs<'_>; 4]) -> Result<(), Error> {
+        for EncodeArgs {
+            cache,
+            writer,
+            channel,
+            bits_per_sample,
+        } in args
+        {
+            writer.clear();
+            encode_subframe(cache, writer, channel, bits_per_sample)?;
+        }
+        Ok(())
+    }
+
     match bits_per_sample.checked_add(1) {
         Some(difference_bits_per_sample) => {
             // TODO - calculate these in parallel
 
-            left_channel.clear();
-            encode_subframe(fixed_cache, left_channel, left, bits_per_sample)?;
-
-            right_channel.clear();
-            encode_subframe(fixed_cache, right_channel, right, bits_per_sample)?;
-
             average_samples.clear();
             average_samples.extend(left.iter().zip(right).map(|(l, r)| (l + r) >> 1));
-            average.clear();
-            encode_subframe(fixed_cache, average, average_samples, bits_per_sample)?;
 
             difference_samples.clear();
             difference_samples.extend(left.iter().zip(right).map(|(l, r)| l - r));
-            difference.clear();
-            encode_subframe(
-                fixed_cache,
-                difference,
-                difference_samples,
-                difference_bits_per_sample,
-            )?;
+
+            mass_encode([
+                EncodeArgs {
+                    cache: left_channel_cache,
+                    writer: left_channel,
+                    channel: left,
+                    bits_per_sample,
+                },
+                EncodeArgs {
+                    cache: right_channel_cache,
+                    writer: right_channel,
+                    channel: right,
+                    bits_per_sample,
+                },
+                EncodeArgs {
+                    cache: average_cache,
+                    writer: average,
+                    channel: average_samples,
+                    bits_per_sample,
+                },
+                EncodeArgs {
+                    cache: difference_cache,
+                    writer: difference,
+                    channel: difference_samples,
+                    bits_per_sample: difference_bits_per_sample,
+                },
+            ])?;
 
             let left_difference = left_channel.written() + difference.written();
             let difference_right = difference.written() + right_channel.written();
@@ -860,10 +920,10 @@ fn correlate_channels<'c>(
             // and encode them both indepedently
 
             left_channel.clear();
-            encode_subframe(fixed_cache, left_channel, left, bits_per_sample)?;
+            encode_subframe(independent, left_channel, left, bits_per_sample)?;
 
             right_channel.clear();
-            encode_subframe(fixed_cache, right_channel, right, bits_per_sample)?;
+            encode_subframe(independent, right_channel, right, bits_per_sample)?;
 
             Ok(Correlated {
                 channel_assignment: ChannelAssignment::Independent(2),
@@ -874,7 +934,7 @@ fn correlate_channels<'c>(
 }
 
 fn encode_subframe<W: BitWrite>(
-    fixed_cache: &mut FixedCache,
+    ChannelCache { fixed: fixed_cache }: &mut ChannelCache,
     writer: &mut W,
     channel: &[i32],
     bits_per_sample: SignedBitCount<32>,
