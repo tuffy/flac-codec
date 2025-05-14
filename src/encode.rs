@@ -24,7 +24,7 @@ use std::num::NonZero;
 const MAX_CHANNELS: usize = 8;
 
 /// A FLAC writer
-pub struct Writer<W: std::io::Write + std::io::Seek, E: crate::audio::Endianness> {
+pub struct FlacWriter<W: std::io::Write + std::io::Seek, E: crate::audio::Endianness> {
     // the wrapped encoder
     encoder: Encoder<W>,
     // bytes that make up a partial FLAC frame
@@ -43,7 +43,7 @@ pub struct Writer<W: std::io::Write + std::io::Seek, E: crate::audio::Endianness
     endianness: std::marker::PhantomData<E>,
 }
 
-impl<W: std::io::Write + std::io::Seek, E: crate::audio::Endianness> Writer<W, E> {
+impl<W: std::io::Write + std::io::Seek, E: crate::audio::Endianness> FlacWriter<W, E> {
     /// Opens new FLAC writer
     pub fn new(
         writer: W,
@@ -51,7 +51,6 @@ impl<W: std::io::Write + std::io::Seek, E: crate::audio::Endianness> Writer<W, E
         sample_rate: u32,
         bits_per_sample: impl TryInto<SignedBitCount<32>>,
         channels: NonZero<u8>,
-        block_size: u16,
         total_samples: Option<NonZero<u64>>,
     ) -> Result<Self, Error> {
         let bits_per_sample = bits_per_sample
@@ -67,14 +66,13 @@ impl<W: std::io::Write + std::io::Seek, E: crate::audio::Endianness> Writer<W, E
             frame: Frame::empty(channels.get().into(), bits_per_sample.into(), sample_rate),
             bytes_per_sample,
             pcm_frame_size,
-            frame_byte_size: pcm_frame_size * block_size as usize,
+            frame_byte_size: pcm_frame_size * options.block_size as usize,
             encoder: Encoder::new(
                 writer,
                 options,
                 sample_rate,
                 bits_per_sample,
                 channels,
-                block_size,
                 total_samples,
             )?,
             finalized: false,
@@ -127,7 +125,7 @@ impl<W: std::io::Write + std::io::Seek, E: crate::audio::Endianness> Writer<W, E
 }
 
 impl<W: std::io::Write + std::io::Seek, E: crate::audio::Endianness> std::io::Write
-    for Writer<W, E>
+    for FlacWriter<W, E>
 {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         use crate::audio::LittleEndian;
@@ -168,17 +166,29 @@ impl<W: std::io::Write + std::io::Seek, E: crate::audio::Endianness> std::io::Wr
     }
 }
 
-impl<W: std::io::Write + std::io::Seek, E: crate::audio::Endianness> Drop for Writer<W, E> {
+impl<W: std::io::Write + std::io::Seek, E: crate::audio::Endianness> Drop for FlacWriter<W, E> {
     fn drop(&mut self) {
         let _ = self.finalize_inner();
     }
 }
 
 /// FLAC encoding options
-#[derive(Default)]
 pub struct EncodingOptions {
+    block_size: u16,
     metadata: BTreeMap<BlockType, BlockSet>,
     seektable_style: Option<SeektableStyle>,
+}
+
+impl Default for EncodingOptions {
+    fn default() -> Self {
+        Self {
+            block_size: 4096,
+            metadata: BTreeMap::default(),
+            // TODO - make default seektable style
+            // one point every 10 seconds
+            seektable_style: None,
+        }
+    }
 }
 
 enum SeektableStyle {
@@ -187,6 +197,11 @@ enum SeektableStyle {
 }
 
 impl EncodingOptions {
+    /// Sets new block size
+    pub fn block_size(self, block_size: u16) -> Self {
+        Self { block_size, ..self }
+    }
+
     /// Adds new [`crate::metadata::Padding`] block to metadata
     ///
     /// Files may contain multiple [`crate::metadata::Padding`] blocks,
@@ -435,14 +450,13 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
         sample_rate: u32,
         bits_per_sample: impl TryInto<SignedBitCount<32>>,
         channels: NonZero<u8>,
-        block_size: u16,
         total_samples: Option<NonZero<u64>>,
     ) -> Result<Self, Error> {
         use crate::metadata::AsBlockRef;
 
         let streaminfo = Streaminfo {
-            minimum_block_size: block_size,
-            maximum_block_size: block_size,
+            minimum_block_size: options.block_size,
+            maximum_block_size: options.block_size,
             minimum_frame_size: None,
             maximum_frame_size: None,
             sample_rate: (0..1048576)
@@ -484,7 +498,7 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
                                 total_samples
                                     .get()
                                     .div_ceil(samples)
-                                    .min(total_samples.get().div_ceil(block_size.into()))
+                                    .min(total_samples.get().div_ceil(options.block_size.into()))
                                     .try_into()
                                     .unwrap()
                             ],
