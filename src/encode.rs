@@ -121,7 +121,7 @@ impl<W: std::io::Write + std::io::Seek, E: crate::byteorder::Endianness> FlacWri
                 self.encoder.update_md5(buf);
 
                 self.encoder
-                    .encode(self.frame.from_buf::<LittleEndian>(buf))?;
+                    .encode(self.frame.fill_from_buf::<LittleEndian>(buf))?;
             }
 
             self.encoder.finalize_inner()
@@ -169,7 +169,7 @@ impl<W: std::io::Write + std::io::Seek, E: crate::byteorder::Endianness> std::io
 
             // encode fresh FLAC frame
             self.encoder
-                .encode(self.frame.from_buf::<LittleEndian>(buf))?;
+                .encode(self.frame.fill_from_buf::<LittleEndian>(buf))?;
 
             encoded_frames += 1;
         }
@@ -1240,7 +1240,7 @@ impl Frame {
     }
 
     /// Fills frame samples from bytes of the given endianness
-    fn from_buf<E: crate::byteorder::Endianness>(&mut self, buf: &[u8]) -> &Self {
+    fn fill_from_buf<E: crate::byteorder::Endianness>(&mut self, buf: &[u8]) -> &Self {
         fn buf_chunks<const BYTES_PER_SAMPLE: usize>(
             channels: usize,
             channel_len: usize,

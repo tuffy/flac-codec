@@ -9,7 +9,7 @@
 //! For decoding FLAC files to PCM samples
 
 use crate::Error;
-use crate::metadata::{SeekTable, Streaminfo};
+use crate::metadata::{Block, BlockRef, SeekTable, Streaminfo};
 use bitstream_io::{BitRead, SignedBitCount};
 use std::collections::VecDeque;
 use std::num::NonZero;
@@ -66,6 +66,12 @@ impl<R: std::io::Read, E: crate::byteorder::Endianness> FlacReader<R, E> {
     #[inline]
     pub fn md5(&self) -> Option<&[u8; 16]> {
         self.decoder.md5()
+    }
+
+    /// Returns iterator over all metadata blocks
+    #[inline]
+    pub fn metadata(&self) -> impl Iterator<Item = BlockRef<'_>> {
+        self.decoder.metadata()
     }
 }
 
@@ -212,6 +218,8 @@ struct Decoder<R> {
     reader: R,
     streaminfo: Streaminfo,
     seektable: Option<SeekTable>,
+    // any other metadata blocks
+    blocks: Vec<Block>,
     // the size of everything before the first frame, in bytes
     frames_start: u64,
     // the current sample, in channel-independent samples
@@ -237,6 +245,8 @@ impl<R: std::io::Read> Decoder<R> {
 
         let mut streaminfo = None;
         let mut seektable = None;
+        let mut blocks = Vec::new();
+
         let mut counter = Counter::new(reader.by_ref());
 
         for block in read_blocks(counter.by_ref()) {
@@ -247,7 +257,9 @@ impl<R: std::io::Read> Decoder<R> {
                 Block::SeekTable(block) => {
                     seektable = Some(block);
                 }
-                _ => { /* ignore other blocks */ }
+                block => {
+                    blocks.push(block);
+                }
             }
         }
 
@@ -258,6 +270,7 @@ impl<R: std::io::Read> Decoder<R> {
                 current_sample: 0,
                 streaminfo,
                 seektable,
+                blocks,
                 buf: Frame::default(),
             }),
             // read_blocks should check for this already
@@ -293,6 +306,15 @@ impl<R: std::io::Read> Decoder<R> {
     /// Returns MD5 of entire stream, if known
     fn md5(&self) -> Option<&[u8; 16]> {
         self.streaminfo.md5.as_ref()
+    }
+
+    /// Returns iterator over all metadata blocks
+    fn metadata(&self) -> impl Iterator<Item = BlockRef<'_>> {
+        use crate::metadata::AsBlockRef;
+
+        std::iter::once(self.streaminfo.as_block_ref())
+            .chain(self.seektable.as_ref().map(|s| s.as_block_ref()))
+            .chain(self.blocks.iter().map(|b| b.as_block_ref()))
     }
 
     /// Returns decoded frame, if any.
