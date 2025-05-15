@@ -24,7 +24,7 @@ use std::num::NonZero;
 const MAX_CHANNELS: usize = 8;
 
 /// A FLAC writer
-pub struct FlacWriter<W: std::io::Write + std::io::Seek, E: crate::audio::Endianness> {
+pub struct FlacWriter<W: std::io::Write + std::io::Seek, E: crate::byteorder::Endianness> {
     // the wrapped encoder
     encoder: Encoder<W>,
     // bytes that make up a partial FLAC frame
@@ -43,8 +43,29 @@ pub struct FlacWriter<W: std::io::Write + std::io::Seek, E: crate::audio::Endian
     endianness: std::marker::PhantomData<E>,
 }
 
-impl<W: std::io::Write + std::io::Seek, E: crate::audio::Endianness> FlacWriter<W, E> {
-    /// Opens new FLAC writer
+impl<W: std::io::Write + std::io::Seek, E: crate::byteorder::Endianness> FlacWriter<W, E> {
+    /// Creates new FLAC writer with the given parameters
+    ///
+    /// `sample_rate` must be between 0 (for non-audio streams)
+    /// and 1,048,576 (a 20 bit field).
+    ///
+    /// `bits_per_sample` must be between 1 and 32.
+    ///
+    /// `channels` must be between 1 and 8.
+    ///
+    /// `total_samples`, if known, must be between
+    /// 1 and 68,719,476,736 (a 36 bit field).
+    ///
+    /// Note that if `total_samples` is indicated,
+    /// the number of channel-independent samples written *must*
+    /// be equal to that amount or an error will occur when writing
+    /// or finalizing the stream.
+    ///
+    /// # Errors
+    ///
+    /// Returns I/O error if unable to write initial
+    /// metadata blocks.
+    /// Returns error if any of the encoding parameters are invalid.
     pub fn new(
         writer: W,
         options: EncodingOptions,
@@ -86,7 +107,7 @@ impl<W: std::io::Write + std::io::Seek, E: crate::audio::Endianness> FlacWriter<
 
             // encode as many bytes as possible into final frame, if necessary
             if !self.buf.is_empty() {
-                use crate::audio::LittleEndian;
+                use crate::byteorder::LittleEndian;
 
                 // truncate buffer to whole PCM frames
                 let buf = self.buf.make_contiguous();
@@ -124,11 +145,11 @@ impl<W: std::io::Write + std::io::Seek, E: crate::audio::Endianness> FlacWriter<
     }
 }
 
-impl<W: std::io::Write + std::io::Seek, E: crate::audio::Endianness> std::io::Write
+impl<W: std::io::Write + std::io::Seek, E: crate::byteorder::Endianness> std::io::Write
     for FlacWriter<W, E>
 {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        use crate::audio::LittleEndian;
+        use crate::byteorder::LittleEndian;
 
         // dump whole set of bytes into our internal buffer
         self.buf.extend(buf);
@@ -166,7 +187,7 @@ impl<W: std::io::Write + std::io::Seek, E: crate::audio::Endianness> std::io::Wr
     }
 }
 
-impl<W: std::io::Write + std::io::Seek, E: crate::audio::Endianness> Drop for FlacWriter<W, E> {
+impl<W: std::io::Write + std::io::Seek, E: crate::byteorder::Endianness> Drop for FlacWriter<W, E> {
     fn drop(&mut self) {
         let _ = self.finalize_inner();
     }
@@ -433,28 +454,6 @@ struct Encoder<W: std::io::Write + std::io::Seek> {
 impl<W: std::io::Write + std::io::Seek> Encoder<W> {
     const MAX_SAMPLES: u64 = 68_719_476_736;
 
-    /// Creates new encoder with the given parameters
-    ///
-    /// `sample_rate` must be between 0 (for non-audio streams)
-    /// and 1,048,576 (a 20 bit field).
-    ///
-    /// `bits_per_sample` must be between 1 and 32.
-    ///
-    /// `channels` must be between 1 and 8.
-    ///
-    /// `total_samples`, if known, must be between
-    /// 1 and 68,719,476,736 (a 36 bit field).
-    ///
-    /// Note that if `total_samples` is indicated,
-    /// the number of channel-independent samples written *must*
-    /// be equal to that amount or an error will occur when writing
-    /// or finalizing the stream.
-    ///
-    /// # Errors
-    ///
-    /// Returns I/O error if unable to write initial
-    /// metadata blocks.
-    /// Returns error if any of the encoding parameters are invalid.
     fn new(
         mut writer: W,
         mut options: EncodingOptions,

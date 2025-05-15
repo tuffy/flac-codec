@@ -1,6 +1,6 @@
 #[test]
 fn test_seeking() {
-    use flac_codec::audio::LittleEndian;
+    use flac_codec::byteorder::LittleEndian;
     use flac_codec::decode::FlacReader;
     use std::io::{Cursor, Read, Seek, SeekFrom};
 

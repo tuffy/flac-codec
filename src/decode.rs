@@ -25,7 +25,7 @@ pub struct FlacReader<R, E> {
     endianness: std::marker::PhantomData<E>,
 }
 
-impl<R: std::io::Read, E: crate::audio::Endianness> FlacReader<R, E> {
+impl<R: std::io::Read, E: crate::byteorder::Endianness> FlacReader<R, E> {
     /// Opens new FLAC reader
     pub fn new(reader: R) -> Result<Self, Error> {
         Ok(Self {
@@ -70,7 +70,7 @@ impl<R: std::io::Read, E: crate::audio::Endianness> FlacReader<R, E> {
     }
 }
 
-impl<R: std::io::Read, E: crate::audio::Endianness> std::io::Read for FlacReader<R, E> {
+impl<R: std::io::Read, E: crate::byteorder::Endianness> std::io::Read for FlacReader<R, E> {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         if self.buf.is_empty() {
             match self.decoder.read_frame()? {
@@ -87,7 +87,7 @@ impl<R: std::io::Read, E: crate::audio::Endianness> std::io::Read for FlacReader
     }
 }
 
-impl<R: std::io::Read, E: crate::audio::Endianness> std::io::BufRead for FlacReader<R, E> {
+impl<R: std::io::Read, E: crate::byteorder::Endianness> std::io::BufRead for FlacReader<R, E> {
     fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
         if self.buf.is_empty() {
             match self.decoder.read_frame()? {
@@ -108,7 +108,7 @@ impl<R: std::io::Read, E: crate::audio::Endianness> std::io::BufRead for FlacRea
     }
 }
 
-impl<R: std::io::Read + std::io::Seek, E: crate::audio::Endianness> std::io::Seek
+impl<R: std::io::Read + std::io::Seek, E: crate::byteorder::Endianness> std::io::Seek
     for FlacReader<R, E>
 {
     fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
