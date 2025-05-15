@@ -101,6 +101,48 @@ impl<W: std::io::Write + std::io::Seek, E: crate::byteorder::Endianness> FlacWri
         })
     }
 
+    /// Creates new FLAC writer in the given endianness with the given parameters
+    ///
+    /// `sample_rate` must be between 0 (for non-audio streams)
+    /// and 1,048,576 (a 20 bit field).
+    ///
+    /// `bits_per_sample` must be between 1 and 32.
+    ///
+    /// `channels` must be between 1 and 8.
+    ///
+    /// `total_samples`, if known, must be between
+    /// 1 and 68,719,476,736 (a 36 bit field).
+    ///
+    /// Note that if `total_samples` is indicated,
+    /// the number of channel-independent samples written *must*
+    /// be equal to that amount or an error will occur when writing
+    /// or finalizing the stream.
+    ///
+    /// # Errors
+    ///
+    /// Returns I/O error if unable to write initial
+    /// metadata blocks.
+    /// Returns error if any of the encoding parameters are invalid.
+    #[inline]
+    pub fn endian(
+        writer: W,
+        _endianness: E,
+        options: EncodingOptions,
+        sample_rate: u32,
+        bits_per_sample: impl TryInto<SignedBitCount<32>>,
+        channels: NonZero<u8>,
+        total_samples: Option<NonZero<u64>>,
+    ) -> Result<Self, Error> {
+        Self::new(
+            writer,
+            options,
+            sample_rate,
+            bits_per_sample,
+            channels,
+            total_samples,
+        )
+    }
+
     fn finalize_inner(&mut self) -> Result<(), Error> {
         if !self.finalized {
             self.finalized = true;

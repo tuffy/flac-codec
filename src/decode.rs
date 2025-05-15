@@ -14,7 +14,7 @@ use bitstream_io::{BitRead, SignedBitCount};
 use std::collections::VecDeque;
 use std::num::NonZero;
 
-/// A FLAC reader
+/// A FLAC reader which outputs PCM samples as bytes
 pub struct FlacReader<R, E> {
     // the wrapped decoder
     decoder: Decoder<R>,
@@ -25,13 +25,20 @@ pub struct FlacReader<R, E> {
 }
 
 impl<R: std::io::Read, E: crate::byteorder::Endianness> FlacReader<R, E> {
-    /// Opens new FLAC reader
+    /// Opens new FLAC reader which wraps the given reader
+    #[inline]
     pub fn new(reader: R) -> Result<Self, Error> {
         Ok(Self {
             decoder: Decoder::new(reader)?,
             buf: VecDeque::default(),
             endianness: std::marker::PhantomData,
         })
+    }
+
+    /// Opens new FLAC reader in the given endianness
+    #[inline]
+    pub fn endian(reader: R, _endian: E) -> Result<Self, Error> {
+        Self::new(reader)
     }
 
     /// Returns channel count
@@ -63,6 +70,9 @@ impl<R: std::io::Read, E: crate::byteorder::Endianness> FlacReader<R, E> {
     }
 
     /// Returns MD5 of entire stream, if known
+    ///
+    /// MD5 is always calculated in terms of little-endian,
+    /// signed, byte-aligned values.
     #[inline]
     pub fn md5(&self) -> Option<&[u8; 16]> {
         self.decoder.md5()
