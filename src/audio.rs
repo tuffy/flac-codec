@@ -256,9 +256,6 @@ pub struct Frame {
 
     // bits-per-sample
     bits_per_sample: u32,
-
-    // sample rate, in Hz
-    sample_rate: u32,
 }
 
 impl Frame {
@@ -274,12 +271,6 @@ impl Frame {
         self.bits_per_sample
     }
 
-    /// Returns sample rate in Hz
-    #[inline]
-    pub fn sample_rate(&self) -> u32 {
-        self.sample_rate
-    }
-
     /// Returns PCM frame count
     #[inline]
     pub fn pcm_frames(&self) -> usize {
@@ -288,24 +279,16 @@ impl Frame {
 
     /// Returns empty Frame which can be filled as needed
     #[inline]
-    pub fn empty(channels: usize, bits_per_sample: u32, sample_rate: u32) -> Self {
+    pub fn empty(channels: usize, bits_per_sample: u32) -> Self {
         Self {
             samples: Vec::new(),
             channels,
             channel_len: 0,
             bits_per_sample,
-            sample_rate,
         }
     }
 
-    fn resize(
-        &mut self,
-        sample_rate: u32,
-        bits_per_sample: u32,
-        channels: usize,
-        block_size: usize,
-    ) -> &mut [i32] {
-        self.sample_rate = sample_rate;
+    fn resize(&mut self, bits_per_sample: u32, channels: usize, block_size: usize) -> &mut [i32] {
         self.bits_per_sample = bits_per_sample;
         self.channels = channels;
         self.channel_len = block_size;
@@ -316,23 +299,21 @@ impl Frame {
     /// Resizes our frame with the given parameters and returns channel iterator
     pub fn resized_channels(
         &mut self,
-        sample_rate: u32,
         bits_per_sample: u32,
         channels: usize,
         block_size: usize,
     ) -> impl Iterator<Item = &mut [i32]> {
-        self.resize(sample_rate, bits_per_sample, channels, block_size)
+        self.resize(bits_per_sample, channels, block_size)
             .chunks_exact_mut(block_size)
     }
 
     /// Resizes our frame for two channels and returns both
     pub fn resized_stereo(
         &mut self,
-        sample_rate: u32,
         bits_per_sample: u32,
         block_size: usize,
     ) -> (&mut [i32], &mut [i32]) {
-        self.resize(sample_rate, bits_per_sample, 2, block_size)
+        self.resize(bits_per_sample, 2, block_size)
             .split_at_mut(block_size)
     }
 
@@ -470,14 +451,13 @@ fn test_buffer<E: Endianness>() {
             channels,
             channel_len: samples / channels,
             bits_per_sample: (BYTES_PER_SAMPLE * 8) as u32,
-            sample_rate: 44100,
         };
 
         let mut buf = vec![0; frame1.bytes_len()];
 
         frame1.to_buf::<E>(&mut buf);
 
-        let mut frame2 = Frame::empty(channels, (BYTES_PER_SAMPLE * 8) as u32, 44100);
+        let mut frame2 = Frame::empty(channels, (BYTES_PER_SAMPLE * 8) as u32);
         frame2.from_buf::<E>(&buf);
 
         assert_eq!(frame1, frame2);

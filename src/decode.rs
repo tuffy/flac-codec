@@ -336,7 +336,6 @@ impl<R: std::io::Read> Decoder<R> {
         match header.channel_assignment {
             ChannelAssignment::Independent(total_channels) => {
                 buf.resized_channels(
-                    header.sample_rate.into(),
                     header.bits_per_sample.into(),
                     total_channels.into(),
                     u16::from(header.block_size).into(),
@@ -347,7 +346,6 @@ impl<R: std::io::Read> Decoder<R> {
             }
             ChannelAssignment::LeftSide => {
                 let (left, side) = buf.resized_stereo(
-                    header.sample_rate.into(),
                     header.bits_per_sample.into(),
                     u16::from(header.block_size).into(),
                 );
@@ -369,7 +367,6 @@ impl<R: std::io::Read> Decoder<R> {
             }
             ChannelAssignment::SideRight => {
                 let (side, right) = buf.resized_stereo(
-                    header.sample_rate.into(),
                     header.bits_per_sample.into(),
                     u16::from(header.block_size).into(),
                 );
@@ -391,7 +388,6 @@ impl<R: std::io::Read> Decoder<R> {
             }
             ChannelAssignment::MidSide => {
                 let (mid, side) = buf.resized_stereo(
-                    header.sample_rate.into(),
                     header.bits_per_sample.into(),
                     u16::from(header.block_size).into(),
                 );

@@ -63,7 +63,7 @@ impl<W: std::io::Write + std::io::Seek, E: crate::audio::Endianness> FlacWriter<
 
         Ok(Self {
             buf: VecDeque::default(),
-            frame: Frame::empty(channels.get().into(), bits_per_sample.into(), sample_rate),
+            frame: Frame::empty(channels.get().into(), bits_per_sample.into()),
             bytes_per_sample,
             pcm_frame_size,
             frame_byte_size: pcm_frame_size * options.block_size as usize,
@@ -560,12 +560,11 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
     /// for the encoder's.
     pub fn encode(&mut self, frame: &Frame) -> Result<(), Error> {
         // sanity-check that frame's parameters match encoder's
+        // TODO - turn these to debug_assert once this is made private
         if frame.channel_count() != self.streaminfo.channels.get().into() {
             return Err(Error::ChannelsMismatch);
         } else if frame.bits_per_sample() != self.streaminfo.bits_per_sample.into() {
             return Err(Error::BitsPerSampleMismatch);
-        } else if frame.sample_rate() != self.streaminfo.sample_rate {
-            return Err(Error::SampleRateMismatch);
         }
 
         // drop in a new seekpoint
