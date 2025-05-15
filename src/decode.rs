@@ -223,6 +223,182 @@ impl<R: std::io::Read + std::io::Seek, E: crate::byteorder::Endianness> std::io:
     }
 }
 
+/// A FLAC reader which outputs PCM samples as signed integers
+///
+/// # Example
+///
+/// ```
+/// use flac_codec::{encode::{FlacSampleWriter, EncodingOptions}, decode::FlacSampleReader};
+/// use std::io::Cursor;
+/// use std::num::NonZero;
+///
+/// let mut flac = Cursor::new(vec![]);  // a FLAC file in memory
+///
+/// let mut writer = FlacSampleWriter::new(
+///     &mut flac,                   // our wrapped writer
+///     EncodingOptions::default(),  // default encoding options
+///     44100,                       // sample rate
+///     16,                          // bits-per-sample
+///     NonZero::new(1).unwrap(),    // channel count
+///     NonZero::new(1000),          // total samples
+/// ).unwrap();
+///
+/// // write 1000 samples
+/// let written_samples = (0..1000).collect::<Vec<i32>>();
+/// writer.write(&written_samples).unwrap();
+///
+/// // finalize writing file
+/// assert!(writer.finalize().is_ok());
+///
+/// let flac = flac.into_inner();  // extract written FLAC file
+///
+/// let mut reader = FlacSampleReader::new(flac.as_slice()).unwrap();
+///
+/// // read 1000 samples
+/// let mut read_samples = vec![0; 1000];
+/// assert!(matches!(reader.read(&mut read_samples), Ok(1000)));
+///
+/// // ensure they match
+/// assert_eq!(read_samples, written_samples);
+/// ```
+pub struct FlacSampleReader<R> {
+    // the wrapped decoder
+    decoder: Decoder<R>,
+    // decoded sample buffer
+    buf: VecDeque<i32>,
+}
+
+impl<R: std::io::Read> FlacSampleReader<R> {
+    /// Opens new FLAC reader which wraps the given reader
+    #[inline]
+    pub fn new(reader: R) -> Result<Self, Error> {
+        Ok(Self {
+            decoder: Decoder::new(reader)?,
+            buf: VecDeque::default(),
+        })
+    }
+
+    /// Returns channel count
+    ///
+    /// From 1 to 8
+    #[inline]
+    pub fn channel_count(&self) -> NonZero<u8> {
+        self.decoder.channel_count()
+    }
+
+    /// Returns sample rate, in Hz
+    #[inline]
+    pub fn sample_rate(&self) -> u32 {
+        self.decoder.sample_rate()
+    }
+
+    /// Returns decoder's bits-per-sample
+    ///
+    /// From 1 to 32
+    #[inline]
+    pub fn bits_per_sample(&self) -> SignedBitCount<32> {
+        self.decoder.bits_per_sample()
+    }
+
+    /// Returns total number of channel-independent samples, if known
+    #[inline]
+    pub fn total_samples(&self) -> Option<NonZero<u64>> {
+        self.decoder.total_samples()
+    }
+
+    /// Returns MD5 of entire stream, if known
+    ///
+    /// MD5 is always calculated in terms of little-endian,
+    /// signed, byte-aligned values.
+    #[inline]
+    pub fn md5(&self) -> Option<&[u8; 16]> {
+        self.decoder.md5()
+    }
+
+    /// Returns iterator over all metadata blocks
+    #[inline]
+    pub fn metadata(&self) -> impl Iterator<Item = BlockRef<'_>> {
+        self.decoder.metadata()
+    }
+
+    /// Attempts to fill the buffer with samples and returns quantity read
+    ///
+    /// # Errors
+    ///
+    /// Returns error if some error occurs reading FLAC file
+    pub fn read(&mut self, samples: &mut [i32]) -> Result<usize, Error> {
+        if self.buf.is_empty() {
+            match self.decoder.read_frame()? {
+                Some(frame) => {
+                    self.buf.extend(frame.iter());
+                }
+                None => return Ok(0),
+            }
+        }
+
+        let to_consume = samples.len().min(self.buf.len());
+        for (i, o) in samples.iter_mut().zip(self.buf.drain(0..to_consume)) {
+            *i = o;
+        }
+        Ok(to_consume)
+    }
+
+    /// Returns complete buffer of all read samples
+    ///
+    /// Analogous to [`std::io::BufRead::fill_buf`], this should
+    /// be paired with [`FlacSampleReader::consume`] to
+    /// consume samples in the filled buffer once used.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if some error occurs reading FLAC file
+    /// to fill buffer.
+    pub fn fill_buf(&mut self) -> Result<&[i32], Error> {
+        if self.buf.is_empty() {
+            match self.decoder.read_frame()? {
+                Some(frame) => {
+                    self.buf.extend(frame.iter());
+                }
+                None => return Ok(&[]),
+            }
+        }
+
+        Ok(self.buf.make_contiguous())
+    }
+
+    /// Informs the reader that `amt` samples have been consumed.
+    ///
+    /// Analagous to [`std::io::BufRead::consume`], which marks
+    /// samples as having been read.
+    ///
+    /// May panic if attempting to consume more bytes
+    /// than are available in the buffer.
+    pub fn consume(&mut self, amt: usize) {
+        self.buf.drain(0..amt);
+    }
+}
+
+impl<R: std::io::Read + std::io::Seek> FlacSampleReader<R> {
+    /// Seeks to the given channel-independent sample
+    ///
+    /// The sample is relative to the beginning of the stream
+    pub fn seek(&mut self, sample: u64) -> Result<(), Error> {
+        let mut pos = self.decoder.seek(sample)?;
+
+        // seeking invalidates the current buffer
+        self.buf.clear();
+
+        while pos < sample {
+            let buf = self.fill_buf()?;
+            let to_consume = buf.len().min((sample - pos) as usize);
+            pos += to_consume as u64;
+            self.consume(to_consume);
+        }
+
+        Ok(())
+    }
+}
+
 /// A FLAC decoder
 struct Decoder<R> {
     reader: R,
