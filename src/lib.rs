@@ -12,6 +12,7 @@
 #![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
+mod audio;
 pub mod byteorder;
 pub mod crc;
 pub mod decode;
