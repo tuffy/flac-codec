@@ -8,7 +8,7 @@
 
 //! For encoding PCM samples to FLAC files
 
-use crate::audio::Frame;
+// use crate::audio::Frame;
 use crate::metadata::{
     Application, BlockSet, BlockSize, BlockType, Cuesheet, MetadataBlock, Picture, SeekPoint,
     Streaminfo, VorbisComment, write_blocks,
@@ -558,14 +558,6 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
     /// or if the frame's parameters are not a match
     /// for the encoder's.
     fn encode(&mut self, frame: &Frame) -> Result<(), Error> {
-        // sanity-check that frame's parameters match encoder's
-        // TODO - turn these to debug_assert once this is made private
-        if frame.channel_count() != self.streaminfo.channels.get().into() {
-            return Err(Error::ChannelsMismatch);
-        } else if frame.bits_per_sample() != self.streaminfo.bits_per_sample.into() {
-            return Err(Error::BitsPerSampleMismatch);
-        }
-
         // drop in a new seekpoint
         self.seekpoints.push(SeekPoint {
             sample_offset: Some(self.samples_written),
@@ -1201,4 +1193,121 @@ fn write_residuals<W: BitWrite>(
     // TODO - we only support a coding method of 0
     writer.write::<2, u8>(0)?; // coding method
     write_block::<0b1111, W>(writer, predictor_order, residuals)
+}
+
+struct Frame {
+    // all samples, stacked by channel
+    samples: Vec<i32>,
+
+    // total number of channels
+    channels: usize,
+
+    // total length of each channel in samples
+    channel_len: usize,
+
+    // bits-per-sample
+    bits_per_sample: u32,
+}
+
+impl Frame {
+    /// Returns empty Frame which can be filled as needed
+    #[inline]
+    fn empty(channels: usize, bits_per_sample: u32) -> Self {
+        Self {
+            samples: Vec::new(),
+            channels,
+            channel_len: 0,
+            bits_per_sample,
+        }
+    }
+
+    /// Returns bytes-per-sample
+    #[inline]
+    pub fn bytes_per_sample(&self) -> usize {
+        self.bits_per_sample.div_ceil(8) as usize
+    }
+
+    /// Returns PCM frame count
+    #[inline]
+    fn pcm_frames(&self) -> usize {
+        self.channel_len
+    }
+
+    /// Iterates over all channels
+    #[inline]
+    fn channels(&self) -> impl Iterator<Item = &[i32]> {
+        self.samples.chunks_exact(self.channel_len)
+    }
+
+    /// Fills frame samples from bytes of the given endianness
+    fn from_buf<E: crate::byteorder::Endianness>(&mut self, buf: &[u8]) -> &Self {
+        fn buf_chunks<const BYTES_PER_SAMPLE: usize>(
+            channels: usize,
+            channel_len: usize,
+            buf: &[u8],
+        ) -> impl Iterator<Item = [u8; BYTES_PER_SAMPLE]> {
+            (0..channels).flat_map(move |c| {
+                (0..channel_len).map(move |s| {
+                    buf[((s * channels) + c) * BYTES_PER_SAMPLE
+                        ..((s * channels) + c + 1) * BYTES_PER_SAMPLE]
+                        .try_into()
+                        .unwrap()
+                })
+            })
+        }
+
+        match self.bytes_per_sample() {
+            1 => {
+                self.channel_len = buf.len() / self.channels;
+                self.samples.resize(buf.len(), 0);
+
+                for (sample, bytes) in self.samples.iter_mut().zip(buf_chunks::<1>(
+                    self.channels,
+                    self.channel_len,
+                    buf,
+                )) {
+                    *sample = E::bytes_to_i8(bytes) as i32
+                }
+            }
+            2 => {
+                self.channel_len = (buf.len() / 2) / self.channels;
+                self.samples.resize(buf.len() / 2, 0);
+
+                for (sample, bytes) in self.samples.iter_mut().zip(buf_chunks::<2>(
+                    self.channels,
+                    self.channel_len,
+                    buf,
+                )) {
+                    *sample = E::bytes_to_i16(bytes) as i32
+                }
+            }
+            3 => {
+                self.channel_len = (buf.len() / 3) / self.channels;
+                self.samples.resize(buf.len() / 3, 0);
+
+                for (sample, bytes) in self.samples.iter_mut().zip(buf_chunks::<3>(
+                    self.channels,
+                    self.channel_len,
+                    buf,
+                )) {
+                    *sample = E::bytes_to_i24(bytes)
+                }
+            }
+            4 => {
+                self.channel_len = (buf.len() / 4) / self.channels;
+                self.samples.resize(buf.len() / 4, 0);
+
+                for (sample, bytes) in self.samples.iter_mut().zip(buf_chunks::<4>(
+                    self.channels,
+                    self.channel_len,
+                    buf,
+                )) {
+                    *sample = E::bytes_to_i32(bytes)
+                }
+            }
+            _ => panic!("unsupported number of bytes per sample"),
+        }
+
+        self
+    }
 }

@@ -239,4 +239,3 @@ fn test_samples_le() {
 fn test_samples_be() {
     test_endianness::<bitstream_io::BigEndian, BigEndian>()
 }
-
