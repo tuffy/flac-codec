@@ -407,7 +407,7 @@ struct FixedCache {
 }
 
 /// A FLAC encoder
-pub struct Encoder<W: std::io::Write + std::io::Seek> {
+struct Encoder<W: std::io::Write + std::io::Seek> {
     // the writer we're outputting to
     writer: Counter<W>,
     // various encoding options
@@ -455,7 +455,7 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
     /// Returns I/O error if unable to write initial
     /// metadata blocks.
     /// Returns error if any of the encoding parameters are invalid.
-    pub fn new(
+    fn new(
         mut writer: W,
         mut options: EncodingOptions,
         sample_rate: u32,
@@ -544,7 +544,7 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
     }
 
     /// Updates running MD5 calculation with signed, little-endian bytes
-    pub fn update_md5(&mut self, frame_bytes: &[u8]) {
+    fn update_md5(&mut self, frame_bytes: &[u8]) {
         self.md5.consume(frame_bytes)
     }
 
@@ -558,7 +558,7 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
     /// Returns an I/O error from the underlying stream,
     /// or if the frame's parameters are not a match
     /// for the encoder's.
-    pub fn encode(&mut self, frame: &Frame) -> Result<(), Error> {
+    fn encode(&mut self, frame: &Frame) -> Result<(), Error> {
         // sanity-check that frame's parameters match encoder's
         // TODO - turn these to debug_assert once this is made private
         if frame.channel_count() != self.streaminfo.channels.get().into() {
@@ -656,20 +656,6 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
         } else {
             Ok(())
         }
-    }
-
-    /// Attempt to finalize stream
-    ///
-    /// It is necessary to finalize the FLAC encoder
-    /// so that it will write any partially unwritten samples
-    /// to the stream and update the [`crate::metadata::Streaminfo`] and [`crate::metadata::SeekTable`] blocks
-    /// with their final values.
-    ///
-    /// Dropping the encoder will attempt to finalize the stream
-    /// automatically, but will ignore any errors that may occur.
-    pub fn finalize(mut self) -> Result<(), Error> {
-        self.finalize_inner()?;
-        Ok(())
     }
 }
 

@@ -38,30 +38,35 @@ impl<R: std::io::Read, E: crate::audio::Endianness> FlacReader<R, E> {
     /// Returns channel count
     ///
     /// From 1 to 8
+    #[inline]
     pub fn channel_count(&self) -> NonZero<u8> {
-        self.decoder.streaminfo.channels
+        self.decoder.channel_count()
     }
 
     /// Returns sample rate, in Hz
+    #[inline]
     pub fn sample_rate(&self) -> u32 {
-        self.decoder.streaminfo.sample_rate
+        self.decoder.sample_rate()
     }
 
     /// Returns decoder's bits-per-sample
     ///
     /// From 1 to 32
+    #[inline]
     pub fn bits_per_sample(&self) -> SignedBitCount<32> {
-        self.decoder.streaminfo.bits_per_sample
+        self.decoder.bits_per_sample()
     }
 
     /// Returns total number of channel-independent samples, if known
+    #[inline]
     pub fn total_samples(&self) -> Option<NonZero<u64>> {
-        self.decoder.streaminfo.total_samples
+        self.decoder.total_samples()
     }
 
     /// Returns MD5 of entire stream, if known
+    #[inline]
     pub fn md5(&self) -> Option<&[u8; 16]> {
-        self.decoder.streaminfo.md5.as_ref()
+        self.decoder.md5()
     }
 }
 
@@ -204,7 +209,7 @@ impl<R: std::io::Read + std::io::Seek, E: crate::audio::Endianness> std::io::See
 }
 
 /// A FLAC decoder
-pub struct Decoder<R> {
+struct Decoder<R> {
     reader: R,
     streaminfo: Streaminfo,
     seektable: Option<SeekTable>,
@@ -226,7 +231,7 @@ impl<R: std::io::Read> Decoder<R> {
     /// Returns an error of the initial FLAC metadata
     /// is invalid or an I/O error occurs reading
     /// the initial metadata.
-    pub fn new(mut reader: R) -> Result<Self, Error> {
+    fn new(mut reader: R) -> Result<Self, Error> {
         use crate::Counter;
         use crate::metadata::{Block, read_blocks};
         use std::io::Read;
@@ -265,29 +270,29 @@ impl<R: std::io::Read> Decoder<R> {
     /// Returns channel count
     ///
     /// From 1 to 8
-    pub fn channel_count(&self) -> NonZero<u8> {
+    fn channel_count(&self) -> NonZero<u8> {
         self.streaminfo.channels
     }
 
     /// Returns sample rate, in Hz
-    pub fn sample_rate(&self) -> u32 {
+    fn sample_rate(&self) -> u32 {
         self.streaminfo.sample_rate
     }
 
     /// Returns decoder's bits-per-sample
     ///
     /// From 1 to 32
-    pub fn bits_per_sample(&self) -> SignedBitCount<32> {
+    fn bits_per_sample(&self) -> SignedBitCount<32> {
         self.streaminfo.bits_per_sample
     }
 
     /// Returns total number of channel-independent samples, if known
-    pub fn total_samples(&self) -> Option<NonZero<u64>> {
+    fn total_samples(&self) -> Option<NonZero<u64>> {
         self.streaminfo.total_samples
     }
 
     /// Returns MD5 of entire stream, if known
-    pub fn md5(&self) -> Option<&[u8; 16]> {
+    fn md5(&self) -> Option<&[u8; 16]> {
         self.streaminfo.md5.as_ref()
     }
 
@@ -296,7 +301,7 @@ impl<R: std::io::Read> Decoder<R> {
     /// # Errors
     ///
     /// Returns any decoding error from the stream.
-    pub fn read_frame(&mut self) -> Result<Option<&Frame>, Error> {
+    fn read_frame(&mut self) -> Result<Option<&Frame>, Error> {
         use crate::crc::{Checksum, Crc16, CrcReader};
         use crate::stream::{ChannelAssignment, FrameHeader};
         use bitstream_io::{BigEndian, BitReader};
@@ -435,7 +440,7 @@ impl<R: std::io::Seek> Decoder<R> {
     ///
     /// Passes along an I/O error that occurs when seeking
     /// within the file.
-    pub fn seek(&mut self, sample: u64) -> Result<u64, Error> {
+    fn seek(&mut self, sample: u64) -> Result<u64, Error> {
         use crate::metadata::SeekPoint;
         use std::io::SeekFrom;
 
