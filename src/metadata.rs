@@ -554,7 +554,10 @@ pub enum Save {
 /// Returns error if unable to read metadata blocks,
 /// unable to write blocks, or if the existing or updated
 /// blocks do not conform to the FLAC file specification.
-pub fn update_file<P, E>(path: P, f: impl FnOnce(&mut Vec<Block>) -> Result<Save, E>) -> Result<(), E>
+pub fn update_file<P, E>(
+    path: P,
+    f: impl FnOnce(&mut Vec<Block>) -> Result<Save, E>,
+) -> Result<(), E>
 where
     P: AsRef<Path>,
     E: From<Error>,
@@ -1678,16 +1681,20 @@ impl Picture {
     ///
     /// Returns an error if some problem occurs reading
     /// or identifying the file.
-    pub fn new(
+    pub fn new<S, V>(
         picture_type: PictureType,
-        description: String,
-        data: Vec<u8>,
-    ) -> Result<Self, InvalidPicture> {
-        let metrics = PictureMetrics::try_new(&data)?;
+        description: S,
+        data: V,
+    ) -> Result<Self, InvalidPicture>
+    where
+        S: Into<String>,
+        V: Into<Vec<u8>> + AsRef<[u8]>,
+    {
+        let metrics = PictureMetrics::try_new(data.as_ref())?;
         Ok(Self {
             picture_type,
-            description,
-            data,
+            description: description.into(),
+            data: data.into(),
             media_type: metrics.media_type.to_owned(),
             width: metrics.width,
             height: metrics.height,
