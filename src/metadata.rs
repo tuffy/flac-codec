@@ -19,9 +19,12 @@ use std::path::Path;
 /// A FLAC metadata block header
 #[derive(Debug)]
 pub struct BlockHeader {
-    last: bool,
-    block_type: BlockType,
-    size: BlockSize,
+    /// Whether we are the final block
+    pub last: bool,
+    /// Our block type
+    pub block_type: BlockType,
+    /// Our block size, in bytes
+    pub size: BlockSize,
 }
 
 /// A type of FLAC metadata block
@@ -952,8 +955,17 @@ pub struct Streaminfo {
 }
 
 impl Streaminfo {
-    /// The maximum size of a frame, in bytes
-    pub const MAX_FRAME_SIZE: u32 = 1 << 24;
+    /// The maximum size of a frame, in bytes (2²⁴ - 1)
+    pub const MAX_FRAME_SIZE: u32 = (1 << 24) - 1;
+
+    /// The maximum sample rate, in Hz (2²⁰ - 1)
+    pub const MAX_SAMPLE_RATE: u32 = (1 << 20) - 1;
+
+    /// The maximum number of channels (8)
+    pub const MAX_CHANNELS: NonZero<u8> = NonZero::new(8).unwrap();
+
+    /// The maximum number of total samples (2³⁶ - 1)
+    pub const MAX_TOTAL_SAMPLES: NonZero<u64> = NonZero::new((1 << 36) - 1).unwrap();
 }
 
 impl MetadataBlock for Streaminfo {
