@@ -554,19 +554,60 @@ pub enum Save {
 /// Returns error if unable to read metadata blocks,
 /// unable to write blocks, or if the existing or updated
 /// blocks do not conform to the FLAC file specification.
-pub fn update<P, E>(path: P, f: impl FnOnce(&mut Vec<Block>) -> Result<Save, E>) -> Result<(), E>
+pub fn update_file<P, E>(path: P, f: impl FnOnce(&mut Vec<Block>) -> Result<Save, E>) -> Result<(), E>
 where
     P: AsRef<Path>,
     E: From<Error>,
 {
+    use std::fs::OpenOptions;
+
+    update(
+        OpenOptions::new()
+            .read(true)
+            .write(true)
+            .truncate(false)
+            .create(false)
+            .open(path.as_ref())
+            .map_err(Error::Io)?,
+        || std::fs::File::create(path.as_ref()),
+        f,
+    )
+}
+
+/// Given open file, attempts to update its metadata blocks
+///
+/// Applies closure `f` to the blocks and attempts to update
+/// them if `Save::Commit` is returned.
+///
+/// If the updated blocks can be made the same size as the
+/// original file by adjusting padding, the file will be
+/// completely overwritten with new contents.
+///
+/// If the new blocks are too large (or small) to fit into
+/// the original file, the original file is dropped
+/// and the `rebuilt` closure is called to build a new
+/// file.  The file's contents are then dumped into the new file.
+pub fn update<F, N, E>(
+    mut original: F,
+    rebuilt: impl FnOnce() -> std::io::Result<N>,
+    f: impl FnOnce(&mut Vec<Block>) -> Result<Save, E>,
+) -> Result<(), E>
+where
+    F: std::io::Read + std::io::Seek + std::io::Write,
+    N: std::io::Write,
+    E: From<Error>,
+{
     use crate::Counter;
     use std::cmp::Ordering;
-    use std::fs::OpenOptions;
-    use std::io::{BufReader, BufWriter, Read, Seek, Write, sink};
+    use std::io::{BufReader, BufWriter, Read, sink};
 
-    fn rebuild_file<P, R>(p: P, mut r: R, blocks: Vec<Block>) -> Result<(), Error>
+    fn rebuild_file<N, R>(
+        rebuilt: impl FnOnce() -> std::io::Result<N>,
+        mut r: R,
+        blocks: Vec<Block>,
+    ) -> Result<(), Error>
     where
-        P: AsRef<Path>,
+        N: std::io::Write,
         R: Read,
     {
         // dump our new blocks and remaining FLAC data to temp file
@@ -575,8 +616,8 @@ where
         std::io::copy(&mut r, &mut tmp).map_err(Error::Io)?;
         drop(r);
 
-        // open original file and rewrite it with tmp file contents
-        std::fs::File::create(p)
+        // fresh original file and rewrite it with tmp file contents
+        rebuilt()
             .and_then(|mut f| f.write_all(tmp.as_slice()))
             .map_err(Error::Io)
     }
@@ -625,15 +666,7 @@ where
         Ok(())
     }
 
-    let mut file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .truncate(false)
-        .create(false)
-        .open(path.as_ref())
-        .map_err(Error::Io)?;
-
-    let mut reader = Counter::new(BufReader::new(Read::by_ref(&mut file)));
+    let mut reader = Counter::new(BufReader::new(&mut original));
 
     let mut blocks = read_blocks(Read::by_ref(&mut reader)).collect::<Result<Vec<_>, _>>()?;
 
@@ -658,27 +691,27 @@ where
             // PADDING block to hold additional bytes
             match grow_padding(&mut blocks, old_size - new_size) {
                 Ok(()) => {
-                    file.rewind().map_err(Error::Io)?;
-                    write_blocks(&blocks, BufWriter::new(file))?
+                    original.rewind().map_err(Error::Io)?;
+                    write_blocks(&blocks, BufWriter::new(original))?
                 }
-                Err(()) => rebuild_file(path, reader, blocks)?,
+                Err(()) => rebuild_file(rebuilt, reader, blocks)?,
             }
             Ok(())
         }
         Ordering::Equal => {
             // blocks are the same size, so no need to adjust padding
-            file.rewind().map_err(Error::Io)?;
-            Ok(write_blocks(&blocks, BufWriter::new(file))?)
+            original.rewind().map_err(Error::Io)?;
+            Ok(write_blocks(&blocks, BufWriter::new(original))?)
         }
         Ordering::Greater => {
             // blocks have grown in size, so try to shrink
             // PADDING block to hold additional bytes
             match shrink_padding(&mut blocks, new_size - old_size) {
                 Ok(()) => {
-                    file.rewind().map_err(Error::Io)?;
-                    write_blocks(&blocks, BufWriter::new(file))?
+                    original.rewind().map_err(Error::Io)?;
+                    write_blocks(&blocks, BufWriter::new(original))?
                 }
-                Err(()) => rebuild_file(path, reader, blocks)?,
+                Err(()) => rebuild_file(rebuilt, reader, blocks)?,
             }
             Ok(())
         }
