@@ -14,7 +14,7 @@
 
 mod audio;
 pub mod byteorder;
-pub mod crc;
+mod crc;
 pub mod decode;
 pub mod encode;
 pub mod metadata;
