@@ -935,21 +935,27 @@ pub struct Streaminfo {
     /// excluding the last block.
     pub maximum_block_size: u16,
     /// The minimum framesize (in bytes) used in the stream.
+    ///
     /// `None` indicates the value is unknown.
     pub minimum_frame_size: Option<NonZero<u32>>,
     /// The maximum framesize (in bytes) used in the stream.
+    ///
     /// `None` indicates the value is unknown.
     pub maximum_frame_size: Option<NonZero<u32>>,
     /// Sample rate in Hz
+    ///
+    /// 0 indicates a non-audio stream.
     pub sample_rate: u32,
-    /// Number of channels
+    /// Number of channels, from 1 to 8
     pub channels: NonZero<u8>,
     /// Number of bits-per-sample, from 4 to 32
     pub bits_per_sample: SignedBitCount<32>,
     /// Total number of interchannel samples in stream.
+    ///
     /// `None` indicates the value is unknown.
     pub total_samples: Option<NonZero<u64>>,
     /// MD5 hash of unencoded audio data.
+    ///
     /// `None` indicates the value is unknown.
     pub md5: Option<[u8; 16]>,
 }

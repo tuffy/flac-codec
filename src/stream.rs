@@ -510,15 +510,21 @@ impl ChannelAssignment {
 pub struct FrameNumber(pub u64);
 
 impl FrameNumber {
+    /// Our maximum frame number
+    const MAX_FRAME_NUMBER: u64 = (1 << 36) - 1;
+
     /// Attempt to increment frame number
     ///
     /// # Error
     ///
     /// Returns an error if the frame number is too large
     pub fn try_increment(&mut self) -> Result<(), Error> {
-        // TODO - implement number check
-        self.0 += 1;
-        Ok(())
+        if self.0 < Self::MAX_FRAME_NUMBER {
+            self.0 += 1;
+            Ok(())
+        } else {
+            Err(Error::ExcessiveFrameNumber)
+        }
     }
 }
 

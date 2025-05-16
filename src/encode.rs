@@ -15,8 +15,8 @@ use crate::metadata::{
 };
 use crate::stream::{ChannelAssignment, FrameNumber, SampleRate};
 use crate::{Counter, Error};
-use bitstream_io::{BigEndian, BitRecorder, BitWrite, BitWriter, SignedBitCount};
 use arrayvec::ArrayVec;
+use bitstream_io::{BigEndian, BitRecorder, BitWrite, BitWriter, SignedBitCount};
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, VecDeque};
 use std::num::NonZero;
@@ -727,6 +727,7 @@ struct CorrelationChannel {
 #[derive(Default)]
 struct ChannelCache {
     fixed: FixedCache,
+    fixed_output: BitRecorder<u32, BigEndian>,
 }
 
 #[derive(Default)]
@@ -1218,7 +1219,10 @@ fn correlate_channels<'c>(
 }
 
 fn encode_subframe<W: BitWrite>(
-    ChannelCache { fixed: fixed_cache }: &mut ChannelCache,
+    ChannelCache {
+        fixed: fixed_cache,
+        fixed_output,
+    }: &mut ChannelCache,
     writer: &mut W,
     channel: &[i32],
     bits_per_sample: SignedBitCount<32>,
@@ -1250,16 +1254,26 @@ fn encode_subframe<W: BitWrite>(
             }
         };
 
-    // TODO - try different subframe types
 
-    encode_fixed_subframe(fixed_cache, writer, channel, bits_per_sample, wasted_bps)
-    // match channel {
-    //     [first] => encode_constant_subframe(w, *first, bits_per_sample, wasted_bps),
-    //     [first, rest @ ..] if rest.iter().all(|s| s == first) => {
-    //         encode_constant_subframe(w, *first, bits_per_sample, wasted_bps)
-    //     }
-    //     _ => encode_verbatim_subframe(w, channel, bits_per_sample, wasted_bps),
-    // }
+    fixed_output.clear();
+    encode_fixed_subframe(
+        fixed_cache,
+        fixed_output,
+        channel,
+        bits_per_sample,
+        wasted_bps,
+    )?;
+
+    // TODO - output to LPC subframe
+    // TODO - write the smaller of FIXED, LPC, and VERBATIM subframes
+
+    let verbatim_len = channel.len() as u32 * u32::from(bits_per_sample);
+
+    if fixed_output.written() < verbatim_len {
+        Ok(fixed_output.playback(writer)?)
+    } else {
+        encode_verbatim_subframe(writer, channel, bits_per_sample, wasted_bps)
+    }
 }
 
 fn encode_constant_subframe<W: BitWrite>(

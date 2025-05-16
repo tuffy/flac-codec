@@ -106,6 +106,8 @@ pub enum Error {
     BitsPerSampleMismatch,
     /// Invalid frame number
     InvalidFrameNumber,
+    /// Excessive frame number
+    ExcessiveFrameNumber,
     /// CRC-8 mismatch in frame header
     Crc8Mismatch,
     /// CRC-16 mismatch in frame footer
@@ -210,6 +212,7 @@ impl std::fmt::Display for Error {
                 "bits-per-sample in frame differs from bits-per-sample in STREAMINFO".fmt(f)
             }
             Self::InvalidFrameNumber => "invalid frame number".fmt(f),
+            Self::ExcessiveFrameNumber => "excessive frame number".fmt(f),
             Self::Crc8Mismatch => "CRC-8 mismatch in frame header".fmt(f),
             Self::Crc16Mismatch => "CRC-16 mismatch in frame footer".fmt(f),
             Self::InvalidSubframeHeader => "invalid subframe header".fmt(f),
