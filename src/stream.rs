@@ -178,10 +178,10 @@ impl FrameHeader {
 
         // uncommon block size
         match self.block_size {
-            BlockSize::Read8(size) => {
+            BlockSize::Uncommon8(size) => {
                 w.write::<8, _>(size.checked_sub(1).ok_or(Error::InvalidBlockSize)?)?
             }
-            BlockSize::Read16(size) => {
+            BlockSize::Uncommon16(size) => {
                 w.write::<16, _>(size.checked_sub(1).ok_or(Error::InvalidBlockSize)?)?
             }
             _ => { /* do nothing */ }
@@ -189,11 +189,11 @@ impl FrameHeader {
 
         // uncommon sample rate
         match self.sample_rate {
-            SampleRate::Read8x1000(rate) => w.write::<8, _>(rate / 1000)?,
-            SampleRate::Read16(rate) => {
+            SampleRate::KHz(rate) => w.write::<8, _>(rate / 1000)?,
+            SampleRate::Hz(rate) => {
                 w.write::<16, _>(rate)?;
             }
-            SampleRate::Read16x10(rate) => {
+            SampleRate::DHz(rate) => {
                 w.write::<16, _>(rate / 10)?;
             }
             _ => { /* do nothing */ }
@@ -288,14 +288,34 @@ impl ToBitStream for FrameHeader {
 pub enum BlockSize<B> {
     /// 192 samples
     Samples192,
-    /// 144 * (1 << v) samples
-    Samples576to4608(u16),
-    /// Read 8 bits + 1
-    Read8(B),
-    /// Read 16 bits + 1
-    Read16(B),
-    /// (1 << v) samples
-    Samples256to32768(u16),
+    /// 576 samples
+    Samples576,
+    /// 1152 samples
+    Samples1152,
+    /// 2304 samples
+    Samples2304,
+    /// 4608 samples
+    Samples4608,
+    /// Uncommon 8 bit sample count + 1
+    Uncommon8(B),
+    /// Uncommon 16 bit sample count + 1
+    Uncommon16(B),
+    /// 256 samples
+    Samples256,
+    /// 512 samples
+    Samples512,
+    /// 1024 samples
+    Samples1024,
+    /// 2048 samples
+    Samples2048,
+    /// 4096 samples
+    Samples4096,
+    /// 8192 samples
+    Samples8192,
+    /// 16384 samples
+    Samples16384,
+    /// 32768 samples
+    Samples32768,
 }
 
 impl FromBitStream for BlockSize<()> {
@@ -305,11 +325,21 @@ impl FromBitStream for BlockSize<()> {
         match r.read::<4, u8>()? {
             0b0000 => Err(Error::InvalidBlockSize),
             0b0001 => Ok(Self::Samples192),
-            v @ 0b0010..=0b0101 => Ok(Self::Samples576to4608(144 * (1 << v))),
-            0b0110 => Ok(Self::Read8(())),
-            0b0111 => Ok(Self::Read16(())),
-            v @ 0b1000..=0b1111 => Ok(Self::Samples256to32768(1 << v)),
-            _ => unreachable!(), // 4-bit field
+            0b0010 => Ok(Self::Samples576),
+            0b0011 => Ok(Self::Samples1152),
+            0b0100 => Ok(Self::Samples2304),
+            0b0101 => Ok(Self::Samples4608),
+            0b0110 => Ok(Self::Uncommon8(())),
+            0b0111 => Ok(Self::Uncommon16(())),
+            0b1000 => Ok(Self::Samples256),
+            0b1001 => Ok(Self::Samples512),
+            0b1010 => Ok(Self::Samples1024),
+            0b1011 => Ok(Self::Samples2048),
+            0b1100 => Ok(Self::Samples4096),
+            0b1101 => Ok(Self::Samples8192),
+            0b1110 => Ok(Self::Samples16384),
+            0b1111 => Ok(Self::Samples32768),
+            0b10000.. => unreachable!(), // 4-bit field
         }
     }
 }
@@ -318,18 +348,24 @@ impl BlockSize<()> {
     fn finalize_read<R: BitRead + ?Sized>(self, r: &mut R) -> Result<BlockSize<u16>, Error> {
         match self {
             Self::Samples192 => Ok(BlockSize::Samples192),
-            Self::Samples576to4608(s) => Ok(BlockSize::Samples576to4608(s)),
-            Self::Read8(()) => Ok(BlockSize::Read8(
-                r.read::<8, u16>()?
-                    .checked_add(1)
-                    .ok_or(Error::InvalidBlockSize)?,
-            )),
-            Self::Read16(()) => Ok(BlockSize::Read16(
+            Self::Samples576 => Ok(BlockSize::Samples576),
+            Self::Samples1152 => Ok(BlockSize::Samples1152),
+            Self::Samples2304 => Ok(BlockSize::Samples2304),
+            Self::Samples4608 => Ok(BlockSize::Samples4608),
+            Self::Samples256 => Ok(BlockSize::Samples256),
+            Self::Samples512 => Ok(BlockSize::Samples512),
+            Self::Samples1024 => Ok(BlockSize::Samples1024),
+            Self::Samples2048 => Ok(BlockSize::Samples2048),
+            Self::Samples4096 => Ok(BlockSize::Samples4096),
+            Self::Samples8192 => Ok(BlockSize::Samples8192),
+            Self::Samples16384 => Ok(BlockSize::Samples16384),
+            Self::Samples32768 => Ok(BlockSize::Samples32768),
+            Self::Uncommon8(()) => Ok(BlockSize::Uncommon8(r.read::<8, u16>()? + 1)),
+            Self::Uncommon16(()) => Ok(BlockSize::Uncommon16(
                 r.read::<16, u16>()?
                     .checked_add(1)
                     .ok_or(Error::InvalidBlockSize)?,
             )),
-            Self::Samples256to32768(s) => Ok(BlockSize::Samples256to32768(s)),
         }
     }
 }
@@ -340,10 +376,20 @@ impl<B> ToBitStream for BlockSize<B> {
     fn to_writer<W: BitWrite + ?Sized>(&self, w: &mut W) -> Result<(), Self::Error> {
         w.write::<4, u8>(match self {
             Self::Samples192 => 0b0001,
-            Self::Samples576to4608(s) => (s / 144).ilog2().try_into().unwrap(),
-            Self::Read8(_) => 0b0110,
-            Self::Read16(_) => 0b0111,
-            Self::Samples256to32768(s) => s.ilog2().try_into().unwrap(),
+            Self::Samples576 => 0b0010,
+            Self::Samples1152 => 0b0011,
+            Self::Samples2304 => 0b0100,
+            Self::Samples4608 => 0b0101,
+            Self::Uncommon8(_) => 0b0110,
+            Self::Uncommon16(_) => 0b0111,
+            Self::Samples256 => 0b1000,
+            Self::Samples512 => 0b1001,
+            Self::Samples1024 => 0b1010,
+            Self::Samples2048 => 0b1011,
+            Self::Samples4096 => 0b1100,
+            Self::Samples8192 => 0b1101,
+            Self::Samples16384 => 0b1110,
+            Self::Samples32768 => 0b1111,
         })
     }
 }
@@ -352,10 +398,19 @@ impl From<BlockSize<u16>> for u16 {
     fn from(size: BlockSize<u16>) -> Self {
         match size {
             BlockSize::Samples192 => 192,
-            BlockSize::Samples576to4608(s)
-            | BlockSize::Read8(s)
-            | BlockSize::Read16(s)
-            | BlockSize::Samples256to32768(s) => s,
+            BlockSize::Samples576 => 576,
+            BlockSize::Samples1152 => 1152,
+            BlockSize::Samples2304 => 2304,
+            BlockSize::Samples4608 => 4608,
+            BlockSize::Samples256 => 256,
+            BlockSize::Samples512 => 512,
+            BlockSize::Samples1024 => 1024,
+            BlockSize::Samples2048 => 2048,
+            BlockSize::Samples4096 => 4096,
+            BlockSize::Samples8192 => 8192,
+            BlockSize::Samples16384 => 16384,
+            BlockSize::Samples32768 => 32768,
+            BlockSize::Uncommon8(s) | BlockSize::Uncommon16(s) => s,
         }
     }
 }
@@ -367,12 +422,20 @@ impl TryFrom<u16> for BlockSize<u16> {
         match size {
             0 => Err(Error::InvalidBlockSize),
             192 => Ok(Self::Samples192),
-            576 | 1152 | 2304 | 4608 => Ok(Self::Samples576to4608(size)),
-            256 | 512 | 1024 | 2048 | 4096 | 8192 | 16384 | 32768 => {
-                Ok(Self::Samples256to32768(size))
-            }
-            size if size <= 256 => Ok(Self::Read8(size)),
-            size => Ok(Self::Read16(size)),
+            576 => Ok(Self::Samples576),
+            1152 => Ok(Self::Samples1152),
+            2304 => Ok(Self::Samples2304),
+            4608 => Ok(Self::Samples4608),
+            256 => Ok(Self::Samples256),
+            512 => Ok(Self::Samples512),
+            1024 => Ok(Self::Samples1024),
+            2048 => Ok(Self::Samples2048),
+            4096 => Ok(Self::Samples4096),
+            8192 => Ok(Self::Samples8192),
+            16384 => Ok(Self::Samples16384),
+            32768 => Ok(Self::Samples32768),
+            size if size <= 256 => Ok(Self::Uncommon8(size)),
+            size => Ok(Self::Uncommon16(size)),
         }
     }
 }
@@ -404,12 +467,12 @@ pub enum SampleRate<R> {
     Hz48000,
     /// 96,000 Hz
     Hz96000,
-    /// 8-bit value * 1,000 Hz
-    Read8x1000(R),
+    /// 8-bit value in kHz
+    KHz(R),
     /// 16-bit value in Hz
-    Read16(R),
+    Hz(R),
     /// 16-bit value * 10 in Hz
-    Read16x10(R),
+    DHz(R),
 }
 
 /// Reads the raw sample rate bits, which need to be finalized
@@ -430,9 +493,9 @@ impl FromBitStream for SampleRate<()> {
             0b1001 => Ok(Self::Hz44100),
             0b1010 => Ok(Self::Hz48000),
             0b1011 => Ok(Self::Hz96000),
-            0b1100 => Ok(Self::Read8x1000(())),
-            0b1101 => Ok(Self::Read16(())),
-            0b1110 => Ok(Self::Read16x10(())),
+            0b1100 => Ok(Self::KHz(())),
+            0b1101 => Ok(Self::Hz(())),
+            0b1110 => Ok(Self::DHz(())),
             0b1111 => Err(Error::InvalidSampleRate),
             _ => unreachable!(), // 4-bit field
         }
@@ -458,9 +521,9 @@ impl SampleRate<()> {
             Self::Hz44100 => Ok(SampleRate::Hz44100),
             Self::Hz48000 => Ok(SampleRate::Hz48000),
             Self::Hz96000 => Ok(SampleRate::Hz96000),
-            Self::Read8x1000(()) => Ok(SampleRate::Read8x1000(r.read::<8, u32>()? * 1000)),
-            Self::Read16(()) => Ok(SampleRate::Read16(r.read::<16, _>()?)),
-            Self::Read16x10(()) => Ok(SampleRate::Read16x10(r.read::<16, u32>()? * 10)),
+            Self::KHz(()) => Ok(SampleRate::KHz(r.read::<8, u32>()? * 1000)),
+            Self::Hz(()) => Ok(SampleRate::Hz(r.read::<16, _>()?)),
+            Self::DHz(()) => Ok(SampleRate::DHz(r.read::<16, u32>()? * 10)),
         }
     }
 }
@@ -483,9 +546,9 @@ impl<R> ToBitStream for SampleRate<R> {
             Self::Hz44100 => 0b1001,
             Self::Hz48000 => 0b1010,
             Self::Hz96000 => 0b1011,
-            Self::Read8x1000(_) => 0b1100,
-            Self::Read16(_) => 0b1101,
-            Self::Read16x10(_) => 0b1110,
+            Self::KHz(_) => 0b1100,
+            Self::Hz(_) => 0b1101,
+            Self::DHz(_) => 0b1110,
         })
     }
 }
@@ -494,9 +557,9 @@ impl From<SampleRate<u32>> for u32 {
     fn from(rate: SampleRate<u32>) -> Self {
         match rate {
             SampleRate::Streaminfo(u)
-            | SampleRate::Read8x1000(u)
-            | SampleRate::Read16(u)
-            | SampleRate::Read16x10(u) => u,
+            | SampleRate::KHz(u)
+            | SampleRate::Hz(u)
+            | SampleRate::DHz(u) => u,
             SampleRate::Hz88200 => 88200,
             SampleRate::Hz176400 => 176400,
             SampleRate::Hz192000 => 192000,
@@ -528,11 +591,9 @@ impl TryFrom<u32> for SampleRate<u32> {
             44100 => Ok(Self::Hz44100),
             48000 => Ok(Self::Hz48000),
             96000 => Ok(Self::Hz96000),
-            rate if (rate % 1000) == 0 && (rate / 1000) < u8::MAX as u32 => {
-                Ok(Self::Read8x1000(rate))
-            }
-            rate if (rate % 10) == 0 && (rate / 10) < u16::MAX as u32 => Ok(Self::Read16x10(rate)),
-            rate if rate < u16::MAX as u32 => Ok(Self::Read16(rate)),
+            rate if (rate % 1000) == 0 && (rate / 1000) < u8::MAX as u32 => Ok(Self::KHz(rate)),
+            rate if (rate % 10) == 0 && (rate / 10) < u16::MAX as u32 => Ok(Self::DHz(rate)),
+            rate if rate < u16::MAX as u32 => Ok(Self::Hz(rate)),
             rate if rate < 1 << 20 => Ok(Self::Streaminfo(rate)),
             _ => Err(Error::InvalidSampleRate),
         }
