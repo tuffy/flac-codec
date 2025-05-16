@@ -16,6 +16,53 @@ use std::collections::VecDeque;
 use std::num::NonZero;
 
 /// A FLAC reader which outputs PCM samples as bytes
+///
+/// # Example
+///
+/// ```
+/// use flac_codec::{
+///     byteorder::LittleEndian,
+///     encode::{FlacWriter, EncodingOptions},
+///     decode::FlacReader
+/// };
+/// use std::io::{Cursor, Read, Seek, Write};
+/// use std::num::NonZero;
+///
+/// let mut flac = Cursor::new(vec![]);  // a FLAC file in memory
+///
+/// let mut writer = FlacWriter::endian(
+///     &mut flac,                   // our wrapped writer
+///     LittleEndian,                // .wav-style byte order
+///     EncodingOptions::default(),  // default encoding options
+///     44100,                       // sample rate
+///     16,                          // bits-per-sample
+///     NonZero::new(1).unwrap(),    // channel count
+///     NonZero::new(1000),          // total samples
+/// ).unwrap();
+///
+/// // write 1000 samples as signed, little-endian bytes
+/// let written_bytes = (0..1000).map(i16::to_le_bytes).flatten().collect::<Vec<u8>>();
+/// assert!(writer.write_all(&written_bytes).is_ok());
+///
+/// // finalize writing file
+/// assert!(writer.finalize().is_ok());
+///
+/// flac.rewind().unwrap();
+///
+/// let mut reader = FlacReader::endian(flac, LittleEndian).unwrap();
+///
+/// // read 2000 bytes
+/// let mut read_bytes = vec![];
+/// assert!(reader.read_to_end(&mut read_bytes).is_ok());
+///
+/// // ensure MD5 sum of signed, little-endian samples matches hash in file
+/// let mut md5 = md5::Context::new();
+/// md5.consume(&read_bytes);
+/// assert_eq!(&md5.compute().0, reader.md5().unwrap());
+///
+/// // ensure input and output matches
+/// assert_eq!(read_bytes, written_bytes);
+/// ```
 pub struct FlacReader<R, E> {
     // the wrapped decoder
     decoder: Decoder<R>,
@@ -230,7 +277,7 @@ impl<R: std::io::Read + std::io::Seek, E: crate::byteorder::Endianness> std::io:
 ///
 /// ```
 /// use flac_codec::{encode::{FlacSampleWriter, EncodingOptions}, decode::FlacSampleReader};
-/// use std::io::Cursor;
+/// use std::io::{Cursor, Seek};
 /// use std::num::NonZero;
 ///
 /// let mut flac = Cursor::new(vec![]);  // a FLAC file in memory
@@ -246,14 +293,14 @@ impl<R: std::io::Read + std::io::Seek, E: crate::byteorder::Endianness> std::io:
 ///
 /// // write 1000 samples
 /// let written_samples = (0..1000).collect::<Vec<i32>>();
-/// writer.write(&written_samples).unwrap();
+/// assert!(writer.write(&written_samples).is_ok());
 ///
 /// // finalize writing file
 /// assert!(writer.finalize().is_ok());
 ///
-/// let flac = flac.into_inner();  // extract written FLAC file
+/// flac.rewind().unwrap();
 ///
-/// let mut reader = FlacSampleReader::new(flac.as_slice()).unwrap();
+/// let mut reader = FlacSampleReader::new(flac).unwrap();
 ///
 /// // read 1000 samples
 /// let mut read_samples = vec![0; 1000];
