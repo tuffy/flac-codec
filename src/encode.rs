@@ -16,7 +16,7 @@ use crate::metadata::{
 use crate::stream::{ChannelAssignment, FrameNumber, SampleRate};
 use crate::{Counter, Error};
 use bitstream_io::{BigEndian, BitRecorder, BitWrite, BitWriter, SignedBitCount};
-use smallvec::SmallVec;
+use arrayvec::ArrayVec;
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, VecDeque};
 use std::num::NonZero;
@@ -970,7 +970,7 @@ fn encode_frame<W>(
     streaminfo: &mut Streaminfo,
     frame_number: &mut FrameNumber,
     sample_rate: SampleRate<u32>,
-    frame: SmallVec<[&[i32]; MAX_CHANNELS]>,
+    frame: ArrayVec<&[i32], MAX_CHANNELS>,
 ) -> Result<(), Error>
 where
     W: std::io::Write,
@@ -1310,12 +1310,12 @@ fn encode_fixed_subframe<W: BitWrite>(
     wasted_bps: u32,
 ) -> Result<(), Error> {
     use crate::stream::{SubframeHeader, SubframeHeaderType};
-    use smallvec::smallvec;
 
     // calculate residuals for FIXED subframe orders 0-4
     // (or fewer, if we don't have enough samples)
     let (order, warm_up, residuals) = {
-        let mut fixed_orders: SmallVec<[&[i32]; 5]> = smallvec![channel; 1];
+        let mut fixed_orders = ArrayVec::<&[i32], 5>::new();
+        fixed_orders.push(channel);
 
         // accumulate a set of FIXED diffs
         for buf in buffers.iter_mut() {
@@ -1436,14 +1436,14 @@ fn write_residuals<W: BitWrite>(
     fn best_partitions<const RICE_MAX: u32>(
         block_size: usize,
         residuals: &[i32],
-    ) -> SmallVec<[Partition<'_, RICE_MAX>; MAX_PARTITIONS]> {
+    ) -> ArrayVec<Partition<'_, RICE_MAX>, MAX_PARTITIONS> {
         // TODO - make max partition order configurable
         (0..=block_size.trailing_zeros().min(6))
             .map(|partition_order| 1 << partition_order)
             .map(|partition_count| {
                 let mut estimated_bits = 0;
 
-                let partitions: SmallVec<_> = residuals
+                let partitions: ArrayVec<_, MAX_PARTITIONS> = residuals
                     .rchunks(block_size / partition_count as usize)
                     .rev()
                     .map(|partition| Partition::new(partition, &mut estimated_bits))

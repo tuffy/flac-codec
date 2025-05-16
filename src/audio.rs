@@ -8,7 +8,7 @@
 
 //! For handling PCM audio in frame-sized chunks
 
-use smallvec::SmallVec;
+use arrayvec::ArrayVec;
 
 #[derive(Default)]
 pub struct Frame {
@@ -206,11 +206,11 @@ impl Frame {
 const MAX_CHANNELS: usize = 8;
 
 struct MultiZip<I> {
-    iters: SmallVec<[I; MAX_CHANNELS]>,
+    iters: ArrayVec<I, MAX_CHANNELS>,
 }
 
 impl<I: Iterator> Iterator for MultiZip<I> {
-    type Item = SmallVec<[I::Item; MAX_CHANNELS]>;
+    type Item = ArrayVec<I::Item, MAX_CHANNELS>;
 
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
