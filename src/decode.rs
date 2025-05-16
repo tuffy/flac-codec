@@ -74,6 +74,9 @@ pub struct FlacReader<R, E> {
 
 impl<R: std::io::Read, E: crate::byteorder::Endianness> FlacReader<R, E> {
     /// Opens new FLAC reader which wraps the given reader
+    ///
+    /// The reader must be positioned at the start of the
+    /// first FLAC frame.
     #[inline]
     pub fn new(reader: R) -> Result<Self, Error> {
         Ok(Self {
@@ -84,6 +87,9 @@ impl<R: std::io::Read, E: crate::byteorder::Endianness> FlacReader<R, E> {
     }
 
     /// Opens new FLAC reader in the given endianness
+    ///
+    /// The reader must be positioned at the start of the
+    /// first FLAC frame.
     #[inline]
     pub fn endian(reader: R, _endian: E) -> Result<Self, Error> {
         Self::new(reader)

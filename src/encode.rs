@@ -93,6 +93,8 @@ pub struct FlacWriter<W: std::io::Write + std::io::Seek, E: crate::byteorder::En
 impl<W: std::io::Write + std::io::Seek, E: crate::byteorder::Endianness> FlacWriter<W, E> {
     /// Creates new FLAC writer with the given parameters
     ///
+    /// The writer should be positioned at the start of the file.
+    ///
     /// `sample_rate` must be between 0 (for non-audio streams)
     /// and 1,048,576 (a 20 bit field).
     ///
@@ -149,6 +151,8 @@ impl<W: std::io::Write + std::io::Seek, E: crate::byteorder::Endianness> FlacWri
     }
 
     /// Creates new FLAC writer in the given endianness with the given parameters
+    ///
+    /// The writer should be positioned at the start of the file.
     ///
     /// `sample_rate` must be between 0 (for non-audio streams)
     /// and 1,048,576 (a 20 bit field).
@@ -262,6 +266,7 @@ impl<W: std::io::Write + std::io::Seek, E: crate::byteorder::Endianness> std::io
 
             encoded_frames += 1;
         }
+        // TODO - use truncate_front whenever that stabilizes
         self.buf.drain(0..self.frame_byte_size * encoded_frames);
 
         // indicate whole buffer's been consumed
@@ -1253,7 +1258,6 @@ fn encode_subframe<W: BitWrite>(
                 )
             }
         };
-
 
     fixed_output.clear();
     encode_fixed_subframe(

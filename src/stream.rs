@@ -9,6 +9,7 @@
 //! For handling common FLAC stream items
 
 use crate::Error;
+use crate::crc::{Checksum, Crc16, CrcReader, CrcWriter};
 use crate::metadata::Streaminfo;
 use bitstream_io::{
     BitCount, BitRead, BitWrite, FromBitStream, FromBitStreamWith, SignedBitCount, ToBitStream,
@@ -53,6 +54,23 @@ impl FrameHeader {
             })
     }
 
+    /// Reads new header from the given reader
+    pub fn read_subset<R: std::io::Read>(reader: &mut R) -> Result<Self, Error> {
+        use crate::crc::{Checksum, Crc8, CrcReader};
+        use bitstream_io::{BigEndian, BitReader};
+        use std::io::Read;
+
+        let mut crc8: CrcReader<_, Crc8> = CrcReader::new(reader);
+        BitReader::endian(crc8.by_ref(), BigEndian)
+            .parse()
+            .and_then(|header| {
+                crc8.into_checksum()
+                    .valid()
+                    .then_some(header)
+                    .ok_or(Error::Crc8Mismatch)
+            })
+    }
+
     /// Builds header to the given writer
     pub fn write<W: std::io::Write>(
         &self,
@@ -65,6 +83,19 @@ impl FrameHeader {
 
         let mut crc8: CrcWriter<_, Crc8> = CrcWriter::new(writer.by_ref());
         BitWriter::endian(crc8.by_ref(), BigEndian).build_with(self, streaminfo)?;
+        let crc8 = crc8.into_checksum().into();
+        writer.write_all(std::slice::from_ref(&crc8))?;
+        Ok(())
+    }
+
+    /// Builds header to the given writer
+    pub fn write_subset<W: std::io::Write>(&self, writer: &mut W) -> Result<(), Error> {
+        use crate::crc::{Crc8, CrcWriter};
+        use bitstream_io::{BigEndian, BitWriter};
+        use std::io::Write;
+
+        let mut crc8: CrcWriter<_, Crc8> = CrcWriter::new(writer.by_ref());
+        BitWriter::endian(crc8.by_ref(), BigEndian).build(self)?;
         let crc8 = crc8.into_checksum().into();
         writer.write_all(std::slice::from_ref(&crc8))?;
         Ok(())
@@ -208,6 +239,19 @@ impl FromBitStreamWith<'_> for FrameHeader {
     }
 }
 
+impl FromBitStream for FrameHeader {
+    type Error = Error;
+
+    #[inline]
+    fn from_reader<R: BitRead + ?Sized>(r: &mut R) -> Result<Self, Self::Error> {
+        FrameHeader::parse(
+            r,
+            || Err(Error::NonSubsetSampleRate),
+            || Err(Error::NonSubsetBitsPerSample),
+        )
+    }
+}
+
 impl ToBitStreamWith<'_> for FrameHeader {
     type Error = Error;
     type Context = Streaminfo;
@@ -222,6 +266,19 @@ impl ToBitStreamWith<'_> for FrameHeader {
             w,
             || Ok(streaminfo.sample_rate),
             || Ok(streaminfo.bits_per_sample),
+        )
+    }
+}
+
+impl ToBitStream for FrameHeader {
+    type Error = Error;
+
+    #[inline]
+    fn to_writer<W: BitWrite + ?Sized>(&self, w: &mut W) -> Result<(), Self::Error> {
+        self.build(
+            w,
+            || Err(Error::NonSubsetSampleRate),
+            || Err(Error::NonSubsetBitsPerSample),
         )
     }
 }
@@ -804,15 +861,17 @@ pub struct Frame {
 }
 
 impl Frame {
-    /// Reads new frame from the given reader
-    pub fn read<R: std::io::Read>(reader: &mut R, streaminfo: &Streaminfo) -> Result<Self, Error> {
-        use crate::crc::{Checksum, Crc16, CrcReader};
+    fn read_inner<R, F>(reader: &mut R, read_header: F) -> Result<Self, Error>
+    where
+        R: std::io::Read,
+        F: FnOnce(&mut CrcReader<&mut R, Crc16>) -> Result<FrameHeader, Error>,
+    {
         use bitstream_io::{BigEndian, BitReader};
         use std::io::Read;
 
         let mut crc16_reader: CrcReader<_, Crc16> = CrcReader::new(reader.by_ref());
 
-        let header = FrameHeader::read(crc16_reader.by_ref(), streaminfo)?;
+        let header = read_header(crc16_reader.by_ref())?;
 
         let mut reader = BitReader::endian(crc16_reader.by_ref(), BigEndian);
 
@@ -865,19 +924,32 @@ impl Frame {
         }
     }
 
-    /// Writes frame to the given writer
-    pub fn write<W: std::io::Write>(
-        &self,
-        streaminfo: &Streaminfo,
-        writer: &mut W,
-    ) -> Result<(), Error> {
-        use crate::crc::{Crc16, CrcWriter};
+    /// Reads new frame from the given reader
+    #[inline]
+    pub fn read<R: std::io::Read>(reader: &mut R, streaminfo: &Streaminfo) -> Result<Self, Error> {
+        Self::read_inner(reader, |r| FrameHeader::read(r, streaminfo))
+    }
+
+    /// Reads new frame from the given reader
+    ///
+    /// Subset files are streamable FLAC files whose decoding
+    /// parameters are fully contained within each frame header.
+    #[inline]
+    pub fn read_subset<R: std::io::Read>(reader: &mut R) -> Result<Self, Error> {
+        Self::read_inner(reader, |r| FrameHeader::read_subset(r))
+    }
+
+    fn write_inner<W, F>(&self, write_header: F, writer: &mut W) -> Result<(), Error>
+    where
+        W: std::io::Write,
+        F: FnOnce(&mut CrcWriter<&mut W, Crc16>, &FrameHeader) -> Result<(), Error>,
+    {
         use bitstream_io::{BigEndian, BitWriter};
         use std::io::Write;
 
         let mut crc16_writer: CrcWriter<_, Crc16> = CrcWriter::new(writer.by_ref());
 
-        self.header.write(crc16_writer.by_ref(), streaminfo)?;
+        write_header(crc16_writer.by_ref(), &self.header)?;
 
         let mut writer = BitWriter::endian(crc16_writer.by_ref(), BigEndian);
 
@@ -940,6 +1012,24 @@ impl Frame {
         writer.write_from(crc16)?;
 
         Ok(())
+    }
+
+    /// Writes frame to the given writer
+    pub fn write<W: std::io::Write>(
+        &self,
+        streaminfo: &Streaminfo,
+        writer: &mut W,
+    ) -> Result<(), Error> {
+        self.write_inner(|w, header| header.write(w, streaminfo), writer)
+    }
+
+    /// Writes frame to the given writer
+    ///
+    /// Subset files are streamable FLAC files whose encoding
+    /// parameters are fully contained within each frame header.
+    #[inline]
+    pub fn write_subset<W: std::io::Write>(&self, writer: &mut W) -> Result<(), Error> {
+        self.write_inner(|w, header| header.write_subset(w), writer)
     }
 }
 

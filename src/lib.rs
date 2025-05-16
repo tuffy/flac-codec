@@ -90,6 +90,10 @@ pub enum Error {
     BlockSizeMismatch,
     /// Invalid frame sample rate
     InvalidSampleRate,
+    /// Non-subset frame sample rate
+    NonSubsetSampleRate,
+    /// Non-subset frame bits-per-sample
+    NonSubsetBitsPerSample,
     /// Mismatch between frame sample rate and STREAMINFO sample rate
     SampleRateMismatch,
     /// Excessive channel count
@@ -198,6 +202,8 @@ impl std::fmt::Display for Error {
                 "block size in frame larger than maximum block size in STREAMINFO".fmt(f)
             }
             Self::InvalidSampleRate => "invalid frame sample rate".fmt(f),
+            Self::NonSubsetSampleRate => "sample rate undefined for subset stream".fmt(f),
+            Self::NonSubsetBitsPerSample => "bits-per-sample undefined for subset stream".fmt(f),
             Self::SampleRateMismatch => {
                 "sample rate in frame differs from sample rate in STREAMINFO".fmt(f)
             }
