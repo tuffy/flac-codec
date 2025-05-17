@@ -111,7 +111,7 @@ impl FrameHeader {
         let blocking_strategy = r.read_bit()?;
         let encoded_block_size = r.parse()?;
         let encoded_sample_rate = r.parse_using(non_subset_rate)?;
-        let encoded_channels = r.read::<4, u8>()?;
+        let channel_assignment = r.parse()?;
         let bits_per_sample = r.parse_using(non_subset_bps)?;
         r.skip(1)?;
         let frame_number = r.parse()?;
@@ -121,14 +121,7 @@ impl FrameHeader {
             frame_number,
             block_size: r.parse_using(encoded_block_size)?,
             sample_rate: r.parse_using(encoded_sample_rate)?,
-            channel_assignment: match encoded_channels {
-                c @ 0b0000..=0b0111 => ChannelAssignment::Independent(c + 1),
-                0b1000 => ChannelAssignment::LeftSide,
-                0b1001 => ChannelAssignment::SideRight,
-                0b1010 => ChannelAssignment::MidSide,
-                0b1011..=0b1111 => return Err(Error::InvalidChannels),
-                0b10000.. => unreachable!(), // 4-bit field
-            },
+            channel_assignment,
             bits_per_sample,
         };
 
@@ -142,12 +135,7 @@ impl FrameHeader {
         w.write_bit(self.blocking_strategy)?;
         w.build(&self.block_size)?;
         w.build(&self.sample_rate)?;
-        w.write::<4, u8>(match self.channel_assignment {
-            ChannelAssignment::Independent(c) => c - 1,
-            ChannelAssignment::LeftSide => 0b1000,
-            ChannelAssignment::SideRight => 0b1001,
-            ChannelAssignment::MidSide => 0b1010,
-        })?;
+        w.build(&self.channel_assignment)?;
         w.build(&self.bits_per_sample)?;
         w.pad(1)?;
         w.build(&self.frame_number)?;
@@ -597,6 +585,34 @@ impl ChannelAssignment {
             Self::Independent(c) => *c,
             _ => 2,
         }
+    }
+}
+
+impl FromBitStream for ChannelAssignment {
+    type Error = Error;
+
+    fn from_reader<R: BitRead + ?Sized>(r: &mut R) -> Result<Self, Error> {
+        match r.read::<4, u8>()? {
+            c @ 0b0000..=0b0111 => Ok(Self::Independent(c + 1)),
+            0b1000 => Ok(Self::LeftSide),
+            0b1001 => Ok(Self::SideRight),
+            0b1010 => Ok(Self::MidSide),
+            0b1011..=0b1111 => Err(Error::InvalidChannels),
+            0b10000.. => unreachable!(), // 4-bit field
+        }
+    }
+}
+
+impl ToBitStream for ChannelAssignment {
+    type Error = Error;
+
+    fn to_writer<W: BitWrite + ?Sized>(&self, w: &mut W) -> Result<(), Error> {
+        Ok(w.write::<4, u8>(match self {
+            Self::Independent(c) => c - 1,
+            Self::LeftSide => 0b1000,
+            Self::SideRight => 0b1001,
+            Self::MidSide => 0b1011,
+        })?)
     }
 }
 
