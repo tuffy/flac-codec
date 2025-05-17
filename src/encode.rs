@@ -1006,7 +1006,7 @@ where
                     .try_into()
                     .expect("frame cannot be empty"),
                 sample_rate,
-                bits_per_sample: streaminfo.bits_per_sample,
+                bits_per_sample: streaminfo.bits_per_sample.into(),
                 channel_assignment,
             }
             .write(&mut w, streaminfo)?;
@@ -1027,7 +1027,7 @@ where
                     .try_into()
                     .expect("frame cannot be empty"),
                 sample_rate,
-                bits_per_sample: streaminfo.bits_per_sample,
+                bits_per_sample: streaminfo.bits_per_sample.into(),
                 channel_assignment: ChannelAssignment::Independent(frame.len() as u8),
             }
             .write(&mut w, streaminfo)?;

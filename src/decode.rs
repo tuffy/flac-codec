@@ -607,7 +607,7 @@ impl<R: std::io::Read> Decoder<R> {
                     u16::from(header.block_size).into(),
                 )
                 .try_for_each(|channel| {
-                    read_subframe(&mut reader, header.bits_per_sample, channel)
+                    read_subframe(&mut reader, header.bits_per_sample.into(), channel)
                 })?;
             }
             ChannelAssignment::LeftSide => {
@@ -616,7 +616,7 @@ impl<R: std::io::Read> Decoder<R> {
                     u16::from(header.block_size).into(),
                 );
 
-                read_subframe(&mut reader, header.bits_per_sample, left)?;
+                read_subframe(&mut reader, header.bits_per_sample.into(), left)?;
 
                 read_subframe(
                     &mut reader,
@@ -646,7 +646,7 @@ impl<R: std::io::Read> Decoder<R> {
                     side,
                 )?;
 
-                read_subframe(&mut reader, header.bits_per_sample, right)?;
+                read_subframe(&mut reader, header.bits_per_sample.into(), right)?;
 
                 side.iter_mut().zip(right.iter()).for_each(|(side, right)| {
                     *side += *right;
@@ -658,7 +658,7 @@ impl<R: std::io::Read> Decoder<R> {
                     u16::from(header.block_size).into(),
                 );
 
-                read_subframe(&mut reader, header.bits_per_sample, mid)?;
+                read_subframe(&mut reader, header.bits_per_sample.into(), mid)?;
 
                 read_subframe(
                     &mut reader,

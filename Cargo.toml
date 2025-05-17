@@ -5,5 +5,5 @@ edition = "2024"
 
 [dependencies]
 arrayvec = "0.7.6"
-bitstream-io = "4.0"
+bitstream-io = "4.1"
 md5 = "0.7"

@@ -12,8 +12,8 @@ use crate::Error;
 use crate::crc::{Checksum, Crc16, CrcReader, CrcWriter};
 use crate::metadata::Streaminfo;
 use bitstream_io::{
-    BitCount, BitRead, BitWrite, FromBitStream, FromBitStreamWith, SignedBitCount, ToBitStream,
-    ToBitStreamWith,
+    BitCount, BitRead, BitWrite, FromBitStream, FromBitStreamUsing, FromBitStreamWith,
+    SignedBitCount, ToBitStream, ToBitStreamUsing, ToBitStreamWith,
 };
 use std::num::NonZero;
 
@@ -29,7 +29,8 @@ pub struct FrameHeader {
     /// How the channels are assigned
     pub channel_assignment: ChannelAssignment,
     /// The number if bits per output sample
-    pub bits_per_sample: SignedBitCount<32>,
+    // pub bits_per_sample: SignedBitCount<32>,
+    pub bits_per_sample: BitsPerSample,
     /// The frame's number in the stream
     pub frame_number: FrameNumber,
 }
@@ -103,43 +104,32 @@ impl FrameHeader {
 
     fn parse<R: BitRead + ?Sized>(
         r: &mut R,
-        non_subset_rate: impl FnOnce() -> Result<u32, Error>,
-        non_subset_bps: impl FnOnce() -> Result<SignedBitCount<32>, Error>,
+        non_subset_rate: Option<u32>,
+        non_subset_bps: Option<SignedBitCount<32>>,
     ) -> Result<Self, Error> {
         r.read_const::<15, { Self::SYNC_CODE }, _>(Error::InvalidSyncCode)?;
         let blocking_strategy = r.read_bit()?;
-        // let encoded_block_size = r.read::<4, u8>()?;
-        let encoded_block_size = r.parse::<BlockSize<()>>()?;
-        let encoded_sample_rate = r.parse::<SampleRate<()>>()?;
+        let encoded_block_size = r.parse()?;
+        let encoded_sample_rate = r.parse_using(non_subset_rate)?;
         let encoded_channels = r.read::<4, u8>()?;
-        let encoded_bps = r.read::<3, u8>()?;
+        let bits_per_sample = r.parse_using(non_subset_bps)?;
         r.skip(1)?;
         let frame_number = r.parse()?;
 
         let frame_header = Self {
             blocking_strategy,
             frame_number,
-            block_size: encoded_block_size.finalize_read(r)?,
-            sample_rate: encoded_sample_rate.finalize_read(r, non_subset_rate)?,
+            block_size: r.parse_using(encoded_block_size)?,
+            sample_rate: r.parse_using(encoded_sample_rate)?,
             channel_assignment: match encoded_channels {
                 c @ 0b0000..=0b0111 => ChannelAssignment::Independent(c + 1),
                 0b1000 => ChannelAssignment::LeftSide,
                 0b1001 => ChannelAssignment::SideRight,
                 0b1010 => ChannelAssignment::MidSide,
                 0b1011..=0b1111 => return Err(Error::InvalidChannels),
-                _ => unreachable!(), // 4-bit field
+                0b10000.. => unreachable!(), // 4-bit field
             },
-            bits_per_sample: match encoded_bps {
-                0b000 => non_subset_bps()?,
-                0b001 => SignedBitCount::new::<8>(),
-                0b010 => SignedBitCount::new::<12>(),
-                0b011 => return Err(Error::InvalidBitsPerSample),
-                0b100 => SignedBitCount::new::<16>(),
-                0b101 => SignedBitCount::new::<20>(),
-                0b110 => SignedBitCount::new::<24>(),
-                0b111 => SignedBitCount::new::<32>(),
-                _ => unreachable!(), // 3-bit field
-            },
+            bits_per_sample,
         };
 
         r.skip(8)?; // CRC-8
@@ -147,12 +137,7 @@ impl FrameHeader {
         Ok(frame_header)
     }
 
-    fn build<W: BitWrite + ?Sized>(
-        &self,
-        w: &mut W,
-        _non_subset_rate: impl FnOnce() -> Result<u32, Error>,
-        non_subset_bps: impl FnOnce() -> Result<SignedBitCount<32>, Error>,
-    ) -> Result<(), Error> {
+    fn build<W: BitWrite + ?Sized>(&self, w: &mut W) -> Result<(), Error> {
         w.write_const::<15, { Self::SYNC_CODE }>()?;
         w.write_bit(self.blocking_strategy)?;
         w.build(&self.block_size)?;
@@ -163,16 +148,7 @@ impl FrameHeader {
             ChannelAssignment::SideRight => 0b1001,
             ChannelAssignment::MidSide => 0b1010,
         })?;
-        w.write::<3, u8>(match self.bits_per_sample.into() {
-            8 => 0b001,
-            12 => 0b010,
-            16 => 0b100,
-            20 => 0b101,
-            24 => 0b110,
-            32 => 0b111,
-            bps if bps == non_subset_bps()?.into() => 0b000,
-            _ => return Err(Error::InvalidBitsPerSample),
-        })?;
+        w.build(&self.bits_per_sample)?;
         w.pad(1)?;
         w.build(&self.frame_number)?;
 
@@ -213,8 +189,8 @@ impl FromBitStreamWith<'_> for FrameHeader {
     ) -> Result<Self, Self::Error> {
         FrameHeader::parse(
             r,
-            || Ok(streaminfo.sample_rate),
-            || Ok(streaminfo.bits_per_sample),
+            Some(streaminfo.sample_rate),
+            Some(streaminfo.bits_per_sample),
         )
         .and_then(|h| {
             (u16::from(h.block_size) <= streaminfo.maximum_block_size)
@@ -244,11 +220,7 @@ impl FromBitStream for FrameHeader {
 
     #[inline]
     fn from_reader<R: BitRead + ?Sized>(r: &mut R) -> Result<Self, Self::Error> {
-        FrameHeader::parse(
-            r,
-            || Err(Error::NonSubsetSampleRate),
-            || Err(Error::NonSubsetBitsPerSample),
-        )
+        FrameHeader::parse(r, None, None)
     }
 }
 
@@ -260,13 +232,9 @@ impl ToBitStreamWith<'_> for FrameHeader {
     fn to_writer<W: BitWrite + ?Sized>(
         &self,
         w: &mut W,
-        streaminfo: &Streaminfo,
+        _streaminfo: &Streaminfo,
     ) -> Result<(), Self::Error> {
-        self.build(
-            w,
-            || Ok(streaminfo.sample_rate),
-            || Ok(streaminfo.bits_per_sample),
-        )
+        self.build(w)
     }
 }
 
@@ -275,11 +243,7 @@ impl ToBitStream for FrameHeader {
 
     #[inline]
     fn to_writer<W: BitWrite + ?Sized>(&self, w: &mut W) -> Result<(), Self::Error> {
-        self.build(
-            w,
-            || Err(Error::NonSubsetSampleRate),
-            || Err(Error::NonSubsetBitsPerSample),
-        )
+        self.build(w)
     }
 }
 
@@ -344,24 +308,27 @@ impl FromBitStream for BlockSize<()> {
     }
 }
 
-impl BlockSize<()> {
-    fn finalize_read<R: BitRead + ?Sized>(self, r: &mut R) -> Result<BlockSize<u16>, Error> {
-        match self {
-            Self::Samples192 => Ok(BlockSize::Samples192),
-            Self::Samples576 => Ok(BlockSize::Samples576),
-            Self::Samples1152 => Ok(BlockSize::Samples1152),
-            Self::Samples2304 => Ok(BlockSize::Samples2304),
-            Self::Samples4608 => Ok(BlockSize::Samples4608),
-            Self::Samples256 => Ok(BlockSize::Samples256),
-            Self::Samples512 => Ok(BlockSize::Samples512),
-            Self::Samples1024 => Ok(BlockSize::Samples1024),
-            Self::Samples2048 => Ok(BlockSize::Samples2048),
-            Self::Samples4096 => Ok(BlockSize::Samples4096),
-            Self::Samples8192 => Ok(BlockSize::Samples8192),
-            Self::Samples16384 => Ok(BlockSize::Samples16384),
-            Self::Samples32768 => Ok(BlockSize::Samples32768),
-            Self::Uncommon8(()) => Ok(BlockSize::Uncommon8(r.read::<8, u16>()? + 1)),
-            Self::Uncommon16(()) => Ok(BlockSize::Uncommon16(
+impl FromBitStreamUsing for BlockSize<u16> {
+    type Context = BlockSize<()>;
+    type Error = Error;
+
+    fn from_reader<R: BitRead + ?Sized>(r: &mut R, size: BlockSize<()>) -> Result<Self, Error> {
+        match size {
+            BlockSize::Samples192 => Ok(Self::Samples192),
+            BlockSize::Samples576 => Ok(Self::Samples576),
+            BlockSize::Samples1152 => Ok(Self::Samples1152),
+            BlockSize::Samples2304 => Ok(Self::Samples2304),
+            BlockSize::Samples4608 => Ok(Self::Samples4608),
+            BlockSize::Samples256 => Ok(Self::Samples256),
+            BlockSize::Samples512 => Ok(Self::Samples512),
+            BlockSize::Samples1024 => Ok(Self::Samples1024),
+            BlockSize::Samples2048 => Ok(Self::Samples2048),
+            BlockSize::Samples4096 => Ok(Self::Samples4096),
+            BlockSize::Samples8192 => Ok(Self::Samples8192),
+            BlockSize::Samples16384 => Ok(Self::Samples16384),
+            BlockSize::Samples32768 => Ok(Self::Samples32768),
+            BlockSize::Uncommon8(()) => Ok(Self::Uncommon8(r.read::<8, u16>()? + 1)),
+            BlockSize::Uncommon16(()) => Ok(Self::Uncommon16(
                 r.read::<16, u16>()?
                     .checked_add(1)
                     .ok_or(Error::InvalidBlockSize)?,
@@ -444,7 +411,7 @@ impl TryFrom<u16> for BlockSize<u16> {
 #[derive(Copy, Clone, Debug)]
 pub enum SampleRate<R> {
     /// Get rate from STREAMINFO metadata block
-    Streaminfo(R),
+    Streaminfo(u32),
     /// 88200 Hz
     Hz88200,
     /// 176,400 Hz
@@ -476,12 +443,19 @@ pub enum SampleRate<R> {
 }
 
 /// Reads the raw sample rate bits, which need to be finalized
-impl FromBitStream for SampleRate<()> {
+impl FromBitStreamUsing for SampleRate<()> {
+    type Context = Option<u32>;
+
     type Error = Error;
 
-    fn from_reader<R: BitRead + ?Sized>(r: &mut R) -> Result<Self, Self::Error> {
+    fn from_reader<R: BitRead + ?Sized>(
+        r: &mut R,
+        streaminfo_rate: Option<u32>,
+    ) -> Result<Self, Self::Error> {
         match r.read::<4, u8>()? {
-            0b0000 => Ok(Self::Streaminfo(())),
+            0b0000 => Ok(Self::Streaminfo(
+                streaminfo_rate.ok_or(Error::NonSubsetSampleRate)?,
+            )),
             0b0001 => Ok(Self::Hz88200),
             0b0010 => Ok(Self::Hz176400),
             0b0011 => Ok(Self::Hz192000),
@@ -502,28 +476,31 @@ impl FromBitStream for SampleRate<()> {
     }
 }
 
-impl SampleRate<()> {
-    fn finalize_read<R: BitRead + ?Sized>(
-        self,
+impl FromBitStreamUsing for SampleRate<u32> {
+    type Context = SampleRate<()>;
+
+    type Error = Error;
+
+    fn from_reader<R: BitRead + ?Sized>(
         r: &mut R,
-        non_subset_rate: impl FnOnce() -> Result<u32, Error>,
-    ) -> Result<SampleRate<u32>, Error> {
-        match self {
-            Self::Streaminfo(()) => Ok(SampleRate::Streaminfo(non_subset_rate()?)),
-            Self::Hz88200 => Ok(SampleRate::Hz88200),
-            Self::Hz176400 => Ok(SampleRate::Hz176400),
-            Self::Hz192000 => Ok(SampleRate::Hz192000),
-            Self::Hz8000 => Ok(SampleRate::Hz8000),
-            Self::Hz16000 => Ok(SampleRate::Hz16000),
-            Self::Hz22050 => Ok(SampleRate::Hz22050),
-            Self::Hz24000 => Ok(SampleRate::Hz24000),
-            Self::Hz32000 => Ok(SampleRate::Hz32000),
-            Self::Hz44100 => Ok(SampleRate::Hz44100),
-            Self::Hz48000 => Ok(SampleRate::Hz48000),
-            Self::Hz96000 => Ok(SampleRate::Hz96000),
-            Self::KHz(()) => Ok(SampleRate::KHz(r.read::<8, u32>()? * 1000)),
-            Self::Hz(()) => Ok(SampleRate::Hz(r.read::<16, _>()?)),
-            Self::DHz(()) => Ok(SampleRate::DHz(r.read::<16, u32>()? * 10)),
+        rate: SampleRate<()>,
+    ) -> Result<Self, Self::Error> {
+        match rate {
+            SampleRate::Streaminfo(s) => Ok(Self::Streaminfo(s)),
+            SampleRate::Hz88200 => Ok(Self::Hz88200),
+            SampleRate::Hz176400 => Ok(Self::Hz176400),
+            SampleRate::Hz192000 => Ok(Self::Hz192000),
+            SampleRate::Hz8000 => Ok(Self::Hz8000),
+            SampleRate::Hz16000 => Ok(Self::Hz16000),
+            SampleRate::Hz22050 => Ok(Self::Hz22050),
+            SampleRate::Hz24000 => Ok(Self::Hz24000),
+            SampleRate::Hz32000 => Ok(Self::Hz32000),
+            SampleRate::Hz44100 => Ok(Self::Hz44100),
+            SampleRate::Hz48000 => Ok(Self::Hz48000),
+            SampleRate::Hz96000 => Ok(Self::Hz96000),
+            SampleRate::KHz(()) => Ok(Self::KHz(r.read::<8, u32>()? * 1000)),
+            SampleRate::Hz(()) => Ok(Self::Hz(r.read::<16, _>()?)),
+            SampleRate::DHz(()) => Ok(Self::DHz(r.read::<16, u32>()? * 10)),
         }
     }
 }
@@ -620,6 +597,150 @@ impl ChannelAssignment {
             Self::Independent(c) => *c,
             _ => 2,
         }
+    }
+}
+
+/// The the possible bits-per-sample of a FLAC frame
+#[derive(Copy, Clone, Debug)]
+pub enum BitsPerSample {
+    /// Gets bps from STREAMINFO metadata block
+    Streaminfo(SignedBitCount<32>),
+    /// 8 bits-per-sample
+    Bps8,
+    /// 12 bits-per-sample
+    Bps12,
+    /// 16 bits-per-sample
+    Bps16,
+    /// 20 bits-per-sample
+    Bps20,
+    /// 24 bits-per-sample
+    Bps24,
+    /// 32 bits-per-sample
+    Bps32,
+}
+
+impl BitsPerSample {
+    const BPS8: SignedBitCount<32> = SignedBitCount::new::<8>();
+    const BPS12: SignedBitCount<32> = SignedBitCount::new::<12>();
+    const BPS16: SignedBitCount<32> = SignedBitCount::new::<16>();
+    const BPS20: SignedBitCount<32> = SignedBitCount::new::<20>();
+    const BPS24: SignedBitCount<32> = SignedBitCount::new::<24>();
+    const BPS32: SignedBitCount<32> = SignedBitCount::new::<32>();
+
+    /// Adds the given number of bits to this bit count, if possible.
+    ///
+    /// If the number of bits would overflow the maximum count,
+    /// returns `None`.
+    #[inline]
+    pub fn checked_add(self, rhs: u32) -> Option<SignedBitCount<32>> {
+        match self {
+            Self::Streaminfo(c) => c.checked_add(rhs),
+            Self::Bps8 => Self::BPS8.checked_add(rhs),
+            Self::Bps12 => Self::BPS12.checked_add(rhs),
+            Self::Bps16 => Self::BPS16.checked_add(rhs),
+            Self::Bps20 => Self::BPS20.checked_add(rhs),
+            Self::Bps24 => Self::BPS24.checked_add(rhs),
+            Self::Bps32 => Self::BPS32.checked_add(rhs),
+        }
+    }
+}
+
+impl PartialEq<SignedBitCount<32>> for BitsPerSample {
+    fn eq(&self, rhs: &SignedBitCount<32>) -> bool {
+        match self {
+            Self::Streaminfo(c) => c.eq(rhs),
+            Self::Bps8 => Self::BPS8.eq(rhs),
+            Self::Bps12 => Self::BPS12.eq(rhs),
+            Self::Bps16 => Self::BPS16.eq(rhs),
+            Self::Bps20 => Self::BPS20.eq(rhs),
+            Self::Bps24 => Self::BPS24.eq(rhs),
+            Self::Bps32 => Self::BPS32.eq(rhs),
+        }
+    }
+}
+
+impl Into<SignedBitCount<32>> for BitsPerSample {
+    #[inline]
+    fn into(self) -> SignedBitCount<32> {
+        match self {
+            Self::Streaminfo(c) => c,
+            Self::Bps8 => Self::BPS8,
+            Self::Bps12 => Self::BPS12,
+            Self::Bps16 => Self::BPS16,
+            Self::Bps20 => Self::BPS20,
+            Self::Bps24 => Self::BPS24,
+            Self::Bps32 => Self::BPS32,
+        }
+    }
+}
+
+impl Into<u32> for BitsPerSample {
+    #[inline]
+    fn into(self) -> u32 {
+        match self {
+            Self::Streaminfo(c) => c.into(),
+            Self::Bps8 => 8,
+            Self::Bps12 => 12,
+            Self::Bps16 => 16,
+            Self::Bps20 => 20,
+            Self::Bps24 => 24,
+            Self::Bps32 => 32,
+        }
+    }
+}
+
+impl From<SignedBitCount<32>> for BitsPerSample {
+    #[inline]
+    fn from(bps: SignedBitCount<32>) -> Self {
+        match bps {
+            Self::BPS8 => Self::Bps8,
+            Self::BPS12 => Self::Bps12,
+            Self::BPS16 => Self::Bps16,
+            Self::BPS20 => Self::Bps20,
+            Self::BPS24 => Self::Bps24,
+            Self::BPS32 => Self::Bps32,
+            bps => Self::Streaminfo(bps),
+        }
+    }
+}
+
+impl FromBitStreamUsing for BitsPerSample {
+    type Context = Option<SignedBitCount<32>>;
+    type Error = Error;
+
+    fn from_reader<R: BitRead + ?Sized>(
+        r: &mut R,
+        streaminfo_bps: Option<SignedBitCount<32>>,
+    ) -> Result<Self, Error> {
+        match r.read::<3, u8>()? {
+            0b000 => Ok(Self::Streaminfo(
+                streaminfo_bps.ok_or(Error::NonSubsetBitsPerSample)?,
+            )),
+            0b001 => Ok(Self::Bps8),
+            0b010 => Ok(Self::Bps12),
+            0b011 => Err(Error::InvalidBitsPerSample),
+            0b100 => Ok(Self::Bps16),
+            0b101 => Ok(Self::Bps20),
+            0b110 => Ok(Self::Bps24),
+            0b111 => Ok(Self::Bps32),
+            0b1000.. => unreachable!(), // 3-bit field
+        }
+    }
+}
+
+impl ToBitStream for BitsPerSample {
+    type Error = std::io::Error;
+
+    fn to_writer<W: BitWrite + ?Sized>(&self, w: &mut W) -> Result<(), Self::Error> {
+        w.write::<3, u8>(match self {
+            Self::Streaminfo(_) => 0b000,
+            Self::Bps8 => 0b001,
+            Self::Bps12 => 0b010,
+            Self::Bps16 => 0b100,
+            Self::Bps20 => 0b101,
+            Self::Bps24 => 0b110,
+            Self::Bps32 => 0b111,
+        })
     }
 }
 
@@ -939,13 +1060,15 @@ impl Frame {
         let subframes = match header.channel_assignment {
             ChannelAssignment::Independent(total_channels) => (0..total_channels)
                 .map(|_| {
-                    reader
-                        .parse_with::<Subframe>(&(header.block_size.into(), header.bits_per_sample))
+                    reader.parse_using::<Subframe>((
+                        header.block_size.into(),
+                        header.bits_per_sample.into(),
+                    ))
                 })
                 .collect::<Result<Vec<_>, _>>()?,
             ChannelAssignment::LeftSide => vec![
-                reader.parse_with(&(header.block_size.into(), header.bits_per_sample))?,
-                reader.parse_with(&(
+                reader.parse_using((header.block_size.into(), header.bits_per_sample.into()))?,
+                reader.parse_using((
                     header.block_size.into(),
                     header
                         .bits_per_sample
@@ -954,18 +1077,18 @@ impl Frame {
                 ))?,
             ],
             ChannelAssignment::SideRight => vec![
-                reader.parse_with(&(
+                reader.parse_using((
                     header.block_size.into(),
                     header
                         .bits_per_sample
                         .checked_add(1)
                         .ok_or(Error::ExcessiveBps)?,
                 ))?,
-                reader.parse_with(&(header.block_size.into(), header.bits_per_sample))?,
+                reader.parse_using((header.block_size.into(), header.bits_per_sample.into()))?,
             ],
             ChannelAssignment::MidSide => vec![
-                reader.parse_with(&(header.block_size.into(), header.bits_per_sample))?,
-                reader.parse_with(&(
+                reader.parse_using((header.block_size.into(), header.bits_per_sample.into()))?,
+                reader.parse_using((
                     header.block_size.into(),
                     header
                         .bits_per_sample
@@ -1019,17 +1142,16 @@ impl Frame {
                 assert_eq!(total_channels as usize, self.subframes.len());
 
                 for subframe in &self.subframes {
-                    writer.build_with(subframe, &self.header.bits_per_sample)?;
+                    writer.build_using(subframe, self.header.bits_per_sample.into())?;
                 }
             }
             ChannelAssignment::LeftSide => match self.subframes.as_slice() {
                 [left, side] => {
-                    writer.build_with(left, &self.header.bits_per_sample)?;
+                    writer.build_using(left, self.header.bits_per_sample.into())?;
 
-                    writer.build_with(
+                    writer.build_using(
                         side,
-                        &self
-                            .header
+                        self.header
                             .bits_per_sample
                             .checked_add(1)
                             .ok_or(Error::ExcessiveBps)?,
@@ -1039,27 +1161,25 @@ impl Frame {
             },
             ChannelAssignment::SideRight => match self.subframes.as_slice() {
                 [side, right] => {
-                    writer.build_with(
+                    writer.build_using(
                         side,
-                        &self
-                            .header
+                        self.header
                             .bits_per_sample
                             .checked_add(1)
                             .ok_or(Error::ExcessiveBps)?,
                     )?;
 
-                    writer.build_with(right, &self.header.bits_per_sample)?;
+                    writer.build_using(right, self.header.bits_per_sample.into())?;
                 }
                 _ => panic!("incorrect subframe count for left-side"),
             },
             ChannelAssignment::MidSide => match self.subframes.as_slice() {
                 [mid, side] => {
-                    writer.build_with(mid, &self.header.bits_per_sample)?;
+                    writer.build_using(mid, self.header.bits_per_sample.into())?;
 
-                    writer.build_with(
+                    writer.build_using(
                         side,
-                        &self
-                            .header
+                        self.header
                             .bits_per_sample
                             .checked_add(1)
                             .ok_or(Error::ExcessiveBps)?,
@@ -1141,13 +1261,13 @@ pub enum Subframe {
     },
 }
 
-impl FromBitStreamWith<'_> for Subframe {
+impl FromBitStreamUsing for Subframe {
     type Context = (u16, SignedBitCount<32>);
     type Error = Error;
 
     fn from_reader<R: BitRead + ?Sized>(
         r: &mut R,
-        (block_size, bits_per_sample): &(u16, SignedBitCount<32>),
+        (block_size, bits_per_sample): (u16, SignedBitCount<32>),
     ) -> Result<Self, Error> {
         match r.parse()? {
             SubframeHeader {
@@ -1170,7 +1290,7 @@ impl FromBitStreamWith<'_> for Subframe {
                     .ok_or(Error::ExcessiveWastedBits)?;
 
                 Ok(Self::Verbatim {
-                    samples: (0..*block_size)
+                    samples: (0..block_size)
                         .map(|_| r.read_signed_counted::<32, i32>(effective_bps))
                         .collect::<Result<Vec<_>, _>>()?,
                     wasted_bps,
@@ -1189,7 +1309,7 @@ impl FromBitStreamWith<'_> for Subframe {
                     warm_up: (0..order)
                         .map(|_| r.read_signed_counted::<32, i32>(effective_bps))
                         .collect::<Result<Vec<_>, _>>()?,
-                    residuals: r.parse_with(&((*block_size).into(), order.into()))?,
+                    residuals: r.parse_using((block_size.into(), order.into()))?,
                     wasted_bps,
                 })
             }
@@ -1226,7 +1346,7 @@ impl FromBitStreamWith<'_> for Subframe {
                     precision,
                     shift,
                     coefficients,
-                    residuals: r.parse_with(&((*block_size).into(), order.get().into()))?,
+                    residuals: r.parse_using((block_size.into(), order.get().into()))?,
                     wasted_bps,
                 })
             }
@@ -1234,14 +1354,14 @@ impl FromBitStreamWith<'_> for Subframe {
     }
 }
 
-impl ToBitStreamWith<'_> for Subframe {
+impl ToBitStreamUsing for Subframe {
     type Context = SignedBitCount<32>;
     type Error = Error;
 
     fn to_writer<W: BitWrite + ?Sized>(
         &self,
         w: &mut W,
-        bits_per_sample: &SignedBitCount<32>,
+        bits_per_sample: SignedBitCount<32>,
     ) -> Result<(), Error> {
         match self {
             Self::Constant { sample, wasted_bps } => {
@@ -1364,14 +1484,14 @@ pub enum Residuals {
     },
 }
 
-impl FromBitStreamWith<'_> for Residuals {
+impl FromBitStreamUsing for Residuals {
     type Context = (usize, usize);
     type Error = Error;
 
-    fn from_reader<R: BitRead + ?Sized>(r: &mut R, params: &(usize, usize)) -> Result<Self, Error> {
+    fn from_reader<R: BitRead + ?Sized>(r: &mut R, params: (usize, usize)) -> Result<Self, Error> {
         fn read_partitions<const RICE_MAX: u32, R: BitRead + ?Sized>(
             reader: &mut R,
-            (block_size, predictor_order): &(usize, usize),
+            (block_size, predictor_order): (usize, usize),
         ) -> Result<Vec<ResidualPartition<RICE_MAX>>, Error> {
             let partition_order = reader.read::<4, u32>()?;
             let partition_count = 1 << partition_order;
@@ -1379,10 +1499,10 @@ impl FromBitStreamWith<'_> for Residuals {
             (0..partition_count)
                 .map(|p| {
                     let partition_size = (block_size / partition_count)
-                        .checked_sub(if p == 0 { *predictor_order } else { 0 })
+                        .checked_sub(if p == 0 { predictor_order } else { 0 })
                         .ok_or(Error::InvalidPartitionOrder)?;
 
-                    reader.parse_with(&partition_size)
+                    reader.parse_using(partition_size)
                 })
                 .collect()
         }
@@ -1453,14 +1573,14 @@ pub enum ResidualPartition<const RICE_MAX: u32> {
     Constant,
 }
 
-impl<const RICE_MAX: u32> FromBitStreamWith<'_> for ResidualPartition<RICE_MAX> {
+impl<const RICE_MAX: u32> FromBitStreamUsing for ResidualPartition<RICE_MAX> {
     type Context = usize;
     type Error = Error;
 
-    fn from_reader<R: BitRead + ?Sized>(r: &mut R, partition_len: &usize) -> Result<Self, Error> {
+    fn from_reader<R: BitRead + ?Sized>(r: &mut R, partition_len: usize) -> Result<Self, Error> {
         match r.parse::<ResidualPartitionHeader<RICE_MAX>>()? {
             ResidualPartitionHeader::Standard { rice } => Ok(Self::Standard {
-                residuals: (0..*partition_len)
+                residuals: (0..partition_len)
                     .map(|_| {
                         let msb = r.read_unary::<1>()?;
                         let lsb = r.read_counted::<RICE_MAX, u32>(rice)?;
@@ -1475,7 +1595,7 @@ impl<const RICE_MAX: u32> FromBitStreamWith<'_> for ResidualPartition<RICE_MAX> 
                 rice,
             }),
             ResidualPartitionHeader::Escaped { escape_size } => Ok(Self::Escaped {
-                residuals: (0..*partition_len)
+                residuals: (0..partition_len)
                     .map(|_| r.read_signed_counted(escape_size))
                     .collect::<Result<Vec<_>, _>>()?,
                 escape_size,
