@@ -11,7 +11,8 @@
 use crate::Error;
 use bitstream_io::{
     BigEndian, BitRead, BitReader, BitWrite, ByteRead, ByteReader, FromBitStream,
-    FromBitStreamWith, LittleEndian, SignedBitCount, ToBitStream, ToBitStreamWith,
+    FromBitStreamUsing, FromBitStreamWith, LittleEndian, SignedBitCount, ToBitStream,
+    ToBitStreamUsing,
 };
 use std::num::NonZero;
 use std::path::Path;
@@ -487,7 +488,7 @@ pub fn write_blocks<B: AsBlockRef>(
     // STREAMINFO block must be present and must be first in file
     let next = blocks.next();
     match next.as_ref().map(|(last, b)| (last, b.as_block_ref())) {
-        Some((last, streaminfo @ BlockRef::Streaminfo(_))) => w.build_with(&streaminfo, last)?,
+        Some((last, streaminfo @ BlockRef::Streaminfo(_))) => w.build_using(&streaminfo, *last)?,
         _ => return Err(Error::MissingStreaminfo),
     }
 
@@ -502,14 +503,14 @@ pub fn write_blocks<B: AsBlockRef>(
         vorbiscomment @ BlockRef::VorbisComment(_) => match vorbiscomment_read {
             false => {
                 vorbiscomment_read = true;
-                w.build_with(&vorbiscomment.as_block_ref(), &last)
+                w.build_using(&vorbiscomment.as_block_ref(), last)
             }
             true => Err(Error::MultipleVorbisComment),
         },
         seektable @ BlockRef::SeekTable(_) => match seektable_read {
             false => {
                 seektable_read = true;
-                w.build_with(&seektable.as_block_ref(), &last)
+                w.build_using(&seektable.as_block_ref(), last)
             }
             true => Err(Error::MultipleSeekTable),
         },
@@ -519,7 +520,7 @@ pub fn write_blocks<B: AsBlockRef>(
         }) => {
             if !png_read {
                 png_read = true;
-                w.build_with(&picture.as_block_ref(), &last)
+                w.build_using(&picture.as_block_ref(), last)
             } else {
                 Err(Error::MultiplePngIcon)
             }
@@ -530,12 +531,12 @@ pub fn write_blocks<B: AsBlockRef>(
         }) => {
             if !icon_read {
                 icon_read = true;
-                w.build_with(&picture.as_block_ref(), &last)
+                w.build_using(&picture.as_block_ref(), last)
             } else {
                 Err(Error::MultipleGeneralIcon)
             }
         }
-        block => w.build_with(&block.as_block_ref(), &last),
+        block => w.build_using(&block.as_block_ref(), last),
     })
 }
 
@@ -783,9 +784,9 @@ impl FromBitStreamWith<'_> for Block {
     ) -> Result<Self, Self::Error> {
         match header.block_type {
             BlockType::Streaminfo => Ok(Block::Streaminfo(r.parse()?)),
-            BlockType::Padding => Ok(Block::Padding(r.parse_with(&header.size)?)),
-            BlockType::Application => Ok(Block::Application(r.parse_with(&header.size)?)),
-            BlockType::SeekTable => Ok(Block::SeekTable(r.parse_with(&header.size)?)),
+            BlockType::Padding => Ok(Block::Padding(r.parse_using(header.size)?)),
+            BlockType::Application => Ok(Block::Application(r.parse_using(header.size)?)),
+            BlockType::SeekTable => Ok(Block::SeekTable(r.parse_using(header.size)?)),
             BlockType::VorbisComment => Ok(Block::VorbisComment(r.parse()?)),
             BlockType::Cuesheet => Ok(Block::Cuesheet(r.parse()?)),
             BlockType::Picture => Ok(Block::Picture(r.parse()?)),
@@ -793,33 +794,33 @@ impl FromBitStreamWith<'_> for Block {
     }
 }
 
-impl ToBitStreamWith<'_> for Block {
+impl ToBitStreamUsing for Block {
     type Context = bool;
     type Error = Error;
 
     // builds to writer with header
-    fn to_writer<W: BitWrite + ?Sized>(&self, w: &mut W, is_last: &bool) -> Result<(), Error> {
+    fn to_writer<W: BitWrite + ?Sized>(&self, w: &mut W, is_last: bool) -> Result<(), Error> {
         match self {
             Self::Streaminfo(streaminfo) => w
-                .build(&BlockHeader::new(*is_last, streaminfo)?)
+                .build(&BlockHeader::new(is_last, streaminfo)?)
                 .and_then(|()| w.build(streaminfo).map_err(Error::Io)),
             Self::Padding(padding) => w
-                .build(&BlockHeader::new(*is_last, padding)?)
+                .build(&BlockHeader::new(is_last, padding)?)
                 .and_then(|()| w.build(padding).map_err(Error::Io)),
             Self::Application(application) => w
-                .build(&BlockHeader::new(*is_last, application)?)
+                .build(&BlockHeader::new(is_last, application)?)
                 .and_then(|()| w.build(application).map_err(Error::Io)),
             Self::SeekTable(seektable) => w
-                .build(&BlockHeader::new(*is_last, seektable)?)
+                .build(&BlockHeader::new(is_last, seektable)?)
                 .and_then(|()| w.build(seektable)),
             Self::VorbisComment(vorbis_comment) => w
-                .build(&BlockHeader::new(*is_last, vorbis_comment)?)
+                .build(&BlockHeader::new(is_last, vorbis_comment)?)
                 .and_then(|()| w.build(vorbis_comment)),
             Self::Cuesheet(cuesheet) => w
-                .build(&BlockHeader::new(*is_last, cuesheet)?)
+                .build(&BlockHeader::new(is_last, cuesheet)?)
                 .and_then(|()| w.build(cuesheet)),
             Self::Picture(picture) => w
-                .build(&BlockHeader::new(*is_last, picture)?)
+                .build(&BlockHeader::new(is_last, picture)?)
                 .and_then(|()| w.build(picture)),
         }
     }
@@ -880,33 +881,33 @@ impl<T: AsBlockRef> AsBlockRef for &T {
     }
 }
 
-impl ToBitStreamWith<'_> for BlockRef<'_> {
+impl ToBitStreamUsing for BlockRef<'_> {
     type Context = bool;
     type Error = Error;
 
     // builds to writer with header
-    fn to_writer<W: BitWrite + ?Sized>(&self, w: &mut W, is_last: &bool) -> Result<(), Error> {
+    fn to_writer<W: BitWrite + ?Sized>(&self, w: &mut W, is_last: bool) -> Result<(), Error> {
         match self {
             Self::Streaminfo(streaminfo) => w
-                .build(&BlockHeader::new(*is_last, *streaminfo)?)
+                .build(&BlockHeader::new(is_last, *streaminfo)?)
                 .and_then(|()| w.build(*streaminfo).map_err(Error::Io)),
             Self::Padding(padding) => w
-                .build(&BlockHeader::new(*is_last, *padding)?)
+                .build(&BlockHeader::new(is_last, *padding)?)
                 .and_then(|()| w.build(*padding).map_err(Error::Io)),
             Self::Application(application) => w
-                .build(&BlockHeader::new(*is_last, *application)?)
+                .build(&BlockHeader::new(is_last, *application)?)
                 .and_then(|()| w.build(*application).map_err(Error::Io)),
             Self::SeekTable(seektable) => w
-                .build(&BlockHeader::new(*is_last, *seektable)?)
+                .build(&BlockHeader::new(is_last, *seektable)?)
                 .and_then(|()| w.build(*seektable)),
             Self::VorbisComment(vorbis_comment) => w
-                .build(&BlockHeader::new(*is_last, *vorbis_comment)?)
+                .build(&BlockHeader::new(is_last, *vorbis_comment)?)
                 .and_then(|()| w.build(*vorbis_comment)),
             Self::Cuesheet(cuesheet) => w
-                .build(&BlockHeader::new(*is_last, *cuesheet)?)
+                .build(&BlockHeader::new(is_last, *cuesheet)?)
                 .and_then(|()| w.build(*cuesheet)),
             Self::Picture(picture) => w
-                .build(&BlockHeader::new(*is_last, *picture)?)
+                .build(&BlockHeader::new(is_last, *picture)?)
                 .and_then(|()| w.build(*picture)),
         }
     }
@@ -1071,13 +1072,13 @@ impl MetadataBlock for Padding {
     const TYPE: BlockType = BlockType::Padding;
 }
 
-impl FromBitStreamWith<'_> for Padding {
+impl FromBitStreamUsing for Padding {
     type Context = BlockSize;
     type Error = Error;
 
-    fn from_reader<R: BitRead + ?Sized>(r: &mut R, size: &BlockSize) -> Result<Self, Self::Error> {
+    fn from_reader<R: BitRead + ?Sized>(r: &mut R, size: BlockSize) -> Result<Self, Self::Error> {
         r.skip(size.get() * 8)?;
-        Ok(Self { size: *size })
+        Ok(Self { size: size })
     }
 }
 
@@ -1102,11 +1103,11 @@ impl MetadataBlock for Application {
     const TYPE: BlockType = BlockType::Application;
 }
 
-impl FromBitStreamWith<'_> for Application {
+impl FromBitStreamUsing for Application {
     type Context = BlockSize;
     type Error = Error;
 
-    fn from_reader<R: BitRead + ?Sized>(r: &mut R, size: &BlockSize) -> Result<Self, Self::Error> {
+    fn from_reader<R: BitRead + ?Sized>(r: &mut R, size: BlockSize) -> Result<Self, Self::Error> {
         Ok(Self {
             id: r.read_to()?,
             data: r.read_to_vec(
@@ -1140,11 +1141,11 @@ impl MetadataBlock for SeekTable {
     const TYPE: BlockType = BlockType::SeekTable;
 }
 
-impl FromBitStreamWith<'_> for SeekTable {
+impl FromBitStreamUsing for SeekTable {
     type Context = BlockSize;
     type Error = Error;
 
-    fn from_reader<R: BitRead + ?Sized>(r: &mut R, size: &BlockSize) -> Result<Self, Self::Error> {
+    fn from_reader<R: BitRead + ?Sized>(r: &mut R, size: BlockSize) -> Result<Self, Self::Error> {
         match (size.get() / 18, size.get() % 18) {
             (p, 0) => {
                 let mut points = Vec::with_capacity(p.try_into().unwrap());
@@ -1424,7 +1425,7 @@ impl FromBitStream for Cuesheet {
             lead_in_samples,
             is_cdda,
             tracks: (0..r.read_to::<u8>()?)
-                .map(|_| r.parse_with::<CuesheetTrack>(&is_cdda))
+                .map(|_| r.parse_using::<CuesheetTrack>(is_cdda))
                 .collect::<Result<Vec<_>, _>>()?,
         })
     }
@@ -1441,7 +1442,7 @@ impl ToBitStream for Cuesheet {
         w.write_from(u8::try_from(self.tracks.len()).map_err(|_| Error::ExcessiveCuesheetTracks)?)?;
         self.tracks
             .iter()
-            .try_for_each(|track| w.build_with(track, &self.is_cdda))
+            .try_for_each(|track| w.build_using(track, self.is_cdda))
     }
 }
 
@@ -1463,13 +1464,13 @@ pub struct CuesheetTrack {
     pub index_points: Vec<CuesheetIndexPoint>,
 }
 
-impl FromBitStreamWith<'_> for CuesheetTrack {
+impl FromBitStreamUsing for CuesheetTrack {
     type Error = Error;
     type Context = bool;
 
-    fn from_reader<R: BitRead + ?Sized>(r: &mut R, is_cdda: &bool) -> Result<Self, Self::Error> {
+    fn from_reader<R: BitRead + ?Sized>(r: &mut R, is_cdda: bool) -> Result<Self, Self::Error> {
         let offset: u64 = r.read_to()?;
-        if *is_cdda && offset % 588 != 0 {
+        if is_cdda && offset % 588 != 0 {
             // CDDA tracks must have a sample count divisible by 588
             return Err(Error::InvalidCuesheetOffset);
         }
@@ -1481,7 +1482,7 @@ impl FromBitStreamWith<'_> for CuesheetTrack {
         r.skip(6 + 13 * 8)?;
         let point_count = r.read_to::<u8>()?;
 
-        match TrackType::new(*is_cdda, number) {
+        match TrackType::new(is_cdda, number) {
             TrackType::Regular => {
                 if point_count == 0 {
                     return Err(Error::InvalidCuesheetIndexPoints);
@@ -1499,7 +1500,7 @@ impl FromBitStreamWith<'_> for CuesheetTrack {
 
         let mut index_points = Vec::with_capacity(point_count.into());
         for _ in 0..point_count {
-            let point: CuesheetIndexPoint = r.parse_with(is_cdda)?;
+            let point: CuesheetIndexPoint = r.parse_using(is_cdda)?;
             match index_points.last() {
                 // first index point must have a number of 0 or 1
                 None => match point.number {
@@ -1525,16 +1526,12 @@ impl FromBitStreamWith<'_> for CuesheetTrack {
     }
 }
 
-impl ToBitStreamWith<'_> for CuesheetTrack {
+impl ToBitStreamUsing for CuesheetTrack {
     type Error = Error;
     type Context = bool;
 
-    fn to_writer<W: BitWrite + ?Sized>(
-        &self,
-        w: &mut W,
-        is_cdda: &bool,
-    ) -> Result<(), Self::Error> {
-        if *is_cdda && self.offset % 588 != 0 {
+    fn to_writer<W: BitWrite + ?Sized>(&self, w: &mut W, is_cdda: bool) -> Result<(), Self::Error> {
+        if is_cdda && self.offset % 588 != 0 {
             return Err(Error::InvalidCuesheetOffset);
         }
         w.write_from(self.offset)?;
@@ -1547,7 +1544,7 @@ impl ToBitStreamWith<'_> for CuesheetTrack {
             .map_err(|_| Error::ExcessiveCuesheetIndexPoints)?;
         w.write_from(point_count)?;
 
-        match TrackType::new(*is_cdda, self.number) {
+        match TrackType::new(is_cdda, self.number) {
             TrackType::Regular => match self.index_points.as_slice() {
                 [] => Err(Error::InvalidCuesheetIndexPoints),
                 index_points => {
@@ -1559,14 +1556,14 @@ impl ToBitStreamWith<'_> for CuesheetTrack {
                             None => match point.number {
                                 0 | 1 => {
                                     last_point = Some(point.number);
-                                    w.build_with(point, is_cdda)
+                                    w.build_using(point, is_cdda)
                                 }
                                 _ => Err(Error::InvalidCuesheetIndexPointNum),
                             },
                             Some(previous_number) => match point.number == *previous_number + 1 {
                                 true => {
                                     *previous_number = point.number;
-                                    w.build_with(point, is_cdda)
+                                    w.build_using(point, is_cdda)
                                 }
                                 false => Err(Error::InvalidCuesheetIndexPointNum),
                             },
@@ -1613,13 +1610,13 @@ pub struct CuesheetIndexPoint {
     pub number: u8,
 }
 
-impl FromBitStreamWith<'_> for CuesheetIndexPoint {
+impl FromBitStreamUsing for CuesheetIndexPoint {
     type Error = Error;
     type Context = bool;
 
-    fn from_reader<R: BitRead + ?Sized>(r: &mut R, is_cdda: &bool) -> Result<Self, Self::Error> {
+    fn from_reader<R: BitRead + ?Sized>(r: &mut R, is_cdda: bool) -> Result<Self, Self::Error> {
         let offset: u64 = r.read_to()?;
-        if *is_cdda && offset % 588 != 0 {
+        if is_cdda && offset % 588 != 0 {
             return Err(Error::InvalidCuesheetOffset);
         }
         let number = r.read_to()?;
@@ -1628,16 +1625,12 @@ impl FromBitStreamWith<'_> for CuesheetIndexPoint {
     }
 }
 
-impl ToBitStreamWith<'_> for CuesheetIndexPoint {
+impl ToBitStreamUsing for CuesheetIndexPoint {
     type Error = Error;
     type Context = bool;
 
-    fn to_writer<W: BitWrite + ?Sized>(
-        &self,
-        w: &mut W,
-        is_cdda: &bool,
-    ) -> Result<(), Self::Error> {
-        match *is_cdda && self.offset % 588 != 0 {
+    fn to_writer<W: BitWrite + ?Sized>(&self, w: &mut W, is_cdda: bool) -> Result<(), Self::Error> {
+        match is_cdda && self.offset % 588 != 0 {
             false => {
                 w.write_from(self.offset)?;
                 w.write_from(self.number)?;
