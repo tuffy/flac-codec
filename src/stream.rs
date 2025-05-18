@@ -675,32 +675,32 @@ impl PartialEq<SignedBitCount<32>> for BitsPerSample {
     }
 }
 
-impl Into<SignedBitCount<32>> for BitsPerSample {
+impl From<BitsPerSample> for SignedBitCount<32> {
     #[inline]
-    fn into(self) -> SignedBitCount<32> {
-        match self {
-            Self::Streaminfo(c) => c,
-            Self::Bps8 => Self::BPS8,
-            Self::Bps12 => Self::BPS12,
-            Self::Bps16 => Self::BPS16,
-            Self::Bps20 => Self::BPS20,
-            Self::Bps24 => Self::BPS24,
-            Self::Bps32 => Self::BPS32,
+    fn from(bps: BitsPerSample) -> Self {
+        match bps {
+            BitsPerSample::Streaminfo(c) => c,
+            BitsPerSample::Bps8 => BitsPerSample::BPS8,
+            BitsPerSample::Bps12 => BitsPerSample::BPS12,
+            BitsPerSample::Bps16 => BitsPerSample::BPS16,
+            BitsPerSample::Bps20 => BitsPerSample::BPS20,
+            BitsPerSample::Bps24 => BitsPerSample::BPS24,
+            BitsPerSample::Bps32 => BitsPerSample::BPS32,
         }
     }
 }
 
-impl Into<u32> for BitsPerSample {
+impl From<BitsPerSample> for u32 {
     #[inline]
-    fn into(self) -> u32 {
-        match self {
-            Self::Streaminfo(c) => c.into(),
-            Self::Bps8 => 8,
-            Self::Bps12 => 12,
-            Self::Bps16 => 16,
-            Self::Bps20 => 20,
-            Self::Bps24 => 24,
-            Self::Bps32 => 32,
+    fn from(bps: BitsPerSample) -> Self {
+        match bps {
+            BitsPerSample::Streaminfo(c) => c.into(),
+            BitsPerSample::Bps8 => 8,
+            BitsPerSample::Bps12 => 12,
+            BitsPerSample::Bps16 => 16,
+            BitsPerSample::Bps20 => 20,
+            BitsPerSample::Bps24 => 24,
+            BitsPerSample::Bps32 => 32,
         }
     }
 }
@@ -1600,7 +1600,7 @@ impl<const RICE_MAX: u32> FromBitStreamUsing for ResidualPartition<RICE_MAX> {
                     .map(|_| {
                         let msb = r.read_unary::<1>()?;
                         let lsb = r.read_counted::<RICE_MAX, u32>(rice)?;
-                        let unsigned = msb << u32::from(rice) | lsb;
+                        let unsigned = (msb << u32::from(rice)) | lsb;
                         Ok::<_, Error>(if (unsigned & 1) == 1 {
                             -((unsigned >> 1) as i32) - 1
                         } else {

@@ -1078,7 +1078,7 @@ impl FromBitStreamUsing for Padding {
 
     fn from_reader<R: BitRead + ?Sized>(r: &mut R, size: BlockSize) -> Result<Self, Self::Error> {
         r.skip(size.get() * 8)?;
-        Ok(Self { size: size })
+        Ok(Self { size })
     }
 }
 

@@ -935,7 +935,7 @@ fn read_residuals<R: BitRead>(
                     partition.iter_mut().try_for_each(|s| {
                         let msb = reader.read_unary::<1>()?;
                         let lsb = reader.read_counted::<RICE_MAX, u32>(rice)?;
-                        let unsigned = msb << u32::from(rice) | lsb;
+                        let unsigned = (msb << u32::from(rice)) | lsb;
                         *s = if (unsigned & 1) == 1 {
                             -((unsigned >> 1) as i32) - 1
                         } else {
