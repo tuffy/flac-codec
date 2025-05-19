@@ -714,25 +714,21 @@ struct CorrelationCache {
     // the difference channel samples
     difference_samples: Vec<i32>,
     // the left channel
-    left: CorrelationChannel,
+    left: ChannelCache,
     // the right channel
-    right: CorrelationChannel,
+    right: ChannelCache,
     // the average channel
-    average: CorrelationChannel,
+    average: ChannelCache,
     // the difference channel
-    difference: CorrelationChannel,
-}
-
-#[derive(Default)]
-struct CorrelationChannel {
-    cache: ChannelCache,
-    output: BitRecorder<u32, BigEndian>,
+    difference: ChannelCache,
 }
 
 #[derive(Default)]
 struct ChannelCache {
     fixed: FixedCache,
     fixed_output: BitRecorder<u32, BigEndian>,
+    constant_output: BitRecorder<u32, BigEndian>,
+    verbatim_output: BitRecorder<u32, BigEndian>,
 }
 
 #[derive(Default)]
@@ -1037,12 +1033,8 @@ where
             bw = BitWriter::new(w);
 
             for channel in frame {
-                encode_subframe(
-                    &mut cache.independent,
-                    bw.by_ref(),
-                    channel,
-                    streaminfo.bits_per_sample,
-                )?;
+                encode_subframe(&mut cache.independent, channel, streaminfo.bits_per_sample)?
+                    .playback(bw.by_ref())?;
             }
         }
     }
@@ -1082,63 +1074,26 @@ where
 
 struct Correlated<'c> {
     channel_assignment: ChannelAssignment,
-    channels: [&'c mut BitRecorder<u32, BigEndian>; 2],
+    channels: [&'c BitRecorder<u32, BigEndian>; 2],
 }
 
 fn correlate_channels<'c>(
     EncodingCaches {
         correlated:
             CorrelationCache {
-                left:
-                    CorrelationChannel {
-                        output: left_channel,
-                        cache: left_channel_cache,
-                    },
-                right:
-                    CorrelationChannel {
-                        output: right_channel,
-                        cache: right_channel_cache,
-                    },
+                left: left_channel_cache,
+                right: right_channel_cache,
                 average_samples,
-                average:
-                    CorrelationChannel {
-                        output: average,
-                        cache: average_cache,
-                    },
+                average: average_cache,
                 difference_samples,
-                difference:
-                    CorrelationChannel {
-                        output: difference,
-                        cache: difference_cache,
-                    },
+                difference: difference_cache,
             },
-        independent,
+        ..
     }: &'c mut EncodingCaches,
     [left, right]: [&[i32]; 2],
     bits_per_sample: SignedBitCount<32>,
 ) -> Result<Correlated<'c>, Error> {
-    struct EncodeArgs<'a> {
-        cache: &'a mut ChannelCache,
-        writer: &'a mut BitRecorder<u32, BigEndian>,
-        channel: &'a [i32],
-        bits_per_sample: SignedBitCount<32>,
-    }
-
-    fn mass_encode(args: [EncodeArgs<'_>; 4]) -> Result<(), Error> {
-        for EncodeArgs {
-            cache,
-            writer,
-            channel,
-            bits_per_sample,
-        } in args
-        {
-            writer.clear();
-            encode_subframe(cache, writer, channel, bits_per_sample)?;
-        }
-        Ok(())
-    }
-
-    match bits_per_sample.checked_add(1) {
+    match bits_per_sample.checked_add::<32>(1) {
         Some(difference_bits_per_sample) => {
             // TODO - calculate these in parallel
 
@@ -1148,92 +1103,65 @@ fn correlate_channels<'c>(
             difference_samples.clear();
             difference_samples.extend(left.iter().zip(right).map(|(l, r)| l - r));
 
-            mass_encode([
-                EncodeArgs {
-                    cache: left_channel_cache,
-                    writer: left_channel,
-                    channel: left,
-                    bits_per_sample,
-                },
-                EncodeArgs {
-                    cache: right_channel_cache,
-                    writer: right_channel,
-                    channel: right,
-                    bits_per_sample,
-                },
-                EncodeArgs {
-                    cache: average_cache,
-                    writer: average,
-                    channel: average_samples,
-                    bits_per_sample,
-                },
-                EncodeArgs {
-                    cache: difference_cache,
-                    writer: difference,
-                    channel: difference_samples,
-                    bits_per_sample: difference_bits_per_sample,
-                },
-            ])?;
+            let left_channel = encode_subframe(left_channel_cache, left, bits_per_sample)?;
+            let right_channel = encode_subframe(right_channel_cache, right, bits_per_sample)?;
+            let average_channel = encode_subframe(average_cache, average_samples, bits_per_sample)?;
+            let difference_channel = encode_subframe(
+                difference_cache,
+                difference_samples,
+                difference_bits_per_sample,
+            )?;
 
-            let left_difference = left_channel.written() + difference.written();
-            let difference_right = difference.written() + right_channel.written();
-            let average_difference = average.written() + difference.written();
-            let independent = left_channel.written() + right_channel.written();
-
-            Ok(
-                if left_difference < difference_right
-                    && left_difference < average_difference
-                    && left_difference < independent
-                {
-                    Correlated {
-                        channel_assignment: ChannelAssignment::LeftSide,
-                        channels: [left_channel, difference],
-                    }
-                } else if difference_right < average_difference && difference_right < independent {
-                    Correlated {
-                        channel_assignment: ChannelAssignment::SideRight,
-                        channels: [difference, right_channel],
-                    }
-                } else if average_difference < independent {
-                    Correlated {
-                        channel_assignment: ChannelAssignment::MidSide,
-                        channels: [average, difference],
-                    }
-                } else {
-                    Correlated {
-                        channel_assignment: ChannelAssignment::Independent(Independent::Stereo),
-                        channels: [left_channel, right_channel],
-                    }
+            Ok([
+                Correlated {
+                    channel_assignment: ChannelAssignment::LeftSide,
+                    channels: [left_channel, difference_channel],
                 },
+                Correlated {
+                    channel_assignment: ChannelAssignment::SideRight,
+                    channels: [difference_channel, right_channel],
+                },
+                Correlated {
+                    channel_assignment: ChannelAssignment::MidSide,
+                    channels: [average_channel, difference_channel],
+                },
+                Correlated {
+                    channel_assignment: ChannelAssignment::Independent(Independent::Stereo),
+                    channels: [left_channel, right_channel],
+                },
+            ]
+            .into_iter()
+            .min_by_key(
+                |Correlated {
+                     channels: [c1, c2], ..
+                 }| c1.written() + c2.written(),
             )
+            .unwrap())
         }
         None => {
             // 32 bps stream, so forego difference channel
             // and encode them both indepedently
-
-            left_channel.clear();
-            encode_subframe(independent, left_channel, left, bits_per_sample)?;
-
-            right_channel.clear();
-            encode_subframe(independent, right_channel, right, bits_per_sample)?;
-
             Ok(Correlated {
                 channel_assignment: ChannelAssignment::Independent(Independent::Stereo),
-                channels: [left_channel, right_channel],
+                channels: [
+                    encode_subframe(left_channel_cache, left, bits_per_sample)?,
+                    encode_subframe(right_channel_cache, right, bits_per_sample)?,
+                ],
             })
         }
     }
 }
 
-fn encode_subframe<W: BitWrite>(
+fn encode_subframe<'c>(
     ChannelCache {
         fixed: fixed_cache,
         fixed_output,
-    }: &mut ChannelCache,
-    writer: &mut W,
+        constant_output,
+        verbatim_output,
+    }: &'c mut ChannelCache,
     channel: &[i32],
     bits_per_sample: SignedBitCount<32>,
-) -> Result<(), Error> {
+) -> Result<&'c BitRecorder<u32, BigEndian>, Error> {
     const WASTED_MAX: NonZero<u32> = NonZero::new(32).unwrap();
 
     debug_assert!(!channel.is_empty());
@@ -1248,7 +1176,9 @@ fn encode_subframe<W: BitWrite>(
         }) {
             None => (channel, bits_per_sample, 0),
             Some(WASTED_MAX) => {
-                return encode_constant_subframe(writer, channel[0], bits_per_sample, 0);
+                constant_output.clear();
+                encode_constant_subframe(constant_output, channel[0], bits_per_sample, 0)?;
+                return Ok(constant_output);
             }
             Some(wasted_bps) => {
                 let wasted_bps = wasted_bps.get();
@@ -1276,9 +1206,11 @@ fn encode_subframe<W: BitWrite>(
     let verbatim_len = channel.len() as u32 * u32::from(bits_per_sample);
 
     if fixed_output.written() < verbatim_len {
-        Ok(fixed_output.playback(writer)?)
+        Ok(fixed_output)
     } else {
-        encode_verbatim_subframe(writer, channel, bits_per_sample, wasted_bps)
+        verbatim_output.clear();
+        encode_verbatim_subframe(verbatim_output, channel, bits_per_sample, wasted_bps)?;
+        Ok(verbatim_output)
     }
 }
 
