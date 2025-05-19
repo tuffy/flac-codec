@@ -509,6 +509,7 @@ fn update_md5<W: std::io::Write + std::io::Seek>(
 /// FLAC encoding options
 pub struct EncodingOptions {
     block_size: u16,
+    max_partition_order: u32,
     metadata: BTreeMap<BlockType, BlockSet>,
     seektable_style: Option<SeektableStyle>,
 }
@@ -517,6 +518,7 @@ impl Default for EncodingOptions {
     fn default() -> Self {
         Self {
             block_size: 4096,
+            max_partition_order: 5,
             metadata: BTreeMap::default(),
             // TODO - make default seektable style
             // one point every 10 seconds
@@ -532,8 +534,24 @@ enum SeektableStyle {
 
 impl EncodingOptions {
     /// Sets new block size
+    ///
+    /// For subset streams, this must be less than or equal
+    /// to 4608 if the sample rate is less than or equal to 48 kHz -
+    /// or less than or equal to 16384 for higher sample rates.
     pub fn block_size(self, block_size: u16) -> Self {
+        // TODO - enforce block size restrictions
         Self { block_size, ..self }
+    }
+
+    /// Sets maximum residual partion order.
+    ///
+    /// Must be between 0 and 15, inclusive.
+    pub fn max_partition_order(self, max_partition_order: u32) -> Self {
+        assert!(max_partition_order <= 15, "max partition order too high");
+        Self {
+            max_partition_order,
+            ..self
+        }
     }
 
     /// Adds new [`crate::metadata::Padding`] block to metadata
@@ -884,6 +902,7 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
         }
 
         encode_frame(
+            &self.options,
             &mut self.caches,
             &mut self.writer,
             &mut self.streaminfo,
@@ -967,6 +986,7 @@ impl<W: std::io::Write + std::io::Seek> Drop for Encoder<W> {
 }
 
 fn encode_frame<W>(
+    options: &EncodingOptions,
     cache: &mut EncodingCaches,
     mut writer: W,
     streaminfo: &mut Streaminfo,
@@ -993,7 +1013,7 @@ where
             let Correlated {
                 channel_assignment,
                 channels,
-            } = correlate_channels(cache, [left, right], streaminfo.bits_per_sample)?;
+            } = correlate_channels(options, cache, [left, right], streaminfo.bits_per_sample)?;
 
             FrameHeader {
                 blocking_strategy: false,
@@ -1033,8 +1053,13 @@ where
             bw = BitWriter::new(w);
 
             for channel in frame {
-                encode_subframe(&mut cache.independent, channel, streaminfo.bits_per_sample)?
-                    .playback(bw.by_ref())?;
+                encode_subframe(
+                    options,
+                    &mut cache.independent,
+                    channel,
+                    streaminfo.bits_per_sample,
+                )?
+                .playback(bw.by_ref())?;
             }
         }
     }
@@ -1078,6 +1103,7 @@ struct Correlated<'c> {
 }
 
 fn correlate_channels<'c>(
+    options: &EncodingOptions,
     EncodingCaches {
         correlated:
             CorrelationCache {
@@ -1103,10 +1129,13 @@ fn correlate_channels<'c>(
             difference_samples.clear();
             difference_samples.extend(left.iter().zip(right).map(|(l, r)| l - r));
 
-            let left_channel = encode_subframe(left_channel_cache, left, bits_per_sample)?;
-            let right_channel = encode_subframe(right_channel_cache, right, bits_per_sample)?;
-            let average_channel = encode_subframe(average_cache, average_samples, bits_per_sample)?;
+            let left_channel = encode_subframe(options, left_channel_cache, left, bits_per_sample)?;
+            let right_channel =
+                encode_subframe(options, right_channel_cache, right, bits_per_sample)?;
+            let average_channel =
+                encode_subframe(options, average_cache, average_samples, bits_per_sample)?;
             let difference_channel = encode_subframe(
+                options,
                 difference_cache,
                 difference_samples,
                 difference_bits_per_sample,
@@ -1144,8 +1173,8 @@ fn correlate_channels<'c>(
             Ok(Correlated {
                 channel_assignment: ChannelAssignment::Independent(Independent::Stereo),
                 channels: [
-                    encode_subframe(left_channel_cache, left, bits_per_sample)?,
-                    encode_subframe(right_channel_cache, right, bits_per_sample)?,
+                    encode_subframe(options, left_channel_cache, left, bits_per_sample)?,
+                    encode_subframe(options, right_channel_cache, right, bits_per_sample)?,
                 ],
             })
         }
@@ -1153,6 +1182,7 @@ fn correlate_channels<'c>(
 }
 
 fn encode_subframe<'c>(
+    options: &EncodingOptions,
     ChannelCache {
         fixed: fixed_cache,
         fixed_output,
@@ -1193,6 +1223,7 @@ fn encode_subframe<'c>(
 
     fixed_output.clear();
     encode_fixed_subframe(
+        options,
         fixed_cache,
         fixed_output,
         channel,
@@ -1253,6 +1284,7 @@ fn encode_verbatim_subframe<W: BitWrite>(
 }
 
 fn encode_fixed_subframe<W: BitWrite>(
+    options: &EncodingOptions,
     FixedCache {
         fixed_buffers: buffers,
     }: &mut FixedCache,
@@ -1316,10 +1348,11 @@ fn encode_fixed_subframe<W: BitWrite>(
         .iter()
         .try_for_each(|sample: &i32| writer.write_signed_counted(bits_per_sample, *sample))?;
 
-    write_residuals(writer, order.into(), residuals)
+    write_residuals(options, writer, order.into(), residuals)
 }
 
 fn write_residuals<W: BitWrite>(
+    options: &EncodingOptions,
     writer: &mut W,
     predictor_order: usize,
     residuals: &[i32],
@@ -1385,12 +1418,12 @@ fn write_residuals<W: BitWrite>(
         }
     }
 
-    fn best_partitions<const RICE_MAX: u32>(
+    fn best_partitions<'r, const RICE_MAX: u32>(
+        options: &EncodingOptions,
         block_size: usize,
-        residuals: &[i32],
-    ) -> ArrayVec<Partition<'_, RICE_MAX>, MAX_PARTITIONS> {
-        // TODO - make max partition order configurable
-        (0..=block_size.trailing_zeros().min(6))
+        residuals: &'r [i32],
+    ) -> ArrayVec<Partition<'r, RICE_MAX>, MAX_PARTITIONS> {
+        (0..=block_size.trailing_zeros().min(options.max_partition_order))
             .map(|partition_order| 1 << partition_order)
             .map(|partition_count| {
                 let mut estimated_bits = 0;
@@ -1410,13 +1443,14 @@ fn write_residuals<W: BitWrite>(
     }
 
     fn write_block<const RICE_MAX: u32, W: BitWrite>(
+        options: &EncodingOptions,
         writer: &mut W,
         predictor_order: usize,
         residuals: &[i32],
     ) -> Result<(), Error> {
         let block_size = predictor_order + residuals.len();
 
-        let partitions = best_partitions::<RICE_MAX>(block_size, residuals);
+        let partitions = best_partitions::<RICE_MAX>(options, block_size, residuals);
         debug_assert!(!partitions.is_empty());
         debug_assert!(partitions.len().is_power_of_two());
 
@@ -1452,5 +1486,5 @@ fn write_residuals<W: BitWrite>(
 
     // TODO - we only support a coding method of 0
     writer.write::<2, u8>(0)?; // coding method
-    write_block::<0b1111, W>(writer, predictor_order, residuals)
+    write_block::<0b1111, W>(options, writer, predictor_order, residuals)
 }
