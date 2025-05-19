@@ -507,12 +507,13 @@ fn update_md5<W: std::io::Write + std::io::Seek>(
 }
 
 /// FLAC encoding options
+#[derive(Clone, Debug)]
 pub struct EncodingOptions {
     block_size: u16,
     max_partition_order: u32,
     mid_side: bool,
     metadata: BTreeMap<BlockType, BlockSet>,
-    seektable_style: Option<SeektableStyle>,
+    seektable_style: SeektableStyle,
 }
 
 impl Default for EncodingOptions {
@@ -522,16 +523,17 @@ impl Default for EncodingOptions {
             mid_side: true,
             max_partition_order: 5,
             metadata: BTreeMap::default(),
-            // TODO - make default seektable style
-            // one point every 10 seconds
-            seektable_style: None,
+            seektable_style: SeektableStyle::Seconds(NonZero::new(10).unwrap()),
         }
     }
 }
 
+#[derive(Copy, Clone, Debug)]
 enum SeektableStyle {
-    // Generate seekpoint every nth amount of samples
-    Samples(u64),
+    // Don't generate seektable
+    None,
+    // Generate seekpoint every nth seconds
+    Seconds(NonZero<u8>),
 }
 
 impl EncodingOptions {
@@ -715,16 +717,24 @@ impl EncodingOptions {
         self
     }
 
-    /// Generate [`crate::metadata::SeekTable`] with the given number of samples between seek points
+    /// Generate [`crate::metadata::SeekTable`] with the given number of seconds between seek points
     ///
     /// The interval between seek points may be larger than requested
     /// if the encoder's block size is larger than the seekpoint interval.
-    pub fn seektable_samples(mut self, samples: u64) -> Self {
+    pub fn seektable_seconds(mut self, seconds: NonZero<u8>) -> Self {
         // note that we can't drop a placeholder seektable
         // into the metadata blocks until we know
         // the sample rate and total samples of our stream
-        self.seektable_style = Some(SeektableStyle::Samples(samples));
+        self.seektable_style = SeektableStyle::Seconds(seconds);
         self
+    }
+
+    /// Do not generate a seektable in our encoded file
+    pub fn no_seektable(self) -> Self {
+        Self {
+            seektable_style: SeektableStyle::None,
+            ..self
+        }
     }
 }
 
@@ -829,9 +839,11 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
 
         // insert a dummy SeekTable to be populated later
         match options.seektable_style {
-            Some(SeektableStyle::Samples(samples)) => {
+            SeektableStyle::Seconds(seconds) => {
                 if let Some(total_samples) = total_samples {
                     use crate::metadata::SeekTable;
+
+                    let samples = u64::from(sample_rate * u32::from(seconds.get()));
 
                     options.metadata.insert(
                         BlockType::SeekTable,
@@ -853,7 +865,7 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
                     );
                 }
             }
-            None => { /* do nothing */ }
+            SeektableStyle::None => { /* do nothing */ }
         }
 
         write_blocks(
@@ -929,11 +941,15 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
 
             // update SEEKTABLE metadata block with final values
             match self.options.seektable_style {
-                Some(SeektableStyle::Samples(samples)) => {
+                SeektableStyle::Seconds(seconds) => {
                     // a placeholder SEEKTABLE should always be present
+                    // if we've specified a seektable style other than None
                     if let Some(BlockSet::SeekTable(SeekTable { points })) =
                         self.options.metadata.get_mut(&BlockType::SeekTable)
                     {
+                        let samples =
+                            u64::from(u32::from(self.sample_rate) * u32::from(seconds.get()));
+
                         // grab only the seekpoints that span
                         // "samples" boundaries of PCM samples
 
@@ -952,7 +968,7 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
                             });
                     }
                 }
-                None => { /* no seektable, so nothing to do */ }
+                SeektableStyle::None => { /* no seektable, so nothing to do */ }
             }
 
             match &mut self.streaminfo.total_samples {

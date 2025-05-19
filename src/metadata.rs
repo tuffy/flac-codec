@@ -919,6 +919,7 @@ impl ToBitStreamUsing for BlockRef<'_> {
 /// within a FLAC metadata block list, while others
 /// may only occur once.  This enforces that restriction
 /// at the type level.
+#[derive(Clone, Debug)]
 pub enum BlockSet {
     /// STREAMINFO may only occur once
     Streaminfo(Streaminfo),
