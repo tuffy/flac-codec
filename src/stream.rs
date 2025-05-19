@@ -565,11 +565,66 @@ impl TryFrom<u32> for SampleRate<u32> {
     }
 }
 
+/// How independent channels are stored
+#[derive(Copy, Clone, Debug)]
+pub enum Independent {
+    /// 1 monoaural channel
+    Mono = 1,
+    /// left, right channels
+    Stereo = 2,
+    /// left, right, center channels
+    Channels3 = 3,
+    /// front left, front right, back left, back right channels
+    Channels4 = 4,
+    /// front left, front right, front center,
+    /// back/surround left, back/surround right channels
+    Channels5 = 5,
+    /// front left, front right, front center,
+    /// LFE, back/surround left, back/surround right channels
+    Channels6 = 6,
+    /// front left, front right, front center,
+    /// LFE, back center, side left, side right channels
+    Channels7 = 7,
+    /// front left, front right, front center,
+    /// LFE, back left, back right, side left, side right channels
+    Channels8 = 8,
+}
+
+impl From<Independent> for u8 {
+    fn from(ch: Independent) -> Self {
+        ch as u8
+    }
+}
+
+impl From<Independent> for usize {
+    fn from(ch: Independent) -> Self {
+        ch as usize
+    }
+}
+
+impl TryFrom<usize> for Independent {
+    type Error = ();
+
+    fn try_from(ch: usize) -> Result<Self, Self::Error> {
+        match ch {
+            1 => Ok(Self::Mono),
+            2 => Ok(Self::Stereo),
+            3 => Ok(Self::Channels3),
+            4 => Ok(Self::Channels4),
+            5 => Ok(Self::Channels5),
+            6 => Ok(Self::Channels6),
+            7 => Ok(Self::Channels7),
+            8 => Ok(Self::Channels8),
+            _ => Err(()),
+        }
+    }
+}
+
 /// How the channels are assigned in a FLAC frame
-#[derive(Debug)]
+#[derive(Copy, Clone, Debug)]
 pub enum ChannelAssignment {
     /// Channels are stored independently
-    Independent(u8),
+    Independent(Independent),
     /// Channel 0 is stored verbatim, channel 1 derived from both
     LeftSide,
     /// Channel 0 is derived from both, channel 1 is stored verbatim
@@ -582,7 +637,7 @@ impl ChannelAssignment {
     /// Returns total number of channels defined by assignment
     pub fn count(&self) -> u8 {
         match self {
-            Self::Independent(c) => *c,
+            Self::Independent(c) => (*c).into(),
             _ => 2,
         }
     }
@@ -593,7 +648,14 @@ impl FromBitStream for ChannelAssignment {
 
     fn from_reader<R: BitRead + ?Sized>(r: &mut R) -> Result<Self, Error> {
         match r.read::<4, u8>()? {
-            c @ 0b0000..=0b0111 => Ok(Self::Independent(c + 1)),
+            0b0000 => Ok(Self::Independent(Independent::Mono)),
+            0b0001 => Ok(Self::Independent(Independent::Stereo)),
+            0b0010 => Ok(Self::Independent(Independent::Channels3)),
+            0b0011 => Ok(Self::Independent(Independent::Channels4)),
+            0b0100 => Ok(Self::Independent(Independent::Channels5)),
+            0b0101 => Ok(Self::Independent(Independent::Channels6)),
+            0b0110 => Ok(Self::Independent(Independent::Channels7)),
+            0b0111 => Ok(Self::Independent(Independent::Channels8)),
             0b1000 => Ok(Self::LeftSide),
             0b1001 => Ok(Self::SideRight),
             0b1010 => Ok(Self::MidSide),
@@ -608,7 +670,14 @@ impl ToBitStream for ChannelAssignment {
 
     fn to_writer<W: BitWrite + ?Sized>(&self, w: &mut W) -> Result<(), Error> {
         Ok(w.write::<4, u8>(match self {
-            Self::Independent(c) => c - 1,
+            Self::Independent(Independent::Mono) => 0b0000,
+            Self::Independent(Independent::Stereo) => 0b0001,
+            Self::Independent(Independent::Channels3) => 0b0010,
+            Self::Independent(Independent::Channels4) => 0b0011,
+            Self::Independent(Independent::Channels5) => 0b0100,
+            Self::Independent(Independent::Channels6) => 0b0101,
+            Self::Independent(Independent::Channels7) => 0b0110,
+            Self::Independent(Independent::Channels8) => 0b0111,
             Self::LeftSide => 0b1000,
             Self::SideRight => 0b1001,
             Self::MidSide => 0b1011,
@@ -1074,7 +1143,7 @@ impl Frame {
         let mut reader = BitReader::endian(crc16_reader.by_ref(), BigEndian);
 
         let subframes = match header.channel_assignment {
-            ChannelAssignment::Independent(total_channels) => (0..total_channels)
+            ChannelAssignment::Independent(total_channels) => (0..total_channels as u8)
                 .map(|_| {
                     reader.parse_using::<Subframe>((
                         header.block_size.into(),

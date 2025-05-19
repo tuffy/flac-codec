@@ -13,7 +13,7 @@ use crate::metadata::{
     Application, BlockSet, BlockSize, BlockType, Cuesheet, MetadataBlock, Picture, SeekPoint,
     Streaminfo, VorbisComment, write_blocks,
 };
-use crate::stream::{ChannelAssignment, FrameNumber, SampleRate};
+use crate::stream::{ChannelAssignment, FrameNumber, Independent, SampleRate};
 use crate::{Counter, Error};
 use arrayvec::ArrayVec;
 use bitstream_io::{BigEndian, BitRecorder, BitWrite, BitWriter, SignedBitCount};
@@ -1028,7 +1028,9 @@ where
                     .expect("frame cannot be empty"),
                 sample_rate,
                 bits_per_sample: streaminfo.bits_per_sample.into(),
-                channel_assignment: ChannelAssignment::Independent(frame.len() as u8),
+                channel_assignment: ChannelAssignment::Independent(
+                    frame.len().try_into().expect("invalid channel count"),
+                ),
             }
             .write(&mut w, streaminfo)?;
 
@@ -1199,7 +1201,7 @@ fn correlate_channels<'c>(
                     }
                 } else {
                     Correlated {
-                        channel_assignment: ChannelAssignment::Independent(2),
+                        channel_assignment: ChannelAssignment::Independent(Independent::Stereo),
                         channels: [left_channel, right_channel],
                     }
                 },
@@ -1216,7 +1218,7 @@ fn correlate_channels<'c>(
             encode_subframe(independent, right_channel, right, bits_per_sample)?;
 
             Ok(Correlated {
-                channel_assignment: ChannelAssignment::Independent(2),
+                channel_assignment: ChannelAssignment::Independent(Independent::Stereo),
                 channels: [left_channel, right_channel],
             })
         }
