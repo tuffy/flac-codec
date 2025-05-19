@@ -510,6 +510,7 @@ fn update_md5<W: std::io::Write + std::io::Seek>(
 pub struct EncodingOptions {
     block_size: u16,
     max_partition_order: u32,
+    mid_side: bool,
     metadata: BTreeMap<BlockType, BlockSet>,
     seektable_style: Option<SeektableStyle>,
 }
@@ -518,6 +519,7 @@ impl Default for EncodingOptions {
     fn default() -> Self {
         Self {
             block_size: 4096,
+            mid_side: true,
             max_partition_order: 5,
             metadata: BTreeMap::default(),
             // TODO - make default seektable style
@@ -552,6 +554,13 @@ impl EncodingOptions {
             max_partition_order,
             ..self
         }
+    }
+
+    /// Whether to use mid-side encoding
+    ///
+    /// The default is `true`.
+    pub fn mid_side(self, mid_side: bool) -> Self {
+        Self { mid_side, ..self }
     }
 
     /// Adds new [`crate::metadata::Padding`] block to metadata
@@ -1120,7 +1129,7 @@ fn correlate_channels<'c>(
     bits_per_sample: SignedBitCount<32>,
 ) -> Result<Correlated<'c>, Error> {
     match bits_per_sample.checked_add::<32>(1) {
-        Some(difference_bits_per_sample) => {
+        Some(difference_bits_per_sample) if options.mid_side => {
             // TODO - calculate these in parallel
 
             average_samples.clear();
@@ -1153,6 +1162,44 @@ fn correlate_channels<'c>(
                 Correlated {
                     channel_assignment: ChannelAssignment::MidSide,
                     channels: [average_channel, difference_channel],
+                },
+                Correlated {
+                    channel_assignment: ChannelAssignment::Independent(Independent::Stereo),
+                    channels: [left_channel, right_channel],
+                },
+            ]
+            .into_iter()
+            .min_by_key(
+                |Correlated {
+                     channels: [c1, c2], ..
+                 }| c1.written() + c2.written(),
+            )
+            .unwrap())
+        }
+        Some(difference_bits_per_sample) => {
+            // TODO - calculate these in parallel
+
+            difference_samples.clear();
+            difference_samples.extend(left.iter().zip(right).map(|(l, r)| l - r));
+
+            let left_channel = encode_subframe(options, left_channel_cache, left, bits_per_sample)?;
+            let right_channel =
+                encode_subframe(options, right_channel_cache, right, bits_per_sample)?;
+            let difference_channel = encode_subframe(
+                options,
+                difference_cache,
+                difference_samples,
+                difference_bits_per_sample,
+            )?;
+
+            Ok([
+                Correlated {
+                    channel_assignment: ChannelAssignment::LeftSide,
+                    channels: [left_channel, difference_channel],
+                },
+                Correlated {
+                    channel_assignment: ChannelAssignment::SideRight,
+                    channels: [difference_channel, right_channel],
                 },
                 Correlated {
                     channel_assignment: ChannelAssignment::Independent(Independent::Stereo),
