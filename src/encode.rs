@@ -764,6 +764,8 @@ struct CorrelationCache {
 struct ChannelCache {
     fixed: FixedCache,
     fixed_output: BitRecorder<u32, BigEndian>,
+    lpc: LpcCache,
+    lpc_output: BitRecorder<u32, BigEndian>,
     constant_output: BitRecorder<u32, BigEndian>,
     verbatim_output: BitRecorder<u32, BigEndian>,
 }
@@ -772,6 +774,11 @@ struct ChannelCache {
 struct FixedCache {
     // FIXED subframe buffers, one per order 1-4
     fixed_buffers: [Vec<i32>; 4],
+}
+
+#[derive(Default)]
+struct LpcCache {
+    residuals: Vec<i32>,
 }
 
 /// A FLAC encoder
@@ -1249,6 +1256,8 @@ fn encode_subframe<'c>(
     ChannelCache {
         fixed: fixed_cache,
         fixed_output,
+        lpc: lpc_cache,
+        lpc_output,
         constant_output,
         verbatim_output,
     }: &'c mut ChannelCache,
@@ -1294,13 +1303,25 @@ fn encode_subframe<'c>(
         wasted_bps,
     )?;
 
-    // TODO - output to LPC subframe
-    // TODO - write the smaller of FIXED, LPC, and VERBATIM subframes
+    lpc_output.clear();
+    encode_lpc_subframe(
+        options,
+        lpc_cache,
+        lpc_output,
+        channel,
+        bits_per_sample,
+        wasted_bps,
+    )?;
+
+    let best = [fixed_output, lpc_output]
+        .into_iter()
+        .min_by_key(|c| c.written())
+        .unwrap();
 
     let verbatim_len = channel.len() as u32 * u32::from(bits_per_sample);
 
-    if fixed_output.written() < verbatim_len {
-        Ok(fixed_output)
+    if best.written() < verbatim_len {
+        Ok(best)
     } else {
         verbatim_output.clear();
         encode_verbatim_subframe(verbatim_output, channel, bits_per_sample, wasted_bps)?;
@@ -1412,6 +1433,179 @@ fn encode_fixed_subframe<W: BitWrite>(
         .try_for_each(|sample: &i32| writer.write_signed_counted(bits_per_sample, *sample))?;
 
     write_residuals(options, writer, order.into(), residuals)
+}
+
+fn encode_lpc_subframe<W: BitWrite>(
+    options: &EncodingOptions,
+    cache: &mut LpcCache,
+    writer: &mut W,
+    channel: &[i32],
+    bits_per_sample: SignedBitCount<32>,
+    wasted_bps: u32,
+) -> Result<(), Error> {
+    use crate::stream::{SubframeHeader, SubframeHeaderType};
+
+    let LpcSubframeParameters {
+        warm_up,
+        residuals,
+        parameters:
+            LpcParameters {
+                order,
+                precision,
+                shift,
+                coefficients,
+            },
+    } = LpcSubframeParameters::best(options, cache, channel);
+
+    writer.build(&SubframeHeader {
+        type_: SubframeHeaderType::Lpc { order },
+        wasted_bps,
+    })?;
+
+    for sample in warm_up {
+        writer.write_signed_counted(bits_per_sample, *sample)?;
+    }
+
+    writer.write_count::<0b1111>(
+        precision
+            .count()
+            .checked_sub(1)
+            .ok_or(Error::InvalidQlpPrecision)?,
+    )?;
+
+    writer.write::<5, i32>(shift as i32)?;
+
+    for coeff in coefficients {
+        writer.write_signed_counted(precision, coeff)?;
+    }
+
+    write_residuals(options, writer, order.get().into(), residuals)
+}
+
+struct LpcSubframeParameters<'w, 'r> {
+    parameters: LpcParameters,
+    warm_up: &'w [i32],
+    residuals: &'r [i32],
+}
+
+impl<'w, 'r> LpcSubframeParameters<'w, 'r> {
+    fn best(
+        options: &EncodingOptions,
+        LpcCache { residuals }: &'r mut LpcCache,
+        channel: &'w [i32],
+    ) -> Self {
+        let parameters = LpcParameters::best(options, channel);
+
+        let (warm_up, residuals) = Self::encode_residuals(&parameters, channel, residuals);
+
+        Self {
+            warm_up,
+            residuals,
+            parameters,
+        }
+    }
+
+    fn encode_residuals(
+        parameters: &LpcParameters,
+        channel: &'w [i32],
+        residuals: &'r mut Vec<i32>,
+    ) -> (&'w [i32], &'r [i32]) {
+        residuals.clear();
+        residuals.extend(
+            (usize::from(parameters.order.get())..channel.len()).map(|split| {
+                let (previous, current) = channel.split_at(split);
+
+                current[0]
+                    - (previous
+                        .iter()
+                        .rev()
+                        .zip(&parameters.coefficients)
+                        .map(|(x, y)| *x as i64 * *y as i64)
+                        .sum::<i64>()
+                        >> parameters.shift) as i32
+            }),
+        );
+
+        (
+            &channel[0..parameters.order.get().into()],
+            residuals.as_slice(),
+        )
+    }
+}
+
+#[test]
+fn test_residual_encoding_1() {
+    let samples = [
+        0, 16, 31, 44, 54, 61, 64, 63, 58, 49, 38, 24, 8, -8, -24, -38, -49, -58, -63, -64, -61,
+        -54, -44, -31, -16,
+    ];
+
+    let expected_residuals = [
+        2, 2, 2, 3, 3, 3, 2, 2, 3, 0, 0, 0, -1, -1, -1, -3, -2, -2, -2, -1, -1, 0, 0,
+    ];
+
+    let mut actual_residuals = Vec::with_capacity(expected_residuals.len());
+
+    let (warm_up, residuals) = LpcSubframeParameters::encode_residuals(
+        &LpcParameters {
+            order: NonZero::new(2).unwrap(),
+            precision: SignedBitCount::new::<7>(),
+            shift: 5,
+            coefficients: [59, -30].into_iter().collect(),
+        },
+        &samples,
+        &mut actual_residuals,
+    );
+
+    assert_eq!(warm_up, &samples[0..2]);
+    assert_eq!(residuals, &expected_residuals);
+}
+
+#[test]
+fn test_residual_encoding_2() {
+    let samples = [
+        64, 62, 56, 47, 34, 20, 4, -12, -27, -41, -52, -60, -63, -63, -60, -52, -41, -27, -12, 4,
+        20, 34, 47, 56, 62,
+    ];
+
+    let expected_residuals = [
+        2, 2, 0, 1, -1, -1, -1, -2, -2, -2, -1, -3, -2, 0, -1, 1, 0, 2, 2, 2, 4, 2, 4,
+    ];
+
+    let mut actual_residuals = Vec::with_capacity(expected_residuals.len());
+
+    let (warm_up, residuals) = LpcSubframeParameters::encode_residuals(
+        &LpcParameters {
+            order: NonZero::new(2).unwrap(),
+            precision: SignedBitCount::new::<7>(),
+            shift: 5,
+            coefficients: [58, -29].into_iter().collect(),
+        },
+        &samples,
+        &mut actual_residuals,
+    );
+
+    assert_eq!(warm_up, &samples[0..2]);
+    assert_eq!(residuals, &expected_residuals);
+}
+
+struct LpcParameters {
+    order: NonZero<u8>,
+    precision: SignedBitCount<15>,
+    shift: u32,
+    coefficients: ArrayVec<i32, 32>,
+}
+
+impl LpcParameters {
+    fn best(_options: &EncodingOptions, _channel: &[i32]) -> Self {
+        // TODO - determine proper values
+        Self {
+            order: NonZero::new(2).unwrap(),
+            precision: SignedBitCount::new::<7>(),
+            shift: 5,
+            coefficients: [59, -30].into_iter().collect(),
+        }
+    }
 }
 
 fn write_residuals<W: BitWrite>(
