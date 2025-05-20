@@ -1511,6 +1511,7 @@ impl<'w, 'r> LpcSubframeParameters<'w, 'r> {
         residuals: &'r mut Vec<i32>,
     ) -> (&'w [i32], &'r [i32]) {
         residuals.clear();
+
         residuals.extend(
             (usize::from(parameters.order.get())..channel.len()).map(|split| {
                 let (previous, current) = channel.split_at(split);
@@ -1551,7 +1552,7 @@ fn test_residual_encoding_1() {
             order: NonZero::new(2).unwrap(),
             precision: SignedBitCount::new::<7>(),
             shift: 5,
-            coefficients: [59, -30].into_iter().collect(),
+            coefficients: vec![59, -30],
         },
         &samples,
         &mut actual_residuals,
@@ -1579,7 +1580,7 @@ fn test_residual_encoding_2() {
             order: NonZero::new(2).unwrap(),
             precision: SignedBitCount::new::<7>(),
             shift: 5,
-            coefficients: [58, -29].into_iter().collect(),
+            coefficients: vec![58, -29],
         },
         &samples,
         &mut actual_residuals,
@@ -1593,7 +1594,7 @@ struct LpcParameters {
     order: NonZero<u8>,
     precision: SignedBitCount<15>,
     shift: u32,
-    coefficients: ArrayVec<i32, 32>,
+    coefficients: Vec<i32>,
 }
 
 impl LpcParameters {
@@ -1603,7 +1604,7 @@ impl LpcParameters {
             order: NonZero::new(2).unwrap(),
             precision: SignedBitCount::new::<7>(),
             shift: 5,
-            coefficients: [59, -30].into_iter().collect(),
+            coefficients: vec![59, -30],
         }
     }
 }
