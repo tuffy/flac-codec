@@ -514,6 +514,8 @@ pub struct EncodingOptions {
     mid_side: bool,
     metadata: BTreeMap<BlockType, BlockSet>,
     seektable_style: SeektableStyle,
+    max_lpc_order: Option<NonZero<u8>>,
+    window: Window,
 }
 
 impl Default for EncodingOptions {
@@ -524,6 +526,8 @@ impl Default for EncodingOptions {
             max_partition_order: 5,
             metadata: BTreeMap::default(),
             seektable_style: SeektableStyle::Seconds(NonZero::new(10).unwrap()),
+            max_lpc_order: NonZero::new(8),
+            window: Window::default(),
         }
     }
 }
@@ -738,6 +742,47 @@ impl EncodingOptions {
     }
 }
 
+/// The method the input signal should be windowed
+#[derive(Copy, Clone, Debug)]
+pub enum Window {
+    /// Basic rectangular window
+    Rectangle,
+}
+
+// TODO - add more, better windowing options
+
+impl Window {
+    fn generate(&self, window: &mut [f32]) {
+        match self {
+            Self::Rectangle => window.fill(1.0),
+        }
+    }
+
+    fn apply<'w>(
+        &self,
+        window: &mut Vec<f32>,
+        cache: &'w mut Vec<f32>,
+        samples: &[i32],
+    ) -> &'w [f32] {
+        if window.len() != samples.len() {
+            // need to re-generate window to fit samples
+            window.resize(samples.len(), 0.0);
+            self.generate(window);
+        }
+
+        // window signal into cache and return cached slice
+        cache.clear();
+        cache.extend(samples.iter().zip(window).map(|(s, w)| *s as f32 * *w));
+        cache.as_slice()
+    }
+}
+
+impl Default for Window {
+    fn default() -> Self {
+        Self::Rectangle
+    }
+}
+
 #[derive(Default)]
 struct EncodingCaches {
     independent: ChannelCache,
@@ -778,6 +823,8 @@ struct FixedCache {
 
 #[derive(Default)]
 struct LpcCache {
+    window: Vec<f32>,
+    windowed: Vec<f32>,
     residuals: Vec<i32>,
 }
 
@@ -1303,20 +1350,27 @@ fn encode_subframe<'c>(
         wasted_bps,
     )?;
 
-    lpc_output.clear();
-    encode_lpc_subframe(
-        options,
-        lpc_cache,
-        lpc_output,
-        channel,
-        bits_per_sample,
-        wasted_bps,
-    )?;
+    let best = match options.max_lpc_order {
+        Some(max_lpc_order) => {
+            lpc_output.clear();
 
-    let best = [fixed_output, lpc_output]
-        .into_iter()
-        .min_by_key(|c| c.written())
-        .unwrap();
+            encode_lpc_subframe(
+                options,
+                max_lpc_order,
+                lpc_cache,
+                lpc_output,
+                channel,
+                bits_per_sample,
+                wasted_bps,
+            )?;
+
+            [fixed_output, lpc_output]
+                .into_iter()
+                .min_by_key(|c| c.written())
+                .unwrap()
+        }
+        None => fixed_output,
+    };
 
     let verbatim_len = channel.len() as u32 * u32::from(bits_per_sample);
 
@@ -1437,6 +1491,7 @@ fn encode_fixed_subframe<W: BitWrite>(
 
 fn encode_lpc_subframe<W: BitWrite>(
     options: &EncodingOptions,
+    max_lpc_order: NonZero<u8>,
     cache: &mut LpcCache,
     writer: &mut W,
     channel: &[i32],
@@ -1455,7 +1510,7 @@ fn encode_lpc_subframe<W: BitWrite>(
                 shift,
                 coefficients,
             },
-    } = LpcSubframeParameters::best(options, cache, channel);
+    } = LpcSubframeParameters::best(options, max_lpc_order, cache, channel);
 
     writer.build(&SubframeHeader {
         type_: SubframeHeaderType::Lpc { order },
@@ -1491,10 +1546,15 @@ struct LpcSubframeParameters<'w, 'r> {
 impl<'w, 'r> LpcSubframeParameters<'w, 'r> {
     fn best(
         options: &EncodingOptions,
-        LpcCache { residuals }: &'r mut LpcCache,
+        max_lpc_order: NonZero<u8>,
+        LpcCache {
+            residuals,
+            window,
+            windowed,
+        }: &'r mut LpcCache,
         channel: &'w [i32],
     ) -> Self {
-        let parameters = LpcParameters::best(options, channel);
+        let parameters = LpcParameters::best(options, max_lpc_order, window, windowed, channel);
 
         let (warm_up, residuals) = Self::encode_residuals(&parameters, channel, residuals);
 
@@ -1597,14 +1657,127 @@ struct LpcParameters {
     coefficients: Vec<i32>,
 }
 
+// There isn't any particular *best* way to determine
+// the ideal LPC subframe parameters (though there are
+// some worst ways, like choosing them at random).
+// Even the reference implementation has changed its
+// defaults over time.  So long as the subframe's residuals
+// are calculated correctly, decoders don't care one way or another.
+//
+// I'll try to use an approach similar to the reference implementation's.
+
 impl LpcParameters {
-    fn best(_options: &EncodingOptions, _channel: &[i32]) -> Self {
-        // TODO - determine proper values
+    fn best(
+        options: &EncodingOptions,
+        max_lpc_order: NonZero<u8>,
+        window: &mut Vec<f32>,
+        windowed: &mut Vec<f32>,
+        channel: &[i32],
+    ) -> Self {
+        debug_assert!(!channel.is_empty());
+
+        let lp_coeffs = lp_coefficients(autocorrelate(
+            options.window.apply(window, windowed, channel),
+            max_lpc_order,
+        ));
+
+        // TODO - estimate best LPC order to use
+        // TODO - quantize floating point coefficients to integers
+
         Self {
             order: NonZero::new(2).unwrap(),
             precision: SignedBitCount::new::<7>(),
             shift: 5,
             coefficients: vec![59, -30],
+        }
+    }
+}
+
+fn autocorrelate(windowed: &[f32], max_lpc_order: NonZero<u8>) -> Vec<f32> {
+    let mut tail = windowed;
+    let mut autocorrelated = Vec::with_capacity(max_lpc_order.get().into());
+
+    for _ in 0..=max_lpc_order.get() {
+        if tail.is_empty() {
+            return autocorrelated;
+        } else {
+            autocorrelated.push(windowed.iter().zip(tail).map(|(x, y)| x * y).sum());
+            tail.split_off_first();
+        }
+    }
+
+    autocorrelated
+}
+
+#[test]
+fn test_autocorrelation() {
+    assert_eq!(autocorrelate(&[1.0], NonZero::new(1).unwrap()), &[1.0],);
+
+    assert_eq!(
+        autocorrelate(&[1.0, 2.0, 3.0, 4.0, 5.0], NonZero::new(4).unwrap()),
+        &[55.0, 40.0, 26.0, 14.0, 5.0],
+    );
+
+    assert_eq!(
+        autocorrelate(
+            &[
+                0.0, 16.0, 31.0, 44.0, 54.0, 61.0, 64.0, 63.0, 58.0, 49.0, 38.0, 24.0, 8.0, -8.0,
+                -24.0, -38.0, -49.0, -58.0, -63.0, -64.0, -61.0, -54.0, -44.0, -31.0, -16.0,
+            ],
+            NonZero::new(4).unwrap()
+        ),
+        &[51408.0, 49792.0, 45304.0, 38466.0, 29914.0],
+    )
+}
+
+#[derive(Debug)]
+struct LpCoeff {
+    coeffs: Vec<f32>,
+    error: f32,
+}
+
+// returns a Vec of (coefficients, error) pairs
+fn lp_coefficients(autocorrelated: Vec<f32>) -> Vec<LpCoeff> {
+    match autocorrelated.len() {
+        0 => panic!("autocorrelated values cannot be empty"),
+        1 => {
+            // TODO - work out what to do when only one value
+            todo!()
+        }
+        _ => {
+            let k = autocorrelated[1] / autocorrelated[0];
+            let mut lp_coefficients = vec![LpCoeff {
+                coeffs: vec![k],
+                error: autocorrelated[0] * (1.0 - k.powi(2)),
+            }];
+
+            for i in 1..(autocorrelated.len() - 1) {
+                if let [prev @ .., next] = &autocorrelated[0..=i + 1] {
+                    let LpCoeff { coeffs, error } = lp_coefficients.last().unwrap();
+
+                    let q = next
+                        - prev
+                            .iter()
+                            .rev()
+                            .zip(coeffs)
+                            .map(|(x, y)| x * y)
+                            .sum::<f32>();
+
+                    let k = q / error;
+
+                    lp_coefficients.push(LpCoeff {
+                        coeffs: coeffs
+                            .iter()
+                            .zip(coeffs.iter().rev().map(|c| k * c))
+                            .map(|(c1, c2)| (c1 - c2))
+                            .chain(std::iter::once(k))
+                            .collect(),
+                        error: error * (1.0 - k.powi(2)),
+                    });
+                }
+            }
+
+            lp_coefficients
         }
     }
 }
