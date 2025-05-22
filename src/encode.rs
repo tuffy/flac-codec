@@ -1833,11 +1833,7 @@ struct LpCoeff {
 // returns a Vec of (coefficients, error) pairs
 fn lp_coefficients(autocorrelated: Vec<f32>) -> Vec<LpCoeff> {
     match autocorrelated.len() {
-        0 => panic!("autocorrelated values cannot be empty"),
-        1 => {
-            // TODO - work out what to do when only one value
-            todo!()
-        }
+        0 | 1 => panic!("must have at least 2 autocorrelation values"),
         _ => {
             let k = autocorrelated[1] / autocorrelated[0];
             let mut lp_coefficients = vec![LpCoeff {
@@ -1900,8 +1896,7 @@ fn estimate_best_order(
         })
         .min_by(|(x, _, _), (y, _, _)| x.total_cmp(y))
         .and_then(|(_, order, coeffs)| Some((NonZero::new(order)?, coeffs)))
-        .unwrap()
-    // TODO - come up with a default if the coeffs are empty?
+        .expect("coefficient list cannot be empty")
 }
 
 fn write_residuals<W: BitWrite>(
