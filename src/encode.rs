@@ -1777,7 +1777,7 @@ impl LpcParameters {
             coefficients: coeffs
                 .into_iter()
                 .map(|lp_coeff| {
-                    let sum: f32 = error + lp_coeff * (1 << shift) as f32;
+                    let sum: f32 = lp_coeff.mul_add((1 << shift) as f32, error);
                     let qlp_coeff = (sum.round() as i32).clamp(min_coeff, max_coeff);
                     error = sum - (qlp_coeff as f32);
                     qlp_coeff
@@ -1890,8 +1890,10 @@ fn estimate_best_order(
                 u32::from(order) * (u32::from(bits_per_sample) + u32::from(precision));
             let bits_per_residual =
                 (f64::from(error) * error_scale).ln() / (2.0 * std::f64::consts::LN_2).max(0.0);
-            let subframe_bits = f64::from(header_bits)
-                + bits_per_residual * f64::from(sample_count - u16::from(order));
+            let subframe_bits = bits_per_residual.mul_add(
+                f64::from(sample_count - u16::from(order)),
+                f64::from(header_bits),
+            );
             (subframe_bits, order, coeffs)
         })
         .min_by(|(x, _, _), (y, _, _)| x.total_cmp(y))
