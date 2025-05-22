@@ -680,7 +680,7 @@ impl ToBitStream for ChannelAssignment {
             Self::Independent(Independent::Channels8) => 0b0111,
             Self::LeftSide => 0b1000,
             Self::SideRight => 0b1001,
-            Self::MidSide => 0b1011,
+            Self::MidSide => 0b1010,
         })?)
     }
 }

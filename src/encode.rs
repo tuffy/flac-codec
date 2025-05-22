@@ -1510,7 +1510,7 @@ fn encode_lpc_subframe<W: BitWrite>(
                 shift,
                 coefficients,
             },
-    } = LpcSubframeParameters::best(options, max_lpc_order, cache, channel);
+    } = LpcSubframeParameters::best(options, bits_per_sample, max_lpc_order, cache, channel);
 
     writer.build(&SubframeHeader {
         type_: SubframeHeaderType::Lpc { order },
@@ -1546,6 +1546,7 @@ struct LpcSubframeParameters<'w, 'r> {
 impl<'w, 'r> LpcSubframeParameters<'w, 'r> {
     fn best(
         options: &EncodingOptions,
+        bits_per_sample: SignedBitCount<32>,
         max_lpc_order: NonZero<u8>,
         LpcCache {
             residuals,
@@ -1554,7 +1555,14 @@ impl<'w, 'r> LpcSubframeParameters<'w, 'r> {
         }: &'r mut LpcCache,
         channel: &'w [i32],
     ) -> Self {
-        let parameters = LpcParameters::best(options, max_lpc_order, window, windowed, channel);
+        let parameters = LpcParameters::best(
+            options,
+            bits_per_sample,
+            max_lpc_order,
+            window,
+            windowed,
+            channel,
+        );
 
         let (warm_up, residuals) = Self::encode_residuals(&parameters, channel, residuals);
 
@@ -1650,6 +1658,7 @@ fn test_residual_encoding_2() {
     assert_eq!(residuals, &expected_residuals);
 }
 
+#[derive(Debug)]
 struct LpcParameters {
     order: NonZero<u8>,
     precision: SignedBitCount<15>,
@@ -1669,6 +1678,7 @@ struct LpcParameters {
 impl LpcParameters {
     fn best(
         options: &EncodingOptions,
+        bits_per_sample: SignedBitCount<32>,
         max_lpc_order: NonZero<u8>,
         window: &mut Vec<f32>,
         windowed: &mut Vec<f32>,
@@ -1676,19 +1686,57 @@ impl LpcParameters {
     ) -> Self {
         debug_assert!(!channel.is_empty());
 
-        let lp_coeffs = lp_coefficients(autocorrelate(
-            options.window.apply(window, windowed, channel),
-            max_lpc_order,
-        ));
+        // TODO - work out how to find best precision
+        let precision = SignedBitCount::new::<12>();
 
-        // TODO - estimate best LPC order to use
-        // TODO - quantize floating point coefficients to integers
+        let (order, lp_coeffs) = estimate_best_order(
+            bits_per_sample,
+            precision,
+            channel
+                .len()
+                .try_into()
+                .expect("excessive samples for subframe"),
+            lp_coefficients(autocorrelate(
+                options.window.apply(window, windowed, channel),
+                max_lpc_order,
+            )),
+        );
+
+        Self::quantize(order, lp_coeffs, precision)
+    }
+
+    fn quantize(order: NonZero<u8>, coeffs: Vec<f32>, precision: SignedBitCount<15>) -> Self {
+        debug_assert!(coeffs.len() == usize::from(order.get()));
+
+        let max_coeff = (1 << (u32::from(precision) - 1)) - 1;
+        let min_coeff = -(1 << (u32::from(precision) - 1));
+
+        let l = coeffs
+            .iter()
+            .map(|c| c.abs())
+            .max_by(|x, y| x.total_cmp(y))
+            .unwrap();
+
+        let shift: u32 = ((u32::from(precision) - 1) as i32 - (l.log2().floor() as i32) - 1)
+            .clamp(0, (1 << 4) - 1)
+            .try_into()
+            .unwrap();
+
+        let mut error = 0.0;
 
         Self {
-            order: NonZero::new(2).unwrap(),
-            precision: SignedBitCount::new::<7>(),
-            shift: 5,
-            coefficients: vec![59, -30],
+            order,
+            precision,
+            shift,
+            coefficients: coeffs
+                .into_iter()
+                .map(|lp_coeff| {
+                    let sum: f32 = error + lp_coeff * (1 << shift) as f32;
+                    let qlp_coeff = (sum.round() as i32).clamp(min_coeff, max_coeff);
+                    error = sum - (qlp_coeff as f32);
+                    qlp_coeff
+                })
+                .collect(),
         }
     }
 }
@@ -1780,6 +1828,34 @@ fn lp_coefficients(autocorrelated: Vec<f32>) -> Vec<LpCoeff> {
             lp_coefficients
         }
     }
+}
+
+// returns (order, coeffs) pair
+fn estimate_best_order(
+    bits_per_sample: SignedBitCount<32>,
+    precision: SignedBitCount<15>,
+    sample_count: u16,
+    coeffs: Vec<LpCoeff>,
+) -> (NonZero<u8>, Vec<f32>) {
+    let error_scale = std::f64::consts::LN_2.powi(2) / (sample_count * 2) as f64;
+
+    coeffs
+        .into_iter()
+        .take_while(|coeffs| coeffs.error > 0.0)
+        .zip(1..)
+        .map(|(LpCoeff { coeffs, error }, order)| {
+            let header_bits =
+                u32::from(order) * (u32::from(bits_per_sample) + u32::from(precision));
+            let bits_per_residual =
+                (f64::from(error) * error_scale).ln() / (2.0 * std::f64::consts::LN_2).max(0.0);
+            let subframe_bits = f64::from(header_bits)
+                + bits_per_residual * f64::from(sample_count - u16::from(order));
+            (subframe_bits, order, coeffs)
+        })
+        .min_by(|(x, _, _), (y, _, _)| x.total_cmp(y))
+        .and_then(|(_, order, coeffs)| Some((NonZero::new(order)?, coeffs)))
+        .unwrap()
+    // TODO - come up with a default if the coeffs are empty?
 }
 
 fn write_residuals<W: BitWrite>(
