@@ -546,19 +546,37 @@ impl EncodingOptions {
     /// For subset streams, this must be less than or equal
     /// to 4608 if the sample rate is less than or equal to 48 kHz -
     /// or less than or equal to 16384 for higher sample rates.
-    pub fn block_size(self, block_size: u16) -> Self {
-        // TODO - enforce block size restrictions
-        Self { block_size, ..self }
+    pub fn block_size(self, block_size: u16) -> Result<Self, OptionsError> {
+        match block_size {
+            0..16 => Err(OptionsError::InvalidBlockSize),
+            16.. => Ok(Self { block_size, ..self }),
+        }
+    }
+
+    /// Sets new maximum LPC order
+    ///
+    /// The maximum value is 32.  A value of `None` means that
+    /// no LPC subframes will be encoded.
+    pub fn max_lpc_order(self, max_lpc_order: Option<NonZero<u8>>) -> Result<Self, OptionsError> {
+        match max_lpc_order {
+            Some(o) if o.get() <= 32 => Err(OptionsError::InvalidLpcOrder),
+            _ => Ok(Self {
+                max_lpc_order,
+                ..self
+            }),
+        }
     }
 
     /// Sets maximum residual partion order.
     ///
     /// Must be between 0 and 15, inclusive.
-    pub fn max_partition_order(self, max_partition_order: u32) -> Self {
-        assert!(max_partition_order <= 15, "max partition order too high");
-        Self {
-            max_partition_order,
-            ..self
+    pub fn max_partition_order(self, max_partition_order: u32) -> Result<Self, OptionsError> {
+        match max_partition_order {
+            0..=15 => Ok(Self {
+                max_partition_order,
+                ..self
+            }),
+            16.. => Err(OptionsError::InvalidMaxPartitions),
         }
     }
 
@@ -567,6 +585,11 @@ impl EncodingOptions {
     /// The default is `true`.
     pub fn mid_side(self, mid_side: bool) -> Self {
         Self { mid_side, ..self }
+    }
+
+    /// The windowing function to use for input samples
+    pub fn window(self, window: Window) -> Self {
+        Self { window, ..self }
     }
 
     /// Adds new [`crate::metadata::Padding`] block to metadata
@@ -742,7 +765,30 @@ impl EncodingOptions {
     }
 }
 
-/// The method the input signal should be windowed
+/// An error when specifying encoding options
+#[derive(Debug)]
+pub enum OptionsError {
+    /// Selected block size is too small
+    InvalidBlockSize,
+    /// Maximum LPC order is too large
+    InvalidLpcOrder,
+    /// Maximum residual partitions is too large
+    InvalidMaxPartitions,
+}
+
+impl std::error::Error for OptionsError {}
+
+impl std::fmt::Display for OptionsError {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            Self::InvalidBlockSize => "block size must be >= 16".fmt(f),
+            Self::InvalidLpcOrder => "maximum LPC order must be <= 32".fmt(f),
+            Self::InvalidMaxPartitions => "max partition order must be <= 15".fmt(f),
+        }
+    }
+}
+
+/// The method to use for windowing the input signal
 #[derive(Copy, Clone, Debug)]
 pub enum Window {
     /// Basic rectangular window
