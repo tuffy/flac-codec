@@ -1397,7 +1397,7 @@ fn encode_subframe<'c>(
     )?;
 
     let best = match options.max_lpc_order {
-        Some(max_lpc_order) => {
+        Some(max_lpc_order) if channel.len() > usize::from(max_lpc_order.get()) => {
             lpc_output.clear();
 
             encode_lpc_subframe(
@@ -1415,7 +1415,7 @@ fn encode_subframe<'c>(
                 .min_by_key(|c| c.written())
                 .unwrap()
         }
-        None => fixed_output,
+        _ => fixed_output,
     };
 
     let verbatim_len = channel.len() as u32 * u32::from(bits_per_sample);
@@ -1730,7 +1730,7 @@ impl LpcParameters {
         windowed: &mut Vec<f32>,
         channel: &[i32],
     ) -> Self {
-        debug_assert!(!channel.is_empty());
+        debug_assert!(channel.len() > usize::from(max_lpc_order.get()));
 
         // TODO - work out how to find best precision
         let precision = SignedBitCount::new::<12>();
