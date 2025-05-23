@@ -793,14 +793,52 @@ impl std::fmt::Display for OptionsError {
 pub enum Window {
     /// Basic rectangular window
     Rectangle,
+    /// Hann window
+    Hann,
+    /// Tukey window
+    Tukey(f32),
 }
 
-// TODO - add more, better windowing options
+// TODO - add more windowing options
 
 impl Window {
     fn generate(&self, window: &mut [f32]) {
+        use std::f32::consts::PI;
+
         match self {
             Self::Rectangle => window.fill(1.0),
+            Self::Hann => {
+                let np = window.len() as f32 - 1.0;
+                window.iter_mut().zip(0..).for_each(|(w, n)| {
+                    *w = 0.5 - 0.5 * (2.0 * PI * n as f32 / np).cos();
+                });
+            }
+            Self::Tukey(p) => match p {
+                ..=0.0 => {
+                    window.fill(1.0);
+                }
+                1.0.. => {
+                    Self::Hann.generate(window);
+                }
+                0.0..1.0 => {
+                    window.fill(1.0);
+
+                    if let Some(np) = ((p / 2.0 * window.len() as f32) as usize).checked_sub(1) {
+                        if let Ok([first, last]) =
+                            window.get_disjoint_mut([0..np, window.len() - np..window.len()])
+                        {
+                            for ((x, y), n) in first.iter_mut().zip(last.iter_mut().rev()).zip(0..)
+                            {
+                                *x = 0.5 - 0.5 * (PI * n as f32 / np as f32).cos();
+                                *y = *x;
+                            }
+                        }
+                    }
+                }
+                _ => {
+                    Self::Tukey(0.5).generate(window);
+                }
+            },
         }
     }
 
@@ -825,7 +863,7 @@ impl Window {
 
 impl Default for Window {
     fn default() -> Self {
-        Self::Rectangle
+        Self::Tukey(0.5)
     }
 }
 
