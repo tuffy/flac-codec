@@ -821,17 +821,27 @@ impl Window {
                     Self::Hann.generate(window);
                 }
                 0.0..1.0 => {
-                    window.fill(1.0);
-
-                    if let Some(np) = ((p / 2.0 * window.len() as f32) as usize).checked_sub(1) {
-                        if let Ok([first, last]) =
-                            window.get_disjoint_mut([0..np, window.len() - np..window.len()])
-                        {
-                            for ((x, y), n) in first.iter_mut().zip(last.iter_mut().rev()).zip(0..)
-                            {
-                                *x = 0.5 - 0.5 * (PI * n as f32 / np as f32).cos();
-                                *y = *x;
+                    match ((p / 2.0 * window.len() as f32) as usize).checked_sub(1) {
+                        Some(np) => match window.get_disjoint_mut([
+                            0..np,
+                            np..window.len() - np,
+                            window.len() - np..window.len(),
+                        ]) {
+                            Ok([first, mid, last]) => {
+                                for ((x, y), n) in
+                                    first.iter_mut().zip(last.iter_mut().rev()).zip(0..)
+                                {
+                                    *x = 0.5 - 0.5 * (PI * n as f32 / np as f32).cos();
+                                    *y = *x;
+                                }
+                                mid.fill(1.0);
                             }
+                            Err(_) => {
+                                window.fill(1.0);
+                            }
+                        },
+                        None => {
+                            window.fill(1.0);
                         }
                     }
                 }
