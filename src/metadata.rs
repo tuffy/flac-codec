@@ -29,12 +29,18 @@ pub struct BlockHeader {
 }
 
 /// A type of FLAC metadata block
-pub trait MetadataBlock: ToBitStream<Error: Into<Error>> {
+pub trait MetadataBlock: ToBitStream<Error: Into<Error>> + Into<Block> {
     /// The metadata block's type
     const TYPE: BlockType;
 
     /// Whether the block can occur multiple times in a file
     const MULTIPLE: bool;
+
+    /// If block is our type, return reference
+    fn try_from_block(block: &Block) -> Option<&Self>;
+
+    /// If block is our type, return exclusive reference
+    fn try_from_block_mut(block: &mut Block) -> Option<&mut Self>;
 }
 
 impl BlockHeader {
@@ -744,6 +750,21 @@ pub enum Block {
     Picture(Picture),
 }
 
+impl Block {
+    /// Our block type
+    pub fn block_type(&self) -> BlockType {
+        match self {
+            Self::Streaminfo(_) => BlockType::Streaminfo,
+            Self::Padding(_) => BlockType::Padding,
+            Self::Application(_) => BlockType::Application,
+            Self::SeekTable(_) => BlockType::SeekTable,
+            Self::VorbisComment(_) => BlockType::VorbisComment,
+            Self::Cuesheet(_) => BlockType::Cuesheet,
+            Self::Picture(_) => BlockType::Picture,
+        }
+    }
+}
+
 impl AsBlockRef for Block {
     fn as_block_ref(&self) -> BlockRef<'_> {
         match self {
@@ -916,47 +937,6 @@ impl ToBitStreamUsing for BlockRef<'_> {
     }
 }
 
-/// Any possible FLAC metadata block set
-///
-/// Certain metadata blocks may occur multiple times
-/// within a FLAC metadata block list, while others
-/// may only occur once.  This enforces that restriction
-/// at the type level.
-#[derive(Clone, Debug)]
-pub enum BlockSet {
-    /// STREAMINFO may only occur once
-    Streaminfo(Streaminfo),
-    /// PADDING may occur multiple times
-    Padding(Vec<Padding>),
-    /// APPLICATION may occur multiple times
-    Application(Vec<Application>),
-    /// SEEKTABLE may only occur once
-    SeekTable(SeekTable),
-    /// VORBIS_COMMENT may only occur once
-    VorbisComment(VorbisComment),
-    /// CUESHEET may occur multiple times
-    Cuesheet(Vec<Cuesheet>),
-    /// PICTURE may occur multiple times
-    Picture(Vec<Picture>),
-}
-
-impl BlockSet {
-    /// Iterates over all blocks in set
-    pub fn iter(&self) -> Box<dyn Iterator<Item = BlockRef<'_>> + '_> {
-        use std::iter::once;
-
-        match self {
-            Self::Streaminfo(s) => Box::new(once(BlockRef::Streaminfo(s))),
-            Self::Padding(p) => Box::new(p.iter().map(BlockRef::Padding)),
-            Self::Application(a) => Box::new(a.iter().map(BlockRef::Application)),
-            Self::SeekTable(s) => Box::new(once(BlockRef::SeekTable(s))),
-            Self::VorbisComment(v) => Box::new(once(BlockRef::VorbisComment(v))),
-            Self::Cuesheet(c) => Box::new(c.iter().map(BlockRef::Cuesheet)),
-            Self::Picture(p) => Box::new(p.iter().map(BlockRef::Picture)),
-        }
-    }
-}
-
 /// A STREAMINFO metadata block
 ///
 /// # Important
@@ -1018,6 +998,20 @@ impl Streaminfo {
 impl MetadataBlock for Streaminfo {
     const TYPE: BlockType = BlockType::Streaminfo;
     const MULTIPLE: bool = false;
+
+    fn try_from_block(block: &Block) -> Option<&Self> {
+        match block {
+            Block::Streaminfo(p) => Some(p),
+            _ => None,
+        }
+    }
+
+    fn try_from_block_mut(block: &mut Block) -> Option<&mut Self> {
+        match block {
+            Block::Streaminfo(p) => Some(p),
+            _ => None,
+        }
+    }
 }
 
 impl FromBitStream for Streaminfo {
@@ -1076,6 +1070,20 @@ pub struct Padding {
 impl MetadataBlock for Padding {
     const TYPE: BlockType = BlockType::Padding;
     const MULTIPLE: bool = true;
+
+    fn try_from_block(block: &Block) -> Option<&Self> {
+        match block {
+            Block::Padding(p) => Some(p),
+            _ => None,
+        }
+    }
+
+    fn try_from_block_mut(block: &mut Block) -> Option<&mut Self> {
+        match block {
+            Block::Padding(p) => Some(p),
+            _ => None,
+        }
+    }
 }
 
 impl FromBitStreamUsing for Padding {
@@ -1108,6 +1116,20 @@ pub struct Application {
 impl MetadataBlock for Application {
     const TYPE: BlockType = BlockType::Application;
     const MULTIPLE: bool = true;
+
+    fn try_from_block(block: &Block) -> Option<&Self> {
+        match block {
+            Block::Application(p) => Some(p),
+            _ => None,
+        }
+    }
+
+    fn try_from_block_mut(block: &mut Block) -> Option<&mut Self> {
+        match block {
+            Block::Application(p) => Some(p),
+            _ => None,
+        }
+    }
 }
 
 impl FromBitStreamUsing for Application {
@@ -1147,6 +1169,20 @@ pub struct SeekTable {
 impl MetadataBlock for SeekTable {
     const TYPE: BlockType = BlockType::SeekTable;
     const MULTIPLE: bool = false;
+
+    fn try_from_block(block: &Block) -> Option<&Self> {
+        match block {
+            Block::SeekTable(p) => Some(p),
+            _ => None,
+        }
+    }
+
+    fn try_from_block_mut(block: &mut Block) -> Option<&mut Self> {
+        match block {
+            Block::SeekTable(p) => Some(p),
+            _ => None,
+        }
+    }
 }
 
 impl FromBitStreamUsing for SeekTable {
@@ -1358,6 +1394,20 @@ impl VorbisComment {
 impl MetadataBlock for VorbisComment {
     const TYPE: BlockType = BlockType::VorbisComment;
     const MULTIPLE: bool = false;
+
+    fn try_from_block(block: &Block) -> Option<&Self> {
+        match block {
+            Block::VorbisComment(p) => Some(p),
+            _ => None,
+        }
+    }
+
+    fn try_from_block_mut(block: &mut Block) -> Option<&mut Self> {
+        match block {
+            Block::VorbisComment(p) => Some(p),
+            _ => None,
+        }
+    }
 }
 
 impl FromBitStream for VorbisComment {
@@ -1419,6 +1469,20 @@ pub struct Cuesheet {
 impl MetadataBlock for Cuesheet {
     const TYPE: BlockType = BlockType::Cuesheet;
     const MULTIPLE: bool = true;
+
+    fn try_from_block(block: &Block) -> Option<&Self> {
+        match block {
+            Block::Cuesheet(p) => Some(p),
+            _ => None,
+        }
+    }
+
+    fn try_from_block_mut(block: &mut Block) -> Option<&mut Self> {
+        match block {
+            Block::Cuesheet(p) => Some(p),
+            _ => None,
+        }
+    }
 }
 
 impl FromBitStream for Cuesheet {
@@ -1676,6 +1740,20 @@ pub struct Picture {
 impl MetadataBlock for Picture {
     const TYPE: BlockType = BlockType::Picture;
     const MULTIPLE: bool = true;
+
+    fn try_from_block(block: &Block) -> Option<&Self> {
+        match block {
+            Block::Picture(p) => Some(p),
+            _ => None,
+        }
+    }
+
+    fn try_from_block_mut(block: &mut Block) -> Option<&mut Self> {
+        match block {
+            Block::Picture(p) => Some(p),
+            _ => None,
+        }
+    }
 }
 
 impl Picture {

@@ -10,15 +10,14 @@
 
 use crate::audio::Frame;
 use crate::metadata::{
-    Application, BlockSet, BlockSize, BlockType, Cuesheet, MetadataBlock, Picture, SeekPoint,
-    Streaminfo, VorbisComment, write_blocks,
+    Application, Block, BlockSize, Cuesheet, MetadataBlock, Picture, SeekPoint, Streaminfo,
+    VorbisComment, write_blocks,
 };
 use crate::stream::{ChannelAssignment, FrameNumber, Independent, SampleRate};
 use crate::{Counter, Error};
 use arrayvec::ArrayVec;
 use bitstream_io::{BigEndian, BitRecorder, BitWrite, BitWriter, SignedBitCount};
-use std::collections::btree_map::Entry;
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::VecDeque;
 use std::num::NonZero;
 
 const MAX_CHANNELS: usize = 8;
@@ -506,13 +505,66 @@ fn update_md5<W: std::io::Write + std::io::Seek>(
     }
 }
 
+#[derive(Clone, Debug, Default)]
+struct BlockSet {
+    blocks: Vec<Block>,
+}
+
+impl BlockSet {
+    fn blocks(&self) -> impl Iterator<Item = &Block> {
+        self.blocks.iter()
+    }
+
+    fn insert<B: MetadataBlock>(&mut self, block: B) {
+        if B::MULTIPLE {
+            self.blocks.retain(|b| b.block_type() != B::TYPE);
+        }
+
+        self.blocks.insert(
+            self.blocks
+                .binary_search_by(|probe| probe.block_type().cmp(&B::TYPE))
+                .unwrap_or_else(|idx| idx),
+            block.into(),
+        );
+    }
+
+    fn get_mut<B: MetadataBlock>(&mut self) -> Option<&mut B> {
+        self.blocks
+            .binary_search_by(|probe| probe.block_type().cmp(&B::TYPE))
+            .ok()
+            .and_then(|idx| self.blocks.get_mut(idx))
+            .and_then(|block| B::try_from_block_mut(block))
+    }
+
+    fn get_mut_or_default<B: MetadataBlock + Default>(&mut self) -> &mut B {
+        match self
+            .blocks
+            .binary_search_by(|probe| probe.block_type().cmp(&B::TYPE))
+        {
+            Ok(idx) => B::try_from_block_mut(&mut self.blocks[idx]).unwrap(),
+            Err(idx) => {
+                self.blocks.insert(idx, B::default().into());
+                B::try_from_block_mut(&mut self.blocks[idx]).unwrap()
+            }
+        }
+    }
+}
+
+#[derive(Copy, Clone, Debug)]
+enum SeektableStyle {
+    // Don't generate seektable
+    None,
+    // Generate seekpoint every nth seconds
+    Seconds(NonZero<u8>),
+}
+
 /// FLAC encoding options
 #[derive(Clone, Debug)]
 pub struct EncodingOptions {
     block_size: u16,
     max_partition_order: u32,
     mid_side: bool,
-    metadata: BTreeMap<BlockType, BlockSet>,
+    metadata: BlockSet,
     seektable_style: SeektableStyle,
     max_lpc_order: Option<NonZero<u8>>,
     window: Window,
@@ -524,20 +576,12 @@ impl Default for EncodingOptions {
             block_size: 4096,
             mid_side: true,
             max_partition_order: 5,
-            metadata: BTreeMap::default(),
+            metadata: BlockSet::default(),
             seektable_style: SeektableStyle::Seconds(NonZero::new(10).unwrap()),
             max_lpc_order: NonZero::new(8),
             window: Window::default(),
         }
     }
-}
-
-#[derive(Copy, Clone, Debug)]
-enum SeektableStyle {
-    // Don't generate seektable
-    None,
-    // Generate seekpoint every nth seconds
-    Seconds(NonZero<u8>),
 }
 
 impl EncodingOptions {
@@ -604,23 +648,7 @@ impl EncodingOptions {
     pub fn padding<B: Into<BlockSize>>(mut self, size: B) -> Self {
         use crate::metadata::Padding;
 
-        match self.metadata.entry(Padding::TYPE) {
-            Entry::Occupied(o) => {
-                match o.into_mut() {
-                    BlockSet::Padding(v) => {
-                        v.push(Padding { size: size.into() });
-                    }
-                    _ => {
-                        // this shouldn't happen
-                        panic!("Padding blockset not associated with Padding type");
-                    }
-                }
-            }
-            Entry::Vacant(v) => {
-                v.insert(BlockSet::Padding(vec![Padding { size: size.into() }]));
-            }
-        }
-
+        self.metadata.insert(Padding { size: size.into() });
         self
     }
 
@@ -631,22 +659,9 @@ impl EncodingOptions {
     where
         S: std::fmt::Display,
     {
-        match self.metadata.entry(VorbisComment::TYPE) {
-            Entry::Occupied(o) => match o.into_mut() {
-                BlockSet::VorbisComment(c) => {
-                    c.append_field(field, value);
-                }
-                _ => {
-                    panic!("VorbisComment blockset not associated with VorbisComment type")
-                }
-            },
-            Entry::Vacant(v) => {
-                let mut comment = VorbisComment::default();
-                comment.append_field(field, value);
-                v.insert(BlockSet::VorbisComment(comment));
-            }
-        }
-
+        self.metadata
+            .get_mut_or_default::<VorbisComment>()
+            .append_field(field, value);
         self
     }
 
@@ -654,15 +669,7 @@ impl EncodingOptions {
     ///
     /// This may be more convenient when adding many fields at once.
     pub fn comment(mut self, comment: VorbisComment) -> Self {
-        match self.metadata.entry(VorbisComment::TYPE) {
-            Entry::Occupied(o) => {
-                *o.into_mut() = BlockSet::VorbisComment(comment);
-            }
-            Entry::Vacant(v) => {
-                v.insert(BlockSet::VorbisComment(comment));
-            }
-        }
-
+        self.metadata.insert(comment);
         self
     }
 
@@ -671,23 +678,7 @@ impl EncodingOptions {
     /// Files may contain multiple [`crate::metadata::Picture`] blocks,
     /// and this adds a new block each time it is used.
     pub fn picture(mut self, picture: Picture) -> Self {
-        match self.metadata.entry(Picture::TYPE) {
-            Entry::Occupied(o) => {
-                match o.into_mut() {
-                    BlockSet::Picture(v) => {
-                        v.push(picture);
-                    }
-                    _ => {
-                        // this shouldn't happen
-                        panic!("Picture blockset not associated with Picture type");
-                    }
-                }
-            }
-            Entry::Vacant(v) => {
-                v.insert(BlockSet::Picture(vec![picture]));
-            }
-        }
-
+        self.metadata.insert(picture);
         self
     }
 
@@ -699,23 +690,7 @@ impl EncodingOptions {
     /// In practice, CD images almost always use only a single
     /// cue sheet.
     pub fn cuesheet(mut self, cuesheet: Cuesheet) -> Self {
-        match self.metadata.entry(Cuesheet::TYPE) {
-            Entry::Occupied(o) => {
-                match o.into_mut() {
-                    BlockSet::Cuesheet(v) => {
-                        v.push(cuesheet);
-                    }
-                    _ => {
-                        // this shouldn't happen
-                        panic!("Cuesheet blockset not associated with Cuesheet type");
-                    }
-                }
-            }
-            Entry::Vacant(v) => {
-                v.insert(BlockSet::Cuesheet(vec![cuesheet]));
-            }
-        }
-
+        self.metadata.insert(cuesheet);
         self
     }
 
@@ -724,23 +699,7 @@ impl EncodingOptions {
     /// Files may contain multiple [`crate::metadata::Application`] blocks,
     /// and this adds a new block each time it is used.
     pub fn application(mut self, application: Application) -> Self {
-        match self.metadata.entry(Application::TYPE) {
-            Entry::Occupied(o) => {
-                match o.into_mut() {
-                    BlockSet::Application(v) => {
-                        v.push(application);
-                    }
-                    _ => {
-                        // this shouldn't happen
-                        panic!("Application blockset not associated with Application type");
-                    }
-                }
-            }
-            Entry::Vacant(v) => {
-                v.insert(BlockSet::Application(vec![application]));
-            }
-        }
-
+        self.metadata.insert(application);
         self
     }
 
@@ -1001,24 +960,21 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
 
                     let samples = u64::from(sample_rate * u32::from(seconds.get()));
 
-                    options.metadata.insert(
-                        BlockType::SeekTable,
-                        BlockSet::SeekTable(SeekTable {
-                            points: vec![
-                                SeekPoint {
-                                    sample_offset: None,
-                                    byte_offset: 0,
-                                    frame_samples: 0,
-                                };
-                                total_samples
-                                    .get()
-                                    .div_ceil(samples)
-                                    .min(total_samples.get().div_ceil(options.block_size.into()))
-                                    .try_into()
-                                    .unwrap()
-                            ],
-                        }),
-                    );
+                    options.metadata.insert(SeekTable {
+                        points: vec![
+                            SeekPoint {
+                                sample_offset: None,
+                                byte_offset: 0,
+                                frame_samples: 0,
+                            };
+                            total_samples
+                                .get()
+                                .div_ceil(samples)
+                                .min(total_samples.get().div_ceil(options.block_size.into()))
+                                .try_into()
+                                .unwrap()
+                        ],
+                    });
                 }
             }
             SeektableStyle::None => { /* do nothing */ }
@@ -1026,7 +982,7 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
 
         write_blocks(
             std::iter::once(streaminfo.as_block_ref())
-                .chain(options.metadata.values().flat_map(|v| v.iter())),
+                .chain(options.metadata.blocks().map(|b| b.as_block_ref())),
             writer.by_ref(),
         )?;
 
@@ -1091,7 +1047,7 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
 
     fn finalize_inner(&mut self) -> Result<(), Error> {
         if !self.finalized {
-            use crate::metadata::{AsBlockRef, BlockSet, SeekTable};
+            use crate::metadata::{AsBlockRef, SeekTable};
 
             self.finalized = true;
 
@@ -1100,9 +1056,7 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
                 SeektableStyle::Seconds(seconds) => {
                     // a placeholder SEEKTABLE should always be present
                     // if we've specified a seektable style other than None
-                    if let Some(BlockSet::SeekTable(SeekTable { points })) =
-                        self.options.metadata.get_mut(&BlockType::SeekTable)
-                    {
+                    if let Some(SeekTable { points }) = self.options.metadata.get_mut() {
                         let samples =
                             u64::from(u32::from(self.sample_rate) * u32::from(seconds.get()));
 
@@ -1151,7 +1105,7 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
 
             write_blocks(
                 std::iter::once(self.streaminfo.as_block_ref())
-                    .chain(self.options.metadata.values().flat_map(|v| v.iter())),
+                    .chain(self.options.metadata.blocks().map(|b| b.as_block_ref())),
                 writer.by_ref(),
             )
         } else {
