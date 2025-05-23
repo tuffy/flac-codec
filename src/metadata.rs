@@ -32,6 +32,9 @@ pub struct BlockHeader {
 pub trait MetadataBlock: ToBitStream<Error: Into<Error>> {
     /// The metadata block's type
     const TYPE: BlockType;
+
+    /// Whether the block can occur multiple times in a file
+    const MULTIPLE: bool;
 }
 
 impl BlockHeader {
@@ -142,19 +145,19 @@ impl ToBitStream for BlockHeader {
 #[derive(Copy, Clone, Debug, Ord, PartialOrd, Eq, PartialEq)]
 pub enum BlockType {
     /// The STREAMINFO block
-    Streaminfo,
+    Streaminfo = 0,
     /// The PADDING block
-    Padding,
+    Padding = 1,
     /// The APPLICATION block
-    Application,
+    Application = 2,
     /// The SEEKTABLE block
-    SeekTable,
+    SeekTable = 3,
     /// The VORBIS_COMMENT block
-    VorbisComment,
+    VorbisComment = 4,
     /// The CUESHEET block
-    Cuesheet,
+    Cuesheet = 5,
     /// The PICTURE block
-    Picture,
+    Picture = 6,
 }
 
 impl FromBitStream for BlockType {
@@ -1014,6 +1017,7 @@ impl Streaminfo {
 
 impl MetadataBlock for Streaminfo {
     const TYPE: BlockType = BlockType::Streaminfo;
+    const MULTIPLE: bool = false;
 }
 
 impl FromBitStream for Streaminfo {
@@ -1071,6 +1075,7 @@ pub struct Padding {
 
 impl MetadataBlock for Padding {
     const TYPE: BlockType = BlockType::Padding;
+    const MULTIPLE: bool = true;
 }
 
 impl FromBitStreamUsing for Padding {
@@ -1102,6 +1107,7 @@ pub struct Application {
 
 impl MetadataBlock for Application {
     const TYPE: BlockType = BlockType::Application;
+    const MULTIPLE: bool = true;
 }
 
 impl FromBitStreamUsing for Application {
@@ -1140,6 +1146,7 @@ pub struct SeekTable {
 
 impl MetadataBlock for SeekTable {
     const TYPE: BlockType = BlockType::SeekTable;
+    const MULTIPLE: bool = false;
 }
 
 impl FromBitStreamUsing for SeekTable {
@@ -1350,6 +1357,7 @@ impl VorbisComment {
 
 impl MetadataBlock for VorbisComment {
     const TYPE: BlockType = BlockType::VorbisComment;
+    const MULTIPLE: bool = false;
 }
 
 impl FromBitStream for VorbisComment {
@@ -1410,6 +1418,7 @@ pub struct Cuesheet {
 
 impl MetadataBlock for Cuesheet {
     const TYPE: BlockType = BlockType::Cuesheet;
+    const MULTIPLE: bool = true;
 }
 
 impl FromBitStream for Cuesheet {
@@ -1666,6 +1675,7 @@ pub struct Picture {
 
 impl MetadataBlock for Picture {
     const TYPE: BlockType = BlockType::Picture;
+    const MULTIPLE: bool = true;
 }
 
 impl Picture {
