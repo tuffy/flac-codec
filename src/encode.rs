@@ -808,9 +808,10 @@ impl Window {
         match self {
             Self::Rectangle => window.fill(1.0),
             Self::Hann => {
-                let np = window.len() as f32 - 1.0;
-                window.iter_mut().zip(0..).for_each(|(w, n)| {
-                    *w = 0.5 - 0.5 * (2.0 * PI * n as f32 / np).cos();
+                let np =
+                    f32::from(u16::try_from(window.len()).expect("window size too large")) - 1.0;
+                window.iter_mut().zip(0u16..).for_each(|(w, n)| {
+                    *w = 0.5 - 0.5 * (2.0 * PI * f32::from(n) / np).cos();
                 });
             }
             Self::Tukey(p) => match p {
@@ -828,10 +829,13 @@ impl Window {
                             window.len() - np..window.len(),
                         ]) {
                             Ok([first, mid, last]) => {
+                                // u16 is maximum block size
+                                let np = u16::try_from(np).expect("window size too large");
+
                                 for ((x, y), n) in
-                                    first.iter_mut().zip(last.iter_mut().rev()).zip(0..)
+                                    first.iter_mut().zip(last.iter_mut().rev()).zip(0u16..)
                                 {
-                                    *x = 0.5 - 0.5 * (PI * n as f32 / np as f32).cos();
+                                    *x = 0.5 - 0.5 * (PI * f32::from(n) / f32::from(np)).cos();
                                     *y = *x;
                                 }
                                 mid.fill(1.0);
