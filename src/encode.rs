@@ -802,20 +802,23 @@ pub enum Window {
 // TODO - add more windowing options
 
 impl Window {
-    fn generate(&self, window: &mut [f32]) {
-        use std::f32::consts::PI;
+    fn generate(&self, window: &mut [f64]) {
+        use std::f64::consts::PI;
 
         match self {
             Self::Rectangle => window.fill(1.0),
             Self::Hann => {
+                // verified output against reference implementation
+
                 let np =
-                    f32::from(u16::try_from(window.len()).expect("window size too large")) - 1.0;
+                    f64::from(u16::try_from(window.len()).expect("window size too large")) - 1.0;
 
                 window.iter_mut().zip(0u16..).for_each(|(w, n)| {
-                    *w = 0.5 - 0.5 * (2.0 * PI * f32::from(n) / np).cos();
+                    *w = 0.5 - 0.5 * (2.0 * PI * f64::from(n) / np).cos();
                 });
             }
             Self::Tukey(p) => match p {
+                // verified output against reference implementation
                 ..=0.0 => {
                     window.fill(1.0);
                 }
@@ -823,7 +826,7 @@ impl Window {
                     Self::Hann.generate(window);
                 }
                 0.0..1.0 => {
-                    match ((p / 2.0 * window.len() as f32) as usize).checked_sub(1) {
+                    match ((f64::from(*p) / 2.0 * window.len() as f64) as usize).checked_sub(1) {
                         Some(np) => match window.get_disjoint_mut([
                             0..np,
                             np..window.len() - np,
@@ -836,7 +839,7 @@ impl Window {
                                 for ((x, y), n) in
                                     first.iter_mut().zip(last.iter_mut().rev()).zip(0u16..)
                                 {
-                                    *x = 0.5 - 0.5 * (PI * f32::from(n) / f32::from(np)).cos();
+                                    *x = 0.5 - 0.5 * (PI * f64::from(n) / f64::from(np)).cos();
                                     *y = *x;
                                 }
                                 mid.fill(1.0);
@@ -859,10 +862,10 @@ impl Window {
 
     fn apply<'w>(
         &self,
-        window: &mut Vec<f32>,
-        cache: &'w mut Vec<f32>,
+        window: &mut Vec<f64>,
+        cache: &'w mut Vec<f64>,
         samples: &[i32],
-    ) -> &'w [f32] {
+    ) -> &'w [f64] {
         if window.len() != samples.len() {
             // need to re-generate window to fit samples
             window.resize(samples.len(), 0.0);
@@ -871,7 +874,7 @@ impl Window {
 
         // window signal into cache and return cached slice
         cache.clear();
-        cache.extend(samples.iter().zip(window).map(|(s, w)| *s as f32 * *w));
+        cache.extend(samples.iter().zip(window).map(|(s, w)| f64::from(*s) * *w));
         cache.as_slice()
     }
 }
@@ -922,8 +925,8 @@ struct FixedCache {
 
 #[derive(Default)]
 struct LpcCache {
-    window: Vec<f32>,
-    windowed: Vec<f32>,
+    window: Vec<f64>,
+    windowed: Vec<f64>,
     residuals: Vec<i32>,
 }
 
@@ -1779,8 +1782,8 @@ impl LpcParameters {
         options: &EncodingOptions,
         bits_per_sample: SignedBitCount<32>,
         max_lpc_order: NonZero<u8>,
-        window: &mut Vec<f32>,
-        windowed: &mut Vec<f32>,
+        window: &mut Vec<f64>,
+        windowed: &mut Vec<f64>,
         channel: &[i32],
     ) -> Self {
         debug_assert!(channel.len() > usize::from(max_lpc_order.get()));
@@ -1812,7 +1815,9 @@ impl LpcParameters {
         Self::quantize(order, lp_coeffs, precision)
     }
 
-    fn quantize(order: NonZero<u8>, coeffs: Vec<f32>, precision: SignedBitCount<15>) -> Self {
+    fn quantize(order: NonZero<u8>, coeffs: Vec<f64>, precision: SignedBitCount<15>) -> Self {
+        // verified output against reference implementation
+
         debug_assert!(coeffs.len() == usize::from(order.get()));
 
         let max_coeff = (1 << (u32::from(precision) - 1)) - 1;
@@ -1838,9 +1843,9 @@ impl LpcParameters {
             coefficients: coeffs
                 .into_iter()
                 .map(|lp_coeff| {
-                    let sum: f32 = lp_coeff.mul_add((1 << shift) as f32, error);
+                    let sum: f64 = lp_coeff.mul_add((1 << shift) as f64, error);
                     let qlp_coeff = (sum.round() as i32).clamp(min_coeff, max_coeff);
-                    error = sum - (qlp_coeff as f32);
+                    error = sum - (qlp_coeff as f64);
                     qlp_coeff
                 })
                 .collect(),
@@ -1848,7 +1853,9 @@ impl LpcParameters {
     }
 }
 
-fn autocorrelate(windowed: &[f32], max_lpc_order: NonZero<u8>) -> Vec<f32> {
+fn autocorrelate(windowed: &[f64], max_lpc_order: NonZero<u8>) -> Vec<f64> {
+    // verified output against reference implementation
+
     let mut tail = windowed;
     let mut autocorrelated = Vec::with_capacity(max_lpc_order.get().into());
 
@@ -1887,12 +1894,14 @@ fn test_autocorrelation() {
 
 #[derive(Debug)]
 struct LpCoeff {
-    coeffs: Vec<f32>,
-    error: f32,
+    coeffs: Vec<f64>,
+    error: f64,
 }
 
 // returns a Vec of (coefficients, error) pairs
-fn lp_coefficients(autocorrelated: Vec<f32>) -> Vec<LpCoeff> {
+fn lp_coefficients(autocorrelated: Vec<f64>) -> Vec<LpCoeff> {
+    // verified output against reference implementation
+
     match autocorrelated.len() {
         0 | 1 => panic!("must have at least 2 autocorrelation values"),
         _ => {
@@ -1912,7 +1921,7 @@ fn lp_coefficients(autocorrelated: Vec<f32>) -> Vec<LpCoeff> {
                             .rev()
                             .zip(coeffs)
                             .map(|(x, y)| x * y)
-                            .sum::<f32>();
+                            .sum::<f64>();
 
                     let k = q / error;
 
@@ -1939,8 +1948,12 @@ fn estimate_best_order(
     precision: SignedBitCount<15>,
     sample_count: u16,
     coeffs: Vec<LpCoeff>,
-) -> (NonZero<u8>, Vec<f32>) {
-    let error_scale = std::f64::consts::LN_2.powi(2) / (sample_count * 2) as f64;
+) -> (NonZero<u8>, Vec<f64>) {
+    // verified output against reference implementation
+
+    debug_assert!(sample_count > 0);
+
+    let error_scale = 0.5 / f64::from(sample_count);
 
     coeffs
         .into_iter()
@@ -1951,10 +1964,10 @@ fn estimate_best_order(
                 u32::from(order) * (u32::from(bits_per_sample) + u32::from(precision));
             let bits_per_residual =
                 (f64::from(error) * error_scale).ln() / (2.0 * std::f64::consts::LN_2).max(0.0);
-            let subframe_bits = bits_per_residual.mul_add(
+            let subframe_bits = dbg!(bits_per_residual.mul_add(
                 f64::from(sample_count - u16::from(order)),
                 f64::from(header_bits),
-            );
+            ));
             (subframe_bits, order, coeffs)
         })
         .min_by(|(x, _, _), (y, _, _)| x.total_cmp(y))
