@@ -810,6 +810,7 @@ impl Window {
             Self::Hann => {
                 let np =
                     f32::from(u16::try_from(window.len()).expect("window size too large")) - 1.0;
+
                 window.iter_mut().zip(0u16..).for_each(|(w, n)| {
                     *w = 0.5 - 0.5 * (2.0 * PI * f32::from(n) / np).cos();
                 });
@@ -1784,8 +1785,16 @@ impl LpcParameters {
     ) -> Self {
         debug_assert!(channel.len() > usize::from(max_lpc_order.get()));
 
-        // TODO - work out how to find best precision
-        let precision = SignedBitCount::new::<12>();
+        let precision = match channel.len() {
+            0 => panic!("at least one sample required in channel"),
+            1..=192 => SignedBitCount::new::<7>(),
+            193..=384 => SignedBitCount::new::<8>(),
+            385..=576 => SignedBitCount::new::<9>(),
+            577..=1152 => SignedBitCount::new::<10>(),
+            1153..=2304 => SignedBitCount::new::<11>(),
+            2305..=4608 => SignedBitCount::new::<12>(),
+            4609.. => SignedBitCount::new::<13>(),
+        };
 
         let (order, lp_coeffs) = estimate_best_order(
             bits_per_sample,
