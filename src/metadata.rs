@@ -566,7 +566,7 @@ pub enum Save {
 /// blocks do not conform to the FLAC file specification.
 pub fn update_file<P, E>(
     path: P,
-    f: impl FnOnce(&mut Vec<Block>) -> Result<Save, E>,
+    f: impl FnOnce(&mut BlockList) -> Result<Save, E>,
 ) -> Result<(), E>
 where
     P: AsRef<Path>,
@@ -603,7 +603,7 @@ where
 pub fn update<F, N, E>(
     mut original: F,
     rebuilt: impl FnOnce() -> std::io::Result<N>,
-    f: impl FnOnce(&mut Vec<Block>) -> Result<Save, E>,
+    f: impl FnOnce(&mut BlockList) -> Result<Save, E>,
 ) -> Result<(), E>
 where
     F: std::io::Read + std::io::Seek + std::io::Write,
@@ -617,7 +617,7 @@ where
     fn rebuild_file<N, R>(
         rebuilt: impl FnOnce() -> std::io::Result<N>,
         mut r: R,
-        blocks: Vec<Block>,
+        blocks: BlockList,
     ) -> Result<(), Error>
     where
         N: std::io::Write,
@@ -625,7 +625,7 @@ where
     {
         // dump our new blocks and remaining FLAC data to temp file
         let mut tmp = Vec::new();
-        write_blocks(&blocks, &mut tmp)?;
+        write_blocks(blocks, &mut tmp)?;
         std::io::copy(&mut r, &mut tmp).map_err(Error::Io)?;
         drop(r);
 
@@ -636,18 +636,12 @@ where
     }
 
     /// Returns Ok if successful
-    fn grow_padding(blocks: &mut [Block], more_bytes: u64) -> Result<(), ()> {
+    fn grow_padding(blocks: &mut BlockList, more_bytes: u64) -> Result<(), ()> {
         // if a block set has more than one PADDING, we'll try the first
         // rather than attempt to grow each in turn
         //
         // this is the most common case
-        let padding = blocks
-            .iter_mut()
-            .find_map(|b| match b {
-                Block::Padding(p) => Some(p),
-                _ => None,
-            })
-            .ok_or(())?;
+        let padding = blocks.get_mut::<Padding>().ok_or(())?;
 
         padding.size = padding
             .size
@@ -658,18 +652,12 @@ where
     }
 
     /// Returns Ok if successful
-    fn shrink_padding(blocks: &mut [Block], fewer_bytes: u64) -> Result<(), ()> {
+    fn shrink_padding(blocks: &mut BlockList, fewer_bytes: u64) -> Result<(), ()> {
         // if a block set has more than one PADDING, we'll try the first
         // rather than attempt to grow each in turn
         //
         // this is the most common case
-        let padding = blocks
-            .iter_mut()
-            .find_map(|b| match b {
-                Block::Padding(p) => Some(p),
-                _ => None,
-            })
-            .ok_or(())?;
+        let padding = blocks.get_mut::<Padding>().ok_or(())?;
 
         padding.size = padding
             .size
@@ -681,7 +669,8 @@ where
 
     let mut reader = Counter::new(BufReader::new(&mut original));
 
-    let mut blocks = read_blocks(Read::by_ref(&mut reader)).collect::<Result<Vec<_>, _>>()?;
+    let mut blocks =
+        read_blocks(Read::by_ref(&mut reader)).collect::<Result<Result<BlockList, _>, _>>()??;
 
     let Counter {
         stream: reader,
@@ -694,7 +683,7 @@ where
 
     let new_size = {
         let mut new_size = Counter::new(sink());
-        write_blocks(&blocks, &mut new_size)?;
+        write_blocks(blocks.blocks(), &mut new_size)?;
         new_size.count
     };
 
@@ -705,7 +694,7 @@ where
             match grow_padding(&mut blocks, old_size - new_size) {
                 Ok(()) => {
                     original.rewind().map_err(Error::Io)?;
-                    write_blocks(&blocks, BufWriter::new(original))?
+                    write_blocks(blocks, BufWriter::new(original))?
                 }
                 Err(()) => rebuild_file(rebuilt, reader, blocks)?,
             }
@@ -714,7 +703,7 @@ where
         Ordering::Equal => {
             // blocks are the same size, so no need to adjust padding
             original.rewind().map_err(Error::Io)?;
-            Ok(write_blocks(&blocks, BufWriter::new(original))?)
+            Ok(write_blocks(blocks, BufWriter::new(original))?)
         }
         Ordering::Greater => {
             // blocks have grown in size, so try to shrink
@@ -722,7 +711,7 @@ where
             match shrink_padding(&mut blocks, new_size - old_size) {
                 Ok(()) => {
                     original.rewind().map_err(Error::Io)?;
-                    write_blocks(&blocks, BufWriter::new(original))?
+                    write_blocks(blocks.into_iter(), BufWriter::new(original))?
                 }
                 Err(()) => rebuild_file(rebuilt, reader, blocks)?,
             }
@@ -778,24 +767,6 @@ impl AsBlockRef for Block {
         }
     }
 }
-
-macro_rules! to_block {
-    ($t:ty, $b:ident) => {
-        impl From<$t> for Block {
-            fn from(b: $t) -> Self {
-                Self::$b(b)
-            }
-        }
-    };
-}
-
-to_block!(Streaminfo, Streaminfo);
-to_block!(Padding, Padding);
-to_block!(Application, Application);
-to_block!(SeekTable, SeekTable);
-to_block!(VorbisComment, VorbisComment);
-to_block!(Cuesheet, Cuesheet);
-to_block!(Picture, Picture);
 
 impl FromBitStreamWith<'_> for Block {
     type Context = BlockHeader;
@@ -875,24 +846,6 @@ impl AsBlockRef for BlockRef<'_> {
     }
 }
 
-macro_rules! as_block_ref {
-    ($t:ty, $b:ident) => {
-        impl AsBlockRef for $t {
-            fn as_block_ref(&self) -> BlockRef<'_> {
-                BlockRef::$b(self)
-            }
-        }
-    };
-}
-
-as_block_ref!(Streaminfo, Streaminfo);
-as_block_ref!(Padding, Padding);
-as_block_ref!(Application, Application);
-as_block_ref!(SeekTable, SeekTable);
-as_block_ref!(VorbisComment, VorbisComment);
-as_block_ref!(Cuesheet, Cuesheet);
-as_block_ref!(Picture, Picture);
-
 /// A trait for items which can make cheap [`BlockRef`] values.
 pub trait AsBlockRef {
     /// Returns fresh reference to ourself.
@@ -935,6 +888,69 @@ impl ToBitStreamUsing for BlockRef<'_> {
                 .and_then(|()| w.build(*picture)),
         }
     }
+}
+
+macro_rules! block {
+    ($t:ty, $v:ident, $m:literal) => {
+        impl MetadataBlock for $t {
+            const TYPE: BlockType = BlockType::$v;
+            const MULTIPLE: bool = $m;
+
+            fn try_from_block(block: &Block) -> Option<&Self> {
+                match block {
+                    Block::$v(p) => Some(p),
+                    _ => None,
+                }
+            }
+
+            fn try_from_block_mut(block: &mut Block) -> Option<&mut Self> {
+                match block {
+                    Block::$v(p) => Some(p),
+                    _ => None,
+                }
+            }
+        }
+
+        impl From<$t> for Block {
+            fn from(b: $t) -> Self {
+                Self::$v(b)
+            }
+        }
+
+        impl AsBlockRef for $t {
+            fn as_block_ref(&self) -> BlockRef<'_> {
+                BlockRef::$v(self)
+            }
+        }
+    };
+}
+
+macro_rules! optional_block {
+    ($t:ty, $v:ident) => {
+        impl OptionalMetadataBlock for $t {}
+
+        impl private::OptionalMetadataBlock for $t {
+            fn try_from_opt_block(block: &private::OptionalBlock) -> Option<&Self> {
+                match block {
+                    private::OptionalBlock::$v(comment) => Some(comment),
+                    _ => None,
+                }
+            }
+
+            fn try_from_opt_block_mut(block: &mut private::OptionalBlock) -> Option<&mut Self> {
+                match block {
+                    private::OptionalBlock::$v(comment) => Some(comment),
+                    _ => None,
+                }
+            }
+        }
+
+        impl From<$t> for private::OptionalBlock {
+            fn from(vorbis: $t) -> Self {
+                private::OptionalBlock::$v(vorbis)
+            }
+        }
+    };
 }
 
 /// A STREAMINFO metadata block
@@ -995,24 +1011,7 @@ impl Streaminfo {
     pub const MAX_TOTAL_SAMPLES: NonZero<u64> = NonZero::new((1 << 36) - 1).unwrap();
 }
 
-impl MetadataBlock for Streaminfo {
-    const TYPE: BlockType = BlockType::Streaminfo;
-    const MULTIPLE: bool = false;
-
-    fn try_from_block(block: &Block) -> Option<&Self> {
-        match block {
-            Block::Streaminfo(p) => Some(p),
-            _ => None,
-        }
-    }
-
-    fn try_from_block_mut(block: &mut Block) -> Option<&mut Self> {
-        match block {
-            Block::Streaminfo(p) => Some(p),
-            _ => None,
-        }
-    }
-}
+block!(Streaminfo, Streaminfo, false);
 
 impl FromBitStream for Streaminfo {
     type Error = std::io::Error;
@@ -1067,24 +1066,8 @@ pub struct Padding {
     pub size: BlockSize,
 }
 
-impl MetadataBlock for Padding {
-    const TYPE: BlockType = BlockType::Padding;
-    const MULTIPLE: bool = true;
-
-    fn try_from_block(block: &Block) -> Option<&Self> {
-        match block {
-            Block::Padding(p) => Some(p),
-            _ => None,
-        }
-    }
-
-    fn try_from_block_mut(block: &mut Block) -> Option<&mut Self> {
-        match block {
-            Block::Padding(p) => Some(p),
-            _ => None,
-        }
-    }
-}
+block!(Padding, Padding, true);
+optional_block!(Padding, Padding);
 
 impl FromBitStreamUsing for Padding {
     type Context = BlockSize;
@@ -1113,24 +1096,8 @@ pub struct Application {
     pub data: Vec<u8>,
 }
 
-impl MetadataBlock for Application {
-    const TYPE: BlockType = BlockType::Application;
-    const MULTIPLE: bool = true;
-
-    fn try_from_block(block: &Block) -> Option<&Self> {
-        match block {
-            Block::Application(p) => Some(p),
-            _ => None,
-        }
-    }
-
-    fn try_from_block_mut(block: &mut Block) -> Option<&mut Self> {
-        match block {
-            Block::Application(p) => Some(p),
-            _ => None,
-        }
-    }
-}
+block!(Application, Application, true);
+optional_block!(Application, Application);
 
 impl FromBitStreamUsing for Application {
     type Context = BlockSize;
@@ -1166,24 +1133,8 @@ pub struct SeekTable {
     pub points: Vec<SeekPoint>,
 }
 
-impl MetadataBlock for SeekTable {
-    const TYPE: BlockType = BlockType::SeekTable;
-    const MULTIPLE: bool = false;
-
-    fn try_from_block(block: &Block) -> Option<&Self> {
-        match block {
-            Block::SeekTable(p) => Some(p),
-            _ => None,
-        }
-    }
-
-    fn try_from_block_mut(block: &mut Block) -> Option<&mut Self> {
-        match block {
-            Block::SeekTable(p) => Some(p),
-            _ => None,
-        }
-    }
-}
+block!(SeekTable, SeekTable, false);
+optional_block!(SeekTable, SeekTable);
 
 impl FromBitStreamUsing for SeekTable {
     type Context = BlockSize;
@@ -1391,24 +1342,8 @@ impl VorbisComment {
     }
 }
 
-impl MetadataBlock for VorbisComment {
-    const TYPE: BlockType = BlockType::VorbisComment;
-    const MULTIPLE: bool = false;
-
-    fn try_from_block(block: &Block) -> Option<&Self> {
-        match block {
-            Block::VorbisComment(p) => Some(p),
-            _ => None,
-        }
-    }
-
-    fn try_from_block_mut(block: &mut Block) -> Option<&mut Self> {
-        match block {
-            Block::VorbisComment(p) => Some(p),
-            _ => None,
-        }
-    }
-}
+block!(VorbisComment, VorbisComment, false);
+optional_block!(VorbisComment, VorbisComment);
 
 impl FromBitStream for VorbisComment {
     type Error = Error;
@@ -1466,24 +1401,8 @@ pub struct Cuesheet {
     pub tracks: Vec<CuesheetTrack>,
 }
 
-impl MetadataBlock for Cuesheet {
-    const TYPE: BlockType = BlockType::Cuesheet;
-    const MULTIPLE: bool = true;
-
-    fn try_from_block(block: &Block) -> Option<&Self> {
-        match block {
-            Block::Cuesheet(p) => Some(p),
-            _ => None,
-        }
-    }
-
-    fn try_from_block_mut(block: &mut Block) -> Option<&mut Self> {
-        match block {
-            Block::Cuesheet(p) => Some(p),
-            _ => None,
-        }
-    }
-}
+block!(Cuesheet, Cuesheet, true);
+optional_block!(Cuesheet, Cuesheet);
 
 impl FromBitStream for Cuesheet {
     type Error = Error;
@@ -1737,24 +1656,8 @@ pub struct Picture {
     pub data: Vec<u8>,
 }
 
-impl MetadataBlock for Picture {
-    const TYPE: BlockType = BlockType::Picture;
-    const MULTIPLE: bool = true;
-
-    fn try_from_block(block: &Block) -> Option<&Self> {
-        match block {
-            Block::Picture(p) => Some(p),
-            _ => None,
-        }
-    }
-
-    fn try_from_block_mut(block: &mut Block) -> Option<&mut Self> {
-        match block {
-            Block::Picture(p) => Some(p),
-            _ => None,
-        }
-    }
-}
+block!(Picture, Picture, true);
+optional_block!(Picture, Picture);
 
 impl Picture {
     /// Attempt to create a new PICTURE block from raw image data
@@ -2116,5 +2019,195 @@ impl PictureMetrics {
             colors_used: 1 << (r.read::<3, u32>()? + 1),
             color_depth: 0,
         })
+    }
+}
+
+/// A collection of metadata blocks
+#[derive(Clone, Debug)]
+pub struct BlockList {
+    streaminfo: Streaminfo,
+    blocks: Vec<private::OptionalBlock>,
+}
+
+impl BlockList {
+    /// Creates `BlockList` from initial STREAMINFO
+    pub fn new(streaminfo: Streaminfo) -> Self {
+        Self {
+            streaminfo,
+            blocks: Vec::default(),
+        }
+    }
+
+    /// Returns reference to our STREAMINFO metadata block
+    pub fn streaminfo(&self) -> &Streaminfo {
+        &self.streaminfo
+    }
+
+    /// Returns exclusive reference to our STREAMINFO metadata block
+    ///
+    /// Care must be taken when modifying the STREAMINFO, or
+    /// one's file could be rendered unplayable.
+    pub fn streaminfo_mut(&mut self) -> &mut Streaminfo {
+        &mut self.streaminfo
+    }
+
+    /// Iterates over all the metadata blocks
+    pub fn blocks(&self) -> impl Iterator<Item = BlockRef<'_>> {
+        std::iter::once(self.streaminfo.as_block_ref())
+            .chain(self.blocks.iter().map(|b| b.as_block_ref()))
+    }
+
+    /// Inserts new optional metadata block
+    ///
+    /// If the block may only occur once in the stream
+    /// (such as the SEEKTABLE), any existing block of
+    /// the same type is removed first.
+    pub fn insert<B: OptionalMetadataBlock>(&mut self, block: B) {
+        if !B::MULTIPLE {
+            self.blocks.retain(|b| b.block_type() != B::TYPE);
+        }
+        self.blocks.push(block.into());
+    }
+
+    /// Gets reference to metadata block, if present
+    pub fn get<B: OptionalMetadataBlock>(&self) -> Option<&B> {
+        self.blocks.iter().find_map(B::try_from_opt_block)
+    }
+
+    /// Gets mutable reference to metadata block, if present
+    pub fn get_mut<B: OptionalMetadataBlock>(&mut self) -> Option<&mut B> {
+        self.blocks.iter_mut().find_map(B::try_from_opt_block_mut)
+    }
+
+    /// Updates Vorbis comment, creating a new block if necessary
+    pub fn update_comment(&mut self, f: impl FnOnce(&mut VorbisComment)) {
+        match self.get_mut() {
+            Some(comment) => f(comment),
+            None => {
+                let mut c = VorbisComment::default();
+                f(&mut c);
+                self.blocks.push(c.into());
+            }
+        }
+    }
+}
+
+impl FromIterator<Block> for Result<BlockList, Error> {
+    fn from_iter<T: IntoIterator<Item = Block>>(iter: T) -> Self {
+        let mut iter = iter.into_iter();
+
+        let mut list = match iter.next() {
+            Some(Block::Streaminfo(streaminfo)) => BlockList::new(streaminfo),
+            Some(_) | None => return Err(Error::MissingStreaminfo),
+        };
+
+        for block in iter {
+            match block {
+                Block::Streaminfo(_) => return Err(Error::MultipleStreaminfo),
+                Block::Padding(p) => list.insert(p),
+                Block::Application(p) => list.insert(p),
+                Block::SeekTable(p) => list.insert(p),
+                Block::VorbisComment(p) => list.insert(p),
+                Block::Cuesheet(p) => list.insert(p),
+                Block::Picture(p) => list.insert(p),
+            }
+        }
+
+        Ok(list)
+    }
+}
+
+impl IntoIterator for BlockList {
+    type Item = Block;
+    type IntoIter = Box<dyn Iterator<Item = Block>>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        Box::new(
+            std::iter::once(self.streaminfo.into())
+                .chain(self.blocks.into_iter().map(|b| b.into())),
+        )
+    }
+}
+
+/// A type of FLAC metadata block which is not required
+///
+/// The STREAMINFO block is required.  All others are optional.
+pub trait OptionalMetadataBlock: MetadataBlock + private::OptionalMetadataBlock {}
+
+mod private {
+    use super::{
+        Application, AsBlockRef, Block, BlockRef, BlockType, Cuesheet, Padding, Picture, SeekTable,
+        Streaminfo, VorbisComment,
+    };
+
+    #[derive(Clone, Debug)]
+    pub enum OptionalBlock {
+        Padding(Padding),
+        Application(Application),
+        SeekTable(SeekTable),
+        VorbisComment(VorbisComment),
+        Cuesheet(Cuesheet),
+        Picture(Picture),
+    }
+
+    impl OptionalBlock {
+        pub fn block_type(&self) -> BlockType {
+            match self {
+                Self::Padding(_) => BlockType::Padding,
+                Self::Application(_) => BlockType::Application,
+                Self::SeekTable(_) => BlockType::SeekTable,
+                Self::VorbisComment(_) => BlockType::VorbisComment,
+                Self::Cuesheet(_) => BlockType::Cuesheet,
+                Self::Picture(_) => BlockType::Picture,
+            }
+        }
+    }
+
+    impl From<OptionalBlock> for Block {
+        fn from(block: OptionalBlock) -> Block {
+            match block {
+                OptionalBlock::Padding(p) => Block::Padding(p),
+                OptionalBlock::Application(a) => Block::Application(a),
+                OptionalBlock::SeekTable(s) => Block::SeekTable(s),
+                OptionalBlock::VorbisComment(v) => Block::VorbisComment(v),
+                OptionalBlock::Cuesheet(c) => Block::Cuesheet(c),
+                OptionalBlock::Picture(p) => Block::Picture(p),
+            }
+        }
+    }
+
+    impl TryFrom<Block> for OptionalBlock {
+        type Error = Streaminfo;
+
+        fn try_from(block: Block) -> Result<Self, Streaminfo> {
+            match block {
+                Block::Streaminfo(s) => Err(s),
+                Block::Padding(p) => Ok(OptionalBlock::Padding(p)),
+                Block::Application(a) => Ok(OptionalBlock::Application(a)),
+                Block::SeekTable(s) => Ok(OptionalBlock::SeekTable(s)),
+                Block::VorbisComment(v) => Ok(OptionalBlock::VorbisComment(v)),
+                Block::Cuesheet(c) => Ok(OptionalBlock::Cuesheet(c)),
+                Block::Picture(p) => Ok(OptionalBlock::Picture(p)),
+            }
+        }
+    }
+
+    impl AsBlockRef for OptionalBlock {
+        fn as_block_ref(&self) -> BlockRef<'_> {
+            match self {
+                Self::Padding(p) => BlockRef::Padding(p),
+                Self::Application(a) => BlockRef::Application(a),
+                Self::SeekTable(s) => BlockRef::SeekTable(s),
+                Self::VorbisComment(v) => BlockRef::VorbisComment(v),
+                Self::Cuesheet(v) => BlockRef::Cuesheet(v),
+                Self::Picture(p) => BlockRef::Picture(p),
+            }
+        }
+    }
+
+    pub trait OptionalMetadataBlock: Into<OptionalBlock> {
+        fn try_from_opt_block(block: &OptionalBlock) -> Option<&Self>;
+
+        fn try_from_opt_block_mut(block: &mut OptionalBlock) -> Option<&mut Self>;
     }
 }

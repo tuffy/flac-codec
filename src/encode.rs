@@ -10,8 +10,8 @@
 
 use crate::audio::Frame;
 use crate::metadata::{
-    Application, Block, BlockSize, Cuesheet, MetadataBlock, Picture, SeekPoint, Streaminfo,
-    VorbisComment, write_blocks,
+    Application, BlockList, BlockSize, Cuesheet, Picture, SeekPoint, Streaminfo, VorbisComment,
+    write_blocks,
 };
 use crate::stream::{ChannelAssignment, FrameNumber, Independent, SampleRate};
 use crate::{Counter, Error};
@@ -505,51 +505,6 @@ fn update_md5<W: std::io::Write + std::io::Seek>(
     }
 }
 
-#[derive(Clone, Debug, Default)]
-struct BlockSet {
-    blocks: Vec<Block>,
-}
-
-impl BlockSet {
-    fn blocks(&self) -> impl Iterator<Item = &Block> {
-        self.blocks.iter()
-    }
-
-    fn insert<B: MetadataBlock>(&mut self, block: B) {
-        if B::MULTIPLE {
-            self.blocks.retain(|b| b.block_type() != B::TYPE);
-        }
-
-        self.blocks.insert(
-            self.blocks
-                .binary_search_by(|probe| probe.block_type().cmp(&B::TYPE))
-                .unwrap_or_else(|idx| idx),
-            block.into(),
-        );
-    }
-
-    fn get_mut<B: MetadataBlock>(&mut self) -> Option<&mut B> {
-        self.blocks
-            .binary_search_by(|probe| probe.block_type().cmp(&B::TYPE))
-            .ok()
-            .and_then(|idx| self.blocks.get_mut(idx))
-            .and_then(|block| B::try_from_block_mut(block))
-    }
-
-    fn get_mut_or_default<B: MetadataBlock + Default>(&mut self) -> &mut B {
-        match self
-            .blocks
-            .binary_search_by(|probe| probe.block_type().cmp(&B::TYPE))
-        {
-            Ok(idx) => B::try_from_block_mut(&mut self.blocks[idx]).unwrap(),
-            Err(idx) => {
-                self.blocks.insert(idx, B::default().into());
-                B::try_from_block_mut(&mut self.blocks[idx]).unwrap()
-            }
-        }
-    }
-}
-
 #[derive(Copy, Clone, Debug)]
 enum SeektableStyle {
     // Don't generate seektable
@@ -564,7 +519,7 @@ pub struct EncodingOptions {
     block_size: u16,
     max_partition_order: u32,
     mid_side: bool,
-    metadata: BlockSet,
+    metadata: BlockList,
     seektable_style: SeektableStyle,
     max_lpc_order: Option<NonZero<u8>>,
     window: Window,
@@ -576,7 +531,19 @@ impl Default for EncodingOptions {
             block_size: 4096,
             mid_side: true,
             max_partition_order: 5,
-            metadata: BlockSet::default(),
+            // a dummy placeholder value
+            // since we can't know the stream parameters yet
+            metadata: BlockList::new(Streaminfo {
+                minimum_block_size: 0,
+                maximum_block_size: 0,
+                minimum_frame_size: None,
+                maximum_frame_size: None,
+                sample_rate: 0,
+                channels: NonZero::new(1).unwrap(),
+                bits_per_sample: SignedBitCount::new::<4>(),
+                total_samples: None,
+                md5: None,
+            }),
             seektable_style: SeektableStyle::Seconds(NonZero::new(10).unwrap()),
             max_lpc_order: NonZero::new(8),
             window: Window::default(),
@@ -660,8 +627,7 @@ impl EncodingOptions {
         S: std::fmt::Display,
     {
         self.metadata
-            .get_mut_or_default::<VorbisComment>()
-            .append_field(field, value);
+            .update_comment(|vc| vc.append_field(field, value));
         self
     }
 
@@ -745,6 +711,15 @@ impl std::fmt::Display for OptionsError {
             Self::InvalidMaxPartitions => "max partition order must be <= 15".fmt(f),
         }
     }
+}
+
+/// A cut-down version of EncodingOptions without the metadata blocks
+struct Options {
+    max_partition_order: u32,
+    mid_side: bool,
+    seektable_style: SeektableStyle,
+    max_lpc_order: Option<NonZero<u8>>,
+    window: Window,
 }
 
 /// The method to use for windowing the input signal
@@ -894,11 +869,11 @@ struct Encoder<W: std::io::Write + std::io::Seek> {
     // the writer we're outputting to
     writer: Counter<W>,
     // various encoding options
-    options: EncodingOptions,
+    options: Options,
     // various encoder caches
     caches: EncodingCaches,
-    // our STREAMINFO block information
-    streaminfo: Streaminfo,
+    // our metadata blocks
+    blocks: BlockList,
     // our stream's sample rate
     sample_rate: SampleRate<u32>,
     // the current frame number
@@ -918,15 +893,15 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
 
     fn new(
         mut writer: W,
-        mut options: EncodingOptions,
+        options: EncodingOptions,
         sample_rate: u32,
         bits_per_sample: impl TryInto<SignedBitCount<32>>,
         channels: NonZero<u8>,
         total_samples: Option<NonZero<u64>>,
     ) -> Result<Self, Error> {
-        use crate::metadata::AsBlockRef;
+        let mut blocks = options.metadata;
 
-        let streaminfo = Streaminfo {
+        *blocks.streaminfo_mut() = Streaminfo {
             minimum_block_size: options.block_size,
             maximum_block_size: options.block_size,
             minimum_frame_size: None,
@@ -960,7 +935,7 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
 
                     let samples = u64::from(sample_rate * u32::from(seconds.get()));
 
-                    options.metadata.insert(SeekTable {
+                    blocks.insert(SeekTable {
                         points: vec![
                             SeekPoint {
                                 sample_offset: None,
@@ -980,21 +955,24 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
             SeektableStyle::None => { /* do nothing */ }
         }
 
-        write_blocks(
-            std::iter::once(streaminfo.as_block_ref())
-                .chain(options.metadata.blocks().map(|b| b.as_block_ref())),
-            writer.by_ref(),
-        )?;
+        write_blocks(blocks.blocks(), writer.by_ref())?;
 
         Ok(Self {
             writer: Counter::new(writer),
-            options,
+            options: Options {
+                max_partition_order: options.max_partition_order,
+                mid_side: options.mid_side,
+                seektable_style: options.seektable_style,
+                max_lpc_order: options.max_lpc_order,
+                window: options.window,
+            },
             caches: EncodingCaches::default(),
-            sample_rate: streaminfo
+            sample_rate: blocks
+                .streaminfo()
                 .sample_rate
                 .try_into()
                 .expect("invalid sample rate"),
-            streaminfo,
+            blocks,
             frame_number: FrameNumber::default(),
             samples_written: 0,
             seekpoints: Vec::new(),
@@ -1028,7 +1006,7 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
 
         // update running total of samples written
         self.samples_written += frame.pcm_frames() as u64;
-        if let Some(total_samples) = self.streaminfo.total_samples {
+        if let Some(total_samples) = self.blocks.streaminfo().total_samples {
             if self.samples_written > total_samples.get() {
                 return Err(Error::ExcessiveTotalSamples);
             }
@@ -1038,7 +1016,7 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
             &self.options,
             &mut self.caches,
             &mut self.writer,
-            &mut self.streaminfo,
+            self.blocks.streaminfo_mut(),
             &mut self.frame_number,
             self.sample_rate,
             frame.channels().collect(),
@@ -1047,7 +1025,7 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
 
     fn finalize_inner(&mut self) -> Result<(), Error> {
         if !self.finalized {
-            use crate::metadata::{AsBlockRef, SeekTable};
+            use crate::metadata::SeekTable;
 
             self.finalized = true;
 
@@ -1056,7 +1034,7 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
                 SeektableStyle::Seconds(seconds) => {
                     // a placeholder SEEKTABLE should always be present
                     // if we've specified a seektable style other than None
-                    if let Some(SeekTable { points }) = self.options.metadata.get_mut() {
+                    if let Some(SeekTable { points }) = self.blocks.get_mut() {
                         let samples =
                             u64::from(u32::from(self.sample_rate) * u32::from(seconds.get()));
 
@@ -1081,7 +1059,7 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
                 SeektableStyle::None => { /* no seektable, so nothing to do */ }
             }
 
-            match &mut self.streaminfo.total_samples {
+            match &mut self.blocks.streaminfo_mut().total_samples {
                 Some(expected) => {
                     if expected.get() != self.samples_written {
                         return Err(Error::SampleCountMismatch);
@@ -1097,17 +1075,13 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
                 }
             }
 
-            self.streaminfo.md5 = Some(self.md5.clone().compute().0);
+            self.blocks.streaminfo_mut().md5 = Some(self.md5.clone().compute().0);
 
             let writer = self.writer.stream();
 
             writer.rewind()?;
 
-            write_blocks(
-                std::iter::once(self.streaminfo.as_block_ref())
-                    .chain(self.options.metadata.blocks().map(|b| b.as_block_ref())),
-                writer.by_ref(),
-            )
+            write_blocks(self.blocks.blocks(), writer.by_ref())
         } else {
             Ok(())
         }
@@ -1121,7 +1095,7 @@ impl<W: std::io::Write + std::io::Seek> Drop for Encoder<W> {
 }
 
 fn encode_frame<W>(
-    options: &EncodingOptions,
+    options: &Options,
     cache: &mut EncodingCaches,
     mut writer: W,
     streaminfo: &mut Streaminfo,
@@ -1238,7 +1212,7 @@ struct Correlated<'c> {
 }
 
 fn correlate_channels<'c>(
-    options: &EncodingOptions,
+    options: &Options,
     EncodingCaches {
         correlated:
             CorrelationCache {
@@ -1355,7 +1329,7 @@ fn correlate_channels<'c>(
 }
 
 fn encode_subframe<'c>(
-    options: &EncodingOptions,
+    options: &Options,
     ChannelCache {
         fixed: fixed_cache,
         fixed_output,
@@ -1478,7 +1452,7 @@ fn encode_verbatim_subframe<W: BitWrite>(
 }
 
 fn encode_fixed_subframe<W: BitWrite>(
-    options: &EncodingOptions,
+    options: &Options,
     FixedCache {
         fixed_buffers: buffers,
     }: &mut FixedCache,
@@ -1546,7 +1520,7 @@ fn encode_fixed_subframe<W: BitWrite>(
 }
 
 fn encode_lpc_subframe<W: BitWrite>(
-    options: &EncodingOptions,
+    options: &Options,
     max_lpc_order: NonZero<u8>,
     cache: &mut LpcCache,
     writer: &mut W,
@@ -1601,7 +1575,7 @@ struct LpcSubframeParameters<'w, 'r> {
 
 impl<'w, 'r> LpcSubframeParameters<'w, 'r> {
     fn best(
-        options: &EncodingOptions,
+        options: &Options,
         bits_per_sample: SignedBitCount<32>,
         max_lpc_order: NonZero<u8>,
         LpcCache {
@@ -1733,7 +1707,7 @@ struct LpcParameters {
 
 impl LpcParameters {
     fn best(
-        options: &EncodingOptions,
+        options: &Options,
         bits_per_sample: SignedBitCount<32>,
         max_lpc_order: NonZero<u8>,
         window: &mut Vec<f64>,
@@ -1930,7 +1904,7 @@ fn estimate_best_order(
 }
 
 fn write_residuals<W: BitWrite>(
-    options: &EncodingOptions,
+    options: &Options,
     writer: &mut W,
     predictor_order: usize,
     residuals: &[i32],
@@ -1997,7 +1971,7 @@ fn write_residuals<W: BitWrite>(
     }
 
     fn best_partitions<'r, const RICE_MAX: u32>(
-        options: &EncodingOptions,
+        options: &Options,
         block_size: usize,
         residuals: &'r [i32],
     ) -> ArrayVec<Partition<'r, RICE_MAX>, MAX_PARTITIONS> {
@@ -2021,7 +1995,7 @@ fn write_residuals<W: BitWrite>(
     }
 
     fn write_block<const RICE_MAX: u32, W: BitWrite>(
-        options: &EncodingOptions,
+        options: &Options,
         writer: &mut W,
         predictor_order: usize,
         residuals: &[i32],

@@ -10,7 +10,7 @@
 
 use crate::Error;
 use crate::audio::Frame;
-use crate::metadata::{Block, BlockRef, SeekTable, Streaminfo};
+use crate::metadata::{BlockList, BlockRef, SeekTable};
 use bitstream_io::{BitRead, SignedBitCount};
 use std::collections::VecDeque;
 use std::num::NonZero;
@@ -183,9 +183,10 @@ impl<R: std::io::Read + std::io::Seek, E: crate::byteorder::Endianness> std::io:
     fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
         use std::cmp::Ordering;
 
-        let bytes_per_pcm_frame: u64 = (u32::from(self.decoder.streaminfo.bits_per_sample)
-            .div_ceil(8)
-            * u32::from(self.decoder.streaminfo.channels.get()))
+        let streaminfo = self.decoder.blocks.streaminfo();
+
+        let bytes_per_pcm_frame: u64 = (u32::from(streaminfo.bits_per_sample).div_ceil(8)
+            * u32::from(streaminfo.channels.get()))
         .into();
 
         // the desired absolute position in the stream, in bytes
@@ -456,10 +457,8 @@ impl<R: std::io::Read + std::io::Seek> FlacSampleReader<R> {
 /// A FLAC decoder
 struct Decoder<R> {
     reader: R,
-    streaminfo: Streaminfo,
-    seektable: Option<SeekTable>,
-    // any other metadata blocks
-    blocks: Vec<Block>,
+    // all metadata blocks
+    blocks: BlockList,
     // the size of everything before the first frame, in bytes
     frames_start: u64,
     // the current sample, in channel-independent samples
@@ -480,81 +479,54 @@ impl<R: std::io::Read> Decoder<R> {
     /// the initial metadata.
     fn new(mut reader: R) -> Result<Self, Error> {
         use crate::Counter;
-        use crate::metadata::{Block, read_blocks};
+        use crate::metadata::read_blocks;
         use std::io::Read;
-
-        let mut streaminfo = None;
-        let mut seektable = None;
-        let mut blocks = Vec::new();
 
         let mut counter = Counter::new(reader.by_ref());
 
-        for block in read_blocks(counter.by_ref()) {
-            match block? {
-                Block::Streaminfo(block) => {
-                    streaminfo = Some(block);
-                }
-                Block::SeekTable(block) => {
-                    seektable = Some(block);
-                }
-                block => {
-                    blocks.push(block);
-                }
-            }
-        }
+        let blocks = read_blocks(counter.by_ref()).collect::<Result<Result<_, _>, _>>()??;
 
-        match streaminfo {
-            Some(streaminfo) => Ok(Self {
-                frames_start: counter.count,
-                reader,
-                current_sample: 0,
-                streaminfo,
-                seektable,
-                blocks,
-                buf: Frame::default(),
-            }),
-            // read_blocks should check for this already
-            // but we'll add a second check to be certain
-            None => Err(Error::MissingStreaminfo),
-        }
+        Ok(Self {
+            frames_start: counter.count,
+            reader,
+            current_sample: 0,
+            blocks,
+            buf: Frame::default(),
+        })
     }
 
     /// Returns channel count
     ///
     /// From 1 to 8
     fn channel_count(&self) -> NonZero<u8> {
-        self.streaminfo.channels
+        self.blocks.streaminfo().channels
     }
 
     /// Returns sample rate, in Hz
     fn sample_rate(&self) -> u32 {
-        self.streaminfo.sample_rate
+        self.blocks.streaminfo().sample_rate
     }
 
     /// Returns decoder's bits-per-sample
     ///
     /// From 1 to 32
     fn bits_per_sample(&self) -> SignedBitCount<32> {
-        self.streaminfo.bits_per_sample
+        self.blocks.streaminfo().bits_per_sample
     }
 
     /// Returns total number of channel-independent samples, if known
     fn total_samples(&self) -> Option<NonZero<u64>> {
-        self.streaminfo.total_samples
+        self.blocks.streaminfo().total_samples
     }
 
     /// Returns MD5 of entire stream, if known
     fn md5(&self) -> Option<&[u8; 16]> {
-        self.streaminfo.md5.as_ref()
+        self.blocks.streaminfo().md5.as_ref()
     }
 
     /// Returns iterator over all metadata blocks
     fn metadata(&self) -> impl Iterator<Item = BlockRef<'_>> {
-        use crate::metadata::AsBlockRef;
-
-        std::iter::once(self.streaminfo.as_block_ref())
-            .chain(self.seektable.as_ref().map(|s| s.as_block_ref()))
-            .chain(self.blocks.iter().map(|b| b.as_block_ref()))
+        self.blocks.blocks()
     }
 
     /// Returns decoded frame, if any.
@@ -571,23 +543,24 @@ impl<R: std::io::Read> Decoder<R> {
         let mut crc16_reader: CrcReader<_, Crc16> = CrcReader::new(self.reader.by_ref());
 
         let header = match self
-            .streaminfo
+            .blocks
+            .streaminfo()
             .total_samples
             .map(|total| total.get() - self.current_sample)
         {
             Some(0) => return Ok(None),
-            Some(remaining) => FrameHeader::read(crc16_reader.by_ref(), &self.streaminfo)
+            Some(remaining) => FrameHeader::read(crc16_reader.by_ref(), self.blocks.streaminfo())
                 .and_then(|header| {
-                    // only the last block in a stream may contain <= 14 samples
-                    let block_size = u16::from(header.block_size);
-                    (u64::from(block_size) == remaining || block_size > 14)
-                        .then_some(header)
-                        .ok_or(Error::ShortBlock)
-                })?,
+                // only the last block in a stream may contain <= 14 samples
+                let block_size = u16::from(header.block_size);
+                (u64::from(block_size) == remaining || block_size > 14)
+                    .then_some(header)
+                    .ok_or(Error::ShortBlock)
+            })?,
             // if total number of remaining samples isn't known,
             // treat an EOF error as the end of stream
             // (this is an uncommon case)
-            None => match FrameHeader::read(crc16_reader.by_ref(), &self.streaminfo) {
+            None => match FrameHeader::read(crc16_reader.by_ref(), self.blocks.streaminfo()) {
                 Ok(header) => header,
                 Err(Error::Io(err)) if err.kind() == std::io::ErrorKind::UnexpectedEof => {
                     return Ok(None);
@@ -705,7 +678,7 @@ impl<R: std::io::Seek> Decoder<R> {
         use crate::metadata::SeekPoint;
         use std::io::SeekFrom;
 
-        match &self.seektable {
+        match self.blocks.get() {
             Some(SeekTable { points: seektable }) => {
                 match seektable
                     .iter()
