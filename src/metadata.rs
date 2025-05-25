@@ -18,6 +18,12 @@ use std::num::NonZero;
 use std::path::Path;
 
 /// A FLAC metadata block header
+///
+/// | Bits | Field | Meaning |
+/// |-----:|------:|---------|
+/// | 1    | `last` | final metadata block in file |
+/// | 7    | `block_type` | type of block |
+/// | 24   | `size` | block size, in bytes |
 #[derive(Debug)]
 pub struct BlockHeader {
     /// Whether we are the final block
@@ -721,6 +727,8 @@ where
 }
 
 /// Any possible FLAC metadata block
+///
+/// Each block consists of a [`BlockHeader`] followed by the block's contents.
 #[derive(Debug, Clone)]
 pub enum Block {
     /// The STREAMINFO block
@@ -955,6 +963,22 @@ macro_rules! optional_block {
 
 /// A STREAMINFO metadata block
 ///
+/// This block must *always* be present in a FLAC file,
+/// must *always* be the first metadata block in the stream,
+/// and must not be present more than once.
+///
+/// | Bits | Field | Meaning |
+/// |-----:|------:|---------|
+/// | 16   | `minimum_block_size` | minimum block size (in samples) in the stream
+/// | 16   | `maximum_block_size` | maximum block size (in samples) in the stream
+/// | 24   | `minimum_frame_size` | minimum frame size (in bytes) in the stream
+/// | 24   | `maximum_frame_size` | maximum frame size (in bytes) in the stream
+/// | 20   | `sample_rate` | stream's sample rate, in Hz
+/// | 3    | `channels` | stream's channel count (+1)
+/// | 5    | `bits_per_sample` | stream's bits-per-sample (+1)
+/// | 36   | `total_samples` | stream's total channel-independent samples
+/// | 16×8 | `md5` | decoded stream's MD5 sum hash
+///
 /// # Important
 ///
 /// Changing any of these values to something that differs
@@ -1060,6 +1084,10 @@ impl ToBitStream for Streaminfo {
 }
 
 /// A PADDING metadata block
+///
+/// This block may occur multiple times in a FLAC file.
+///
+/// The contents of a PADDING block are all 0 bytes.
 #[derive(Debug, Clone)]
 pub struct Padding {
     /// The size of the padding, in bytes
@@ -1088,6 +1116,14 @@ impl ToBitStream for Padding {
 }
 
 /// An APPLICATION metadata block
+///
+/// This block may occur multiple times in a FLAC file.
+///
+/// | Bits | Field | Meaning |
+/// |-----:|------:|---------|
+/// | 32   | `id` | registered application ID
+/// | rest of block | `data` | application-specific data
+///
 #[derive(Debug, Clone)]
 pub struct Application {
     /// A registered application ID
@@ -1127,6 +1163,10 @@ impl ToBitStream for Application {
 }
 
 /// A SEEKTABLE metadata block
+///
+/// This block may occur only once in a FLAC file.
+///
+/// Its seekpoints occupy the entire block.
 #[derive(Debug, Clone)]
 pub struct SeekTable {
     /// The seek table's individual seek points
@@ -1200,6 +1240,13 @@ impl ToBitStream for SeekTable {
 }
 
 /// An individual SEEKTABLE seek point
+///
+/// | Bits | Field | Meaning |
+/// |-----:|------:|---------|
+/// | 64   | `sample_offset` | sample number of first sample in target frame
+/// | 64   | `byte_offset` | offset, in bytes, from first frame to target frame's header
+/// | 16   | `frame_samples` | number of samples in target frame
+///
 #[derive(Debug, Clone)]
 pub struct SeekPoint {
     /// The sample number of the first sample in the target frame,
@@ -1235,6 +1282,25 @@ impl ToBitStream for SeekPoint {
 }
 
 /// A VORBIS_COMMENT metadata block
+///
+/// This block may occur only once in a FLAC file.
+///
+/// # Byte Order
+///
+/// Unlike the rest of a FLAC file, the Vorbis comment's
+/// length fields are stored in little-endian byte order.
+///
+/// | Bits | Field | Meaning |
+/// |-----:|------:|---------|
+/// | 32   | vendor string len | length of vendor string, in bytes
+/// | `vendor string len`×8 | `vendor_string` | vendor string, in UTF-8
+/// | 32   | field count | number of vendor string fields
+/// | 32   | field₀ len | length of field₀, in bytes
+/// | `field₀ len`×8 | `fields₀` | first field value, in UTF-8
+/// | 32   | field₁ len | length of field₁, in bytes
+/// | `field₁ len`×8 | `fields₁` | second field value, in UTF-8
+/// | | | ⋮
+///
 #[derive(Debug, Clone)]
 pub struct VorbisComment {
     /// The vendor string
@@ -1389,6 +1455,17 @@ impl ToBitStream for VorbisComment {
 }
 
 /// A CUESHEET metadata block
+///
+/// This block may occur multiple times in a FLAC file.
+///
+/// | Bits  | Field | Meaning |
+/// |------:|------:|---------|
+/// | 128×8 | `catalog_number` | media catalog number, in ASCII
+/// | 64 | `lead_in_samples` | number of lead-in samples
+/// | 1  | `is_cdda` | whether cuesheet corresponds to CD-DA
+/// | 7+258×8 | padding | all 0 bits
+/// | | `tracks` | cuesheet track₀, cuesheet track₁, …
+///
 #[derive(Debug, Clone)]
 pub struct Cuesheet {
     /// Media catalog number in ASCII printable characters
@@ -1440,6 +1517,18 @@ impl ToBitStream for Cuesheet {
 }
 
 /// An individual CUESHEET track
+///
+/// | Bits | Field | Meaning |
+/// |-----:|------:|---------|
+/// | 64   | `offset` | offset of first index point, in samples
+/// | 8    | `number` | track number
+/// | 12×8 | `isrc`   | track ISRC
+/// | 1    | `non_audio`| whether track is non-audio
+/// | 1    | `pre_emphasis` | whether track has pre-emphasis
+/// | 6+13×8 | padding | all 0 bits
+/// | 8    | point count | number index points
+/// |      | | index point₀, index point₁, …
+///
 #[derive(Debug, Clone)]
 pub struct CuesheetTrack {
     /// Offset of the first index point in samples,
@@ -1595,6 +1684,13 @@ impl TrackType {
 }
 
 /// An individual CUESHEET track index point
+///
+/// | Bits | Field | Meaning |
+/// |-----:|------:|---------|
+/// | 64   | `offset` | index point offset, in samples
+/// | 8    | `number` | index point number
+/// | 3×8  | padding  | all 0 bits
+///
 #[derive(Debug, Clone)]
 pub struct CuesheetIndexPoint {
     /// Offset in samples
@@ -1636,6 +1732,23 @@ impl ToBitStreamUsing for CuesheetIndexPoint {
 }
 
 /// A PICTURE metadata block
+///
+/// This block may occur multiple times in a FLAC file.
+///
+/// | Bits | Field | Meaning |
+/// |-----:|------:|---------|
+/// | 32   | `picture_type` | picture type
+/// | 32   | media type len | media type length, in bytes
+/// | `media type len`×8 | `media_type` | picture's MIME type
+/// | 32   | description len | description length, in bytes
+/// | `description len`×8 | `description` | description of picture, in UTF-8
+/// | 32   | `width` | width of picture, in pixels
+/// | 32   | `height`| height of picture, in pixels
+/// | 32   | `color_depth` | color depth of picture in bits-per-pixel
+/// | 32   | `colors_used` | for indexed-color pictures, number of colors used
+/// | 32   | data len | length of picture data, in bytes
+/// | `data len`×8 | `data` | raw picture data
+///
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct Picture {
     /// The picture type
@@ -1740,47 +1853,47 @@ impl ToBitStream for Picture {
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum PictureType {
     /// Other
-    Other,
+    Other = 0,
     /// PNG file icon of 32x32 pixels
-    Png32x32,
+    Png32x32 = 1,
     /// General file icon
-    GeneralFileIcon,
+    GeneralFileIcon = 2,
     /// Front cover
-    FrontCover,
+    FrontCover = 3,
     /// Back cover
-    BackCover,
+    BackCover = 4,
     /// Liner notes page
-    LinerNotes,
+    LinerNotes = 5,
     /// Media label (e.g., CD, Vinyl or Cassette label)
-    MediaLabel,
+    MediaLabel = 6,
     /// Lead artist, lead performer, or soloist
-    LeadArtist,
+    LeadArtist = 7,
     /// Artist or performer
-    Artist,
+    Artist = 8,
     /// Conductor
-    Conductor,
+    Conductor = 9,
     /// Band or orchestra
-    Band,
+    Band = 10,
     /// Composer
-    Composer,
+    Composer = 11,
     /// Lyricist or text writer
-    Lyricist,
+    Lyricist = 12,
     /// Recording location
-    RecordingLocation,
+    RecordingLocation = 13,
     /// During recording
-    DuringRecording,
+    DuringRecording = 14,
     /// During performance
-    DuringPerformance,
+    DuringPerformance = 15,
     /// Movie or video screen capture
-    ScreenCapture,
+    ScreenCapture = 16,
     /// A bright colored fish
-    Fish,
+    Fish = 17,
     /// Illustration
-    Illustration,
+    Illustration = 18,
     /// Band or artist logotype
-    BandLogo,
+    BandLogo = 19,
     /// Publisher or studio logotype
-    PublisherLogo,
+    PublisherLogo = 20,
 }
 
 impl FromBitStream for PictureType {
