@@ -18,7 +18,52 @@ use bitstream_io::{
 use std::num::NonZero;
 
 /// A FLAC frame header
-#[derive(Debug)]
+///
+/// | Bits      | Field |
+/// |----------:|-------|
+/// | 15        | sync code (`0b111111111111100`)
+/// | 1         | `blocking_strategy`
+/// | 4         | `block_size`
+/// | 4         | `sample_rate`
+/// | 4         | `channel_assignment`
+/// | 3         | `bits_per_sample`
+/// | 1         | padding (0)
+/// | 8-56      | `frame_number`
+/// | (8 or 16) | uncommon block size
+/// | (8 or 16) | uncommon sample rate
+/// | 8         | CRC-8
+///
+/// # Example
+/// ```
+/// use flac_codec::stream::{
+///     FrameHeader, BlockSize, SampleRate, ChannelAssignment,
+///     Independent, BitsPerSample, FrameNumber,
+/// };
+///
+/// let mut data: &[u8] = &[
+///     0b11111111, 0b1111100_0,  // sync code + blocking
+///     0b0110_1001,              // block size + sample rate
+///     0b0000_100_0,             // channels + bps + pad
+///     0x00,                     // frame number
+///     0x13,                     // uncommon block size (+1)
+///     0x64,                     // CRC-8
+/// ];
+///
+/// assert_eq!(
+///     FrameHeader::read_subset(&mut data).unwrap(),
+///     FrameHeader {
+///         blocking_strategy: false,
+///         block_size: BlockSize::Uncommon8(20),
+///         sample_rate: SampleRate::Hz44100,
+///         channel_assignment: ChannelAssignment::Independent(
+///             Independent::Mono
+///         ),
+///         bits_per_sample: BitsPerSample::Bps16,
+///         frame_number: FrameNumber(0),
+///     },
+/// );
+/// ```
+#[derive(Debug, Eq, PartialEq)]
 pub struct FrameHeader {
     /// The blocking strategy bit
     pub blocking_strategy: bool,
@@ -235,8 +280,63 @@ impl ToBitStream for FrameHeader {
     }
 }
 
-/// Possible block sizes in a FLAC frame
-#[derive(Copy, Clone, Debug)]
+/// Possible block sizes in a FLAC frame, in samples
+///
+/// Common sizes are stored as a 4-bit value,
+/// while uncommon sizes are stored as 8 or 16 bit values.
+///
+/// | Bits   | Block Size |
+/// |-------:|------------|
+/// | `0000` | invalid
+/// | `0001` | 192
+/// | `0010` | 576
+/// | `0011` | 1152
+/// | `0100` | 2304
+/// | `0101` | 4606
+/// | `0110` | 8 bit field (+1)
+/// | `0111` | 16 bit field (+1)
+/// | `1000` | 256
+/// | `1001` | 512
+/// | `1010` | 1024
+/// | `1011` | 2048
+/// | `1100` | 4096
+/// | `1101` | 8192
+/// | `1110` | 16384
+/// | `1111` | 32768
+///
+/// Handing uncommon block sizes is why this type
+/// is a generic with two different implementations
+/// from reading from a bitstream.
+/// This first reads common sizes, while the second
+/// reads additional bits if necessary.
+///
+/// # Example
+///
+/// ```
+/// use flac_codec::stream::BlockSize;
+/// use bitstream_io::{BitReader, BitRead, BigEndian};
+///
+/// let data: &[u8] = &[
+///     0b0110_1001,              // block size + sample rate
+///     0b0000_100_0,             // channels + bps + pad
+///     0x00,                     // frame number
+///     0x13,                     // uncommon block size (+1)
+/// ];
+///
+/// let mut r = BitReader::endian(data, BigEndian);
+/// let block_size = r.parse::<BlockSize<()>>().unwrap();  // reads 0b0110
+/// assert_eq!(
+///     block_size,
+///     BlockSize::Uncommon8(()),  // need to read actual block size from end of frame
+/// );
+/// r.skip(4 + 8 + 8).unwrap();    // skip unnecessary bits for this example
+/// assert_eq!(
+///     // read remainder of block size from end of frame
+///     r.parse_using::<BlockSize<u16>>(block_size).unwrap(),
+///     BlockSize::Uncommon8(0x13 + 1),
+/// );
+/// ```
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum BlockSize<B> {
     /// 192 samples
     Samples192,
@@ -396,7 +496,64 @@ impl TryFrom<u16> for BlockSize<u16> {
 }
 
 /// Possible sample rates in a FLAC frame
-#[derive(Copy, Clone, Debug)]
+///
+/// Common rates are stored as a 4-bit value,
+/// while uncommon rates are stored as 8 or 16 bit values.
+/// Sample rates defined in the STREAMINFO metadata block
+/// are only possible on a "non-subset" stream, which is
+/// not streamable.
+///
+/// | Bits   | Sample Rate |
+/// |-------:|-------------|
+/// | `0000` | get from STREAMINFO
+/// | `0001` | 88200 Hz
+/// | `0010` | 176400 Hz
+/// | `0011` | 192000 Hz
+/// | `0100` | 8000 Hz
+/// | `0101` | 16000 Hz
+/// | `0110` | 22050 Hz
+/// | `0111` | 24000 Hz
+/// | `1000` | 32000 Hz
+/// | `1001` | 44100 Hz
+/// | `1010` | 48000 Hz
+/// | `1011` | 96000 Hz
+/// | `1100` | read 8 bits, in kHz
+/// | `1101` | read 16 bits, in Hz
+/// | `1110` | read 16 bits, in 10s of Hz
+/// | `1111` | invalid sample rate
+///
+/// Handing uncommon frame rates is why this type is a generic
+/// with multiple implementations from reading from a bitstream.
+/// This first reads common rates, while the second reads additional bits if necessary.
+///
+/// # Example
+///
+/// ```
+/// use flac_codec::stream::SampleRate;
+/// use bitstream_io::{BitReader, BitRead, BigEndian};
+///
+/// let data: &[u8] = &[
+///     0b0110_1001,              // block size + sample rate
+///     0b0000_100_0,             // channels + bps + pad
+///     0x00,                     // frame number
+///     0x13,                     // uncommon block size (+1)
+/// ];
+///
+/// let mut r = BitReader::endian(data, BigEndian);
+/// r.skip(4).unwrap();          // skip block size
+/// let sample_rate = r.parse::<SampleRate<()>>().unwrap();  // reads 0b1001
+/// assert_eq!(
+///     sample_rate,
+///     SampleRate::Hz44100,     // got defined sample rate
+/// );
+/// r.skip(8 + 8 + 8).unwrap();  // skip unnecessary bits for this example
+/// assert_eq!(
+///     // since our rate is defined, no need to read additional bits
+///     r.parse_using::<SampleRate<u32>>(sample_rate).unwrap(),
+///     SampleRate::Hz44100,
+/// );
+/// ```
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum SampleRate<R> {
     /// Get rate from STREAMINFO metadata block
     Streaminfo(u32),
@@ -461,6 +618,15 @@ impl FromBitStreamUsing for SampleRate<()> {
             0b1111 => Err(Error::InvalidSampleRate),
             _ => unreachable!(), // 4-bit field
         }
+    }
+}
+
+impl FromBitStream for SampleRate<()> {
+    type Error = Error;
+
+    #[inline]
+    fn from_reader<R: BitRead + ?Sized>(r: &mut R) -> Result<Self, Self::Error> {
+        r.parse_using(None)
     }
 }
 
@@ -566,7 +732,7 @@ impl TryFrom<u32> for SampleRate<u32> {
 }
 
 /// How independent channels are stored
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum Independent {
     /// 1 monoaural channel
     Mono = 1,
@@ -621,7 +787,43 @@ impl TryFrom<usize> for Independent {
 }
 
 /// How the channels are assigned in a FLAC frame
-#[derive(Copy, Clone, Debug)]
+///
+/// | Bits   | Channel Assingment |
+/// |-------:|--------------------|
+/// | `0000` | 1 mono channel
+/// | `0001` | 2 independent channels
+/// | `0010` | 3 independent channels
+/// | `0011` | 4 independent channels
+/// | `0100` | 5 independent channels
+/// | `0101` | 6 independent channels
+/// | `0110` | 7 independent channels
+/// | `0111` | 8 independent channels
+/// | `1000` | left channel, side channel
+/// | `1001` | side channel, right channel
+/// | `1010` | mid channel, side channel
+/// | `1011` | invalid channel assignment
+/// | `1100` | invalid channel assignment
+/// | `1101` | invalid channel assignment
+/// | `1110` | invalid channel assignment
+/// | `1111` | invalid channel assignment
+///
+/// # Example
+///
+/// ```
+/// use flac_codec::stream::{ChannelAssignment, Independent};
+/// use bitstream_io::{BitReader, BitRead, BigEndian};
+///
+/// let data: &[u8] = &[
+///     0b0000_100_0,             // channels + bps + pad
+/// ];
+///
+/// let mut r = BitReader::endian(data, BigEndian);
+/// assert_eq!(
+///     r.parse::<ChannelAssignment>().unwrap(),
+///     ChannelAssignment::Independent(Independent::Mono),
+/// );
+/// ```
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum ChannelAssignment {
     /// Channels are stored independently
     Independent(Independent),
@@ -686,7 +888,42 @@ impl ToBitStream for ChannelAssignment {
 }
 
 /// The the possible bits-per-sample of a FLAC frame
-#[derive(Copy, Clone, Debug)]
+///
+/// Common bits-per-sample are stored as a 4-bit value,
+/// while uncommon bits-per-sample are stored in the
+/// STREAMINFO metadata block.
+/// Bits-per-sample defined in the STREAMINFO metadata block
+/// are only possible on a "non-subset" stream, which is
+/// not streamable.
+/// 
+/// | Bits  | Bits-per-Sample |
+/// |------:|-------------|
+/// | `000` | get from STREAMINFO
+/// | `001` | 8
+/// | `010` | 12
+/// | `011` | invalid
+/// | `100` | 16
+/// | `101` | 20
+/// | `110` | 24
+/// | `111` | 32
+///
+/// # Example
+/// ```
+/// use flac_codec::stream::BitsPerSample;
+/// use bitstream_io::{BitReader, BitRead, BigEndian};
+///
+/// let data: &[u8] = &[
+///     0b0000_100_0,             // channels + bps + pad
+/// ];
+///
+/// let mut r = BitReader::endian(data, BigEndian);
+/// r.skip(4).unwrap();  // skip channel assignment
+/// assert_eq!(
+///     r.parse::<BitsPerSample>().unwrap(),
+///     BitsPerSample::Bps16,
+/// );
+/// ```
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum BitsPerSample {
     /// Gets bps from STREAMINFO metadata block
     Streaminfo(SignedBitCount<32>),
@@ -813,6 +1050,15 @@ impl FromBitStreamUsing for BitsPerSample {
     }
 }
 
+impl FromBitStream for BitsPerSample {
+    type Error = Error;
+
+    #[inline]
+    fn from_reader<R: BitRead + ?Sized>(r: &mut R) -> Result<Self, Error> {
+        r.parse_using(None)
+    }
+}
+
 impl ToBitStream for BitsPerSample {
     type Error = std::io::Error;
 
@@ -830,7 +1076,24 @@ impl ToBitStream for BitsPerSample {
 }
 
 /// A frame number in the stream, as FLAC frames or samples
-#[derive(Copy, Clone, Debug, Default)]
+///
+/// The frame number is stored as a UTF-8-like value
+/// where the total number of bytes is encoded
+/// in the initial byte.
+///
+/// | byte 0     | byte 1     | byte 2     | byte 3     | byte 4     | byte 5     | byte 6
+/// |------------|------------|------------|------------|------------|------------|---------
+/// | `0xxxxxxx` |            |            |            |            |            |
+/// | `110xxxxx` | `10xxxxxx` |            |            |            |            |
+/// | `1110xxxx` | `10xxxxxx` | `10xxxxxx` |            |            |            |
+/// | `11110xxx` | `10xxxxxx` | `10xxxxxx` | `10xxxxxx` |            |            |
+/// | `111110xx` | `10xxxxxx` | `10xxxxxx` | `10xxxxxx` | `10xxxxxx` |            |
+/// | `1111110x` | `10xxxxxx` | `10xxxxxx` | `10xxxxxx` | `10xxxxxx` | `10xxxxxx` |
+/// | `11111110` | `10xxxxxx` | `10xxxxxx` | `10xxxxxx` | `10xxxxxx` | `10xxxxxx` | `10xxxxxx`
+///
+/// The `x` bits are the frame number, encoded from most-significant
+/// to least significant.
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
 pub struct FrameNumber(pub u64);
 
 impl FrameNumber {
@@ -1119,7 +1382,51 @@ impl<const RICE_MAX: u32> ToBitStream for ResidualPartitionHeader<RICE_MAX> {
 }
 
 /// A whole FLAC frame
-#[derive(Debug)]
+///
+/// A FLAC frame consists of a header, one or more subframes
+/// (each corresponding to a different channel), and a CRC-16
+/// checksum.
+///
+/// # Example
+///
+/// ```
+/// use flac_codec::stream::{
+///     Frame, FrameHeader, BlockSize, SampleRate, ChannelAssignment,
+///     Independent, BitsPerSample, FrameNumber, Subframe,
+/// };
+///
+/// let mut data: &[u8] = &[
+///     // frame header
+///     0xff, 0xf8, 0x69, 0x08, 0x00, 0x13, 0x64,
+///     // subframe
+///     0x00, 0x00, 0x00,
+///     // CRC-16
+///     0xd3, 0x3b,
+/// ];
+///
+/// assert_eq!(
+///     Frame::read_subset(&mut data).unwrap(),
+///     Frame {
+///         header: FrameHeader {
+///             blocking_strategy: false,
+///             block_size: BlockSize::Uncommon8(20),
+///             sample_rate: SampleRate::Hz44100,
+///             channel_assignment: ChannelAssignment::Independent(
+///                 Independent::Mono
+///             ),
+///             bits_per_sample: BitsPerSample::Bps16,
+///             frame_number: FrameNumber(0),
+///         },
+///         subframes: vec![
+///             Subframe::Constant {
+///                 sample: 0x00_00,
+///                 wasted_bps: 0,
+///             },
+///         ],
+///     },
+/// );
+/// ```
+#[derive(Debug, Eq, PartialEq)]
 pub struct Frame {
     /// The FLAC frame's header
     pub header: FrameHeader,
@@ -1300,7 +1607,7 @@ impl Frame {
 }
 
 /// A FLAC's frame's subframe, one per channel
-#[derive(Debug)]
+#[derive(Debug, Eq, PartialEq)]
 pub enum Subframe {
     /// A CONSTANT subframe, in which all samples are identical
     Constant {
@@ -1555,7 +1862,7 @@ impl ToBitStreamUsing for Subframe {
 }
 
 /// Residual values for FIXED or LPC subframes
-#[derive(Debug)]
+#[derive(Debug, Eq, PartialEq)]
 pub enum Residuals {
     /// Coding method 0
     Method0 {
@@ -1638,7 +1945,7 @@ impl ToBitStream for Residuals {
 }
 
 /// An individual residual block partition
-#[derive(Debug)]
+#[derive(Debug, Eq, PartialEq)]
 pub enum ResidualPartition<const RICE_MAX: u32> {
     /// A standard residual partition
     Standard {
