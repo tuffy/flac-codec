@@ -3,6 +3,8 @@ use flac_codec::metadata::{Picture, PictureType};
 #[test]
 fn test_png() {
     fn test(width: u32, height: u32, color_depth: u32, colors_used: u32, data: &[u8]) {
+        use std::num::NonZero;
+
         assert_eq!(
             Picture::new(PictureType::FrontCover, String::new(), Vec::from(data)).unwrap(),
             Picture {
@@ -12,7 +14,7 @@ fn test_png() {
                 width,
                 height,
                 color_depth,
-                colors_used,
+                colors_used: NonZero::new(colors_used),
                 data: Vec::from(data),
             }
         );
@@ -47,7 +49,7 @@ fn test_jpeg() {
                 width,
                 height,
                 color_depth,
-                colors_used: 0,
+                colors_used: None,
                 data: Vec::from(data),
             }
         );
@@ -66,6 +68,8 @@ fn test_jpeg() {
 #[test]
 fn test_gif() {
     fn test(width: u32, height: u32, colors_used: u32, data: &[u8]) {
+        use std::num::NonZero;
+
         assert_eq!(
             Picture::new(PictureType::FrontCover, String::new(), Vec::from(data)).unwrap(),
             Picture {
@@ -75,7 +79,7 @@ fn test_gif() {
                 width,
                 height,
                 color_depth: 0,
-                colors_used,
+                colors_used: NonZero::new(colors_used),
                 data: Vec::from(data),
             }
         );

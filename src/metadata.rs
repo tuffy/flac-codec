@@ -24,7 +24,24 @@ use std::path::Path;
 /// | 1    | `last` | final metadata block in file |
 /// | 7    | `block_type` | type of block |
 /// | 24   | `size` | block size, in bytes |
-#[derive(Debug)]
+///
+/// # Example
+/// ```
+/// use bitstream_io::{BitReader, BitRead, BigEndian};
+/// use flac_codec::metadata::{BlockHeader, BlockType};
+///
+/// let data: &[u8] = &[0b1_0000000, 0x00, 0x00, 0x22];
+/// let mut r = BitReader::endian(data, BigEndian);
+/// assert_eq!(
+///     r.parse::<BlockHeader>().unwrap(),
+///     BlockHeader {
+///         last: true,
+///         block_type: BlockType::Streaminfo,
+///         size: 0x00_00_22.into(),
+///     },
+/// );
+/// ```
+#[derive(Debug, Eq, PartialEq)]
 pub struct BlockHeader {
     /// Whether we are the final block
     pub last: bool,
@@ -41,12 +58,6 @@ pub trait MetadataBlock: ToBitStream<Error: Into<Error>> + Into<Block> {
 
     /// Whether the block can occur multiple times in a file
     const MULTIPLE: bool;
-
-    /// If block is our type, return reference
-    fn try_from_block(block: &Block) -> Option<&Self>;
-
-    /// If block is our type, return exclusive reference
-    fn try_from_block_mut(block: &mut Block) -> Option<&mut Self>;
 }
 
 impl BlockHeader {
@@ -208,7 +219,7 @@ impl ToBitStream for BlockType {
 }
 
 /// A 24-bit block size value, with safeguards against overflow
-#[derive(Debug, Default, Copy, Clone)]
+#[derive(Debug, Default, Copy, Clone, Eq, PartialEq)]
 pub struct BlockSize(u32);
 
 impl BlockSize {
@@ -729,7 +740,7 @@ where
 /// Any possible FLAC metadata block
 ///
 /// Each block consists of a [`BlockHeader`] followed by the block's contents.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub enum Block {
     /// The STREAMINFO block
     Streaminfo(Streaminfo),
@@ -903,20 +914,6 @@ macro_rules! block {
         impl MetadataBlock for $t {
             const TYPE: BlockType = BlockType::$v;
             const MULTIPLE: bool = $m;
-
-            fn try_from_block(block: &Block) -> Option<&Self> {
-                match block {
-                    Block::$v(p) => Some(p),
-                    _ => None,
-                }
-            }
-
-            fn try_from_block_mut(block: &mut Block) -> Option<&mut Self> {
-                match block {
-                    Block::$v(p) => Some(p),
-                    _ => None,
-                }
-            }
         }
 
         impl From<$t> for Block {
@@ -979,6 +976,46 @@ macro_rules! optional_block {
 /// | 36   | `total_samples` | stream's total channel-independent samples
 /// | 16×8 | `md5` | decoded stream's MD5 sum hash
 ///
+/// # Example
+/// ```
+/// use bitstream_io::{BitReader, BitRead, BigEndian, SignedBitCount};
+/// use flac_codec::metadata::Streaminfo;
+/// use std::num::NonZero;
+///
+/// let data: &[u8] = &[
+///     0x10, 0x00,
+///     0x10, 0x00,
+///     0x00, 0x00, 0x0c,
+///     0x00, 0x00, 0x0c,
+///     0b00001010, 0b11000100, 0b0100_000_0, 0b1111_0000,
+///     0b00000000, 0b00000000, 0b00000000, 0b01010000,
+///     0xf5, 0x3f, 0x86, 0x87, 0x6d, 0xcd, 0x77, 0x83,
+///     0x22, 0x5c, 0x93, 0xba, 0x8a, 0x93, 0x8c, 0x7d,
+/// ];
+///
+/// let mut r = BitReader::endian(data, BigEndian);
+/// assert_eq!(
+///     r.parse::<Streaminfo>().unwrap(),
+///     Streaminfo {
+///         minimum_block_size: 0x10_00,                    // 4096 samples
+///         maximum_block_size: 0x10_00,                    // 4096 samples
+///         minimum_frame_size: NonZero::new(0x00_00_0c),   // 12 bytes
+///         maximum_frame_size: NonZero::new(0x00_00_0c),   // 12 bytes
+///         sample_rate: 0b00001010_11000100_0100,          // 44100 Hz
+///         channels: NonZero::new(0b000 + 1).unwrap(),     // 1 channel
+///         bits_per_sample:
+///             SignedBitCount::new::<{0b0_1111 + 1}>(),    // 16 bps
+///         total_samples: NonZero::new(
+///             0b0000_00000000_00000000_00000000_01010000  // 80 samples
+///         ),
+///         md5: Some([
+///             0xf5, 0x3f, 0x86, 0x87, 0x6d, 0xcd, 0x77, 0x83,
+///             0x22, 0x5c, 0x93, 0xba, 0x8a, 0x93, 0x8c, 0x7d,
+///         ]),
+///     },
+/// );
+/// ```
+///
 /// # Important
 ///
 /// Changing any of these values to something that differs
@@ -987,7 +1024,7 @@ macro_rules! optional_block {
 /// metadata block in the file.
 /// Avoid modifying the position and contents of this block unless you
 /// know exactly what you are doing.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub struct Streaminfo {
     /// The minimum block size (in samples) used in the stream,
     /// excluding the last block.
@@ -1088,7 +1125,38 @@ impl ToBitStream for Streaminfo {
 /// This block may occur multiple times in a FLAC file.
 ///
 /// The contents of a PADDING block are all 0 bytes.
-#[derive(Debug, Clone)]
+///
+/// # Example
+///
+/// ```
+/// use bitstream_io::{BitReader, BitRead, BigEndian};
+/// use flac_codec::metadata::{BlockHeader, BlockType, Padding};
+///
+/// let data: &[u8] = &[
+///     0x81, 0x00, 0x00, 0x0a,  // block header
+///     // padding bytes
+///     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+/// ];
+///
+/// let mut r = BitReader::endian(data, BigEndian);
+/// let header = r.parse::<BlockHeader>().unwrap();
+/// assert_eq!(
+///     &header,
+///     &BlockHeader {
+///         last: true,
+///         block_type: BlockType::Padding,
+///         size: 0x0a.into(),
+///     },
+/// );
+///
+/// assert_eq!(
+///     r.parse_using::<Padding>(header.size).unwrap(),
+///     Padding {
+///         size: 0x0a.into(),
+///     },
+/// );
+/// ```
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub struct Padding {
     /// The size of the padding, in bytes
     pub size: BlockSize,
@@ -1124,7 +1192,7 @@ impl ToBitStream for Padding {
 /// | 32   | `id` | registered application ID
 /// | rest of block | `data` | application-specific data
 ///
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub struct Application {
     /// A registered application ID
     pub id: u32,
@@ -1167,7 +1235,73 @@ impl ToBitStream for Application {
 /// This block may occur only once in a FLAC file.
 ///
 /// Its seekpoints occupy the entire block.
-#[derive(Debug, Clone)]
+///
+/// # Example
+/// ```
+/// use bitstream_io::{BitReader, BitRead, BigEndian};
+/// use flac_codec::metadata::{BlockHeader, BlockType, SeekTable, SeekPoint};
+///
+/// let data: &[u8] = &[
+///     0x83, 0x00, 0x00, 0x48,  // block header
+///     // seekpoint 0
+///     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+///     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+///     0x00, 0x14,
+///     // seekpoint 1
+///     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x14,
+///     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0c,
+///     0x00, 0x14,
+///     // seekpoint 2
+///     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x28,
+///     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x22,
+///     0x00, 0x14,
+///     // seekpoint 3
+///     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x3c,
+///     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x3c,
+///     0x00, 0x14,
+/// ];
+///
+/// let mut r = BitReader::endian(data, BigEndian);
+/// let header = r.parse::<BlockHeader>().unwrap();
+/// assert_eq!(
+///     &header,
+///     &BlockHeader {
+///         last: true,
+///         block_type: BlockType::SeekTable,
+///         size: 0x48.into(),
+///     },
+/// );
+///
+/// assert_eq!(
+///     r.parse_using::<SeekTable>(header.size).unwrap(),
+///     SeekTable {
+///         points: vec![
+///             SeekPoint {
+///                 sample_offset: Some(0x00),
+///                 byte_offset: 0x00,
+///                 frame_samples: 0x14,
+///             },
+///             SeekPoint {
+///                 sample_offset: Some(0x14),
+///                 byte_offset: 0x0c,
+///                 frame_samples: 0x14,
+///             },
+///             SeekPoint {
+///                 sample_offset: Some(0x28),
+///                 byte_offset: 0x22,
+///                 frame_samples: 0x14,
+///             },
+///             SeekPoint {
+///                 sample_offset: Some(0x3c),
+///                 byte_offset: 0x3c,
+///                 frame_samples: 0x14,
+///             },
+///         ],
+///     },
+/// );
+///
+/// ```
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub struct SeekTable {
     /// The seek table's individual seek points
     pub points: Vec<SeekPoint>,
@@ -1247,7 +1381,7 @@ impl ToBitStream for SeekTable {
 /// | 64   | `byte_offset` | offset, in bytes, from first frame to target frame's header
 /// | 16   | `frame_samples` | number of samples in target frame
 ///
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub struct SeekPoint {
     /// The sample number of the first sample in the target frame,
     /// or `None` for placeholder points
@@ -1301,7 +1435,39 @@ impl ToBitStream for SeekPoint {
 /// | `field₁ len`×8 | `fields₁` | second field value, in UTF-8
 /// | | | ⋮
 ///
-#[derive(Debug, Clone)]
+/// # Example
+/// ```
+/// use bitstream_io::{BitReader, BitRead, LittleEndian};
+/// use flac_codec::metadata::VorbisComment;
+///
+/// let data: &[u8] = &[
+///     0x20, 0x00, 0x00, 0x00,  // 32 byte vendor string
+///     0x72, 0x65, 0x66, 0x65, 0x72, 0x65, 0x6e, 0x63,
+///     0x65, 0x20, 0x6c, 0x69, 0x62, 0x46, 0x4c, 0x41,
+///     0x43, 0x20, 0x31, 0x2e, 0x34, 0x2e, 0x33, 0x20,
+///     0x32, 0x30, 0x32, 0x33, 0x30, 0x36, 0x32, 0x33,
+///     0x02, 0x00, 0x00, 0x00,  // 2 fields
+///     0x0d, 0x00, 0x00, 0x00,  // 13 byte field 1
+///     0x54, 0x49, 0x54, 0x4c, 0x45, 0x3d, 0x54, 0x65,
+///     0x73, 0x74, 0x69, 0x6e, 0x67,
+///     0x10, 0x00, 0x00, 0x00,  // 16 byte field 2
+///     0x41, 0x4c, 0x42, 0x55, 0x4d, 0x3d, 0x54, 0x65,
+///     0x73, 0x74, 0x20, 0x41, 0x6c, 0x62, 0x75, 0x6d,
+/// ];
+///
+/// let mut r = BitReader::endian(data, LittleEndian);
+/// assert_eq!(
+///     r.parse::<VorbisComment>().unwrap(),
+///     VorbisComment {
+///         vendor_string: "reference libFLAC 1.4.3 20230623".to_string(),
+///         fields: vec![
+///              "TITLE=Testing".to_string(),
+///              "ALBUM=Test Album".to_string(),
+///         ],
+///     },
+/// );
+/// ```
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub struct VorbisComment {
     /// The vendor string
     pub vendor_string: String,
@@ -1466,7 +1632,7 @@ impl ToBitStream for VorbisComment {
 /// | 7+258×8 | padding | all 0 bits
 /// | | `tracks` | cuesheet track₀, cuesheet track₁, …
 ///
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub struct Cuesheet {
     /// Media catalog number in ASCII printable characters
     pub catalog_number: Box<[u8; 128]>,
@@ -1529,7 +1695,7 @@ impl ToBitStream for Cuesheet {
 /// | 8    | point count | number index points
 /// |      | | index point₀, index point₁, …
 ///
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub struct CuesheetTrack {
     /// Offset of the first index point in samples,
     /// relative to the beginning of the FLAC audio stream
@@ -1691,7 +1857,7 @@ impl TrackType {
 /// | 8    | `number` | index point number
 /// | 3×8  | padding  | all 0 bits
 ///
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub struct CuesheetIndexPoint {
     /// Offset in samples
     pub offset: u64,
@@ -1749,6 +1915,64 @@ impl ToBitStreamUsing for CuesheetIndexPoint {
 /// | 32   | data len | length of picture data, in bytes
 /// | `data len`×8 | `data` | raw picture data
 ///
+/// # Example
+/// ```
+/// use bitstream_io::{BitReader, BitRead, BigEndian};
+/// use flac_codec::metadata::{Picture, PictureType};
+///
+/// let data: &[u8] = &[
+///     0x00, 0x00, 0x00, 0x03,  // picture type
+///     0x00, 0x00, 0x00, 0x09,  // media type len (9 bytes)
+///     0x69, 0x6d, 0x61, 0x67, 0x65, 0x2f, 0x70, 0x6e, 0x67,
+///     0x00, 0x00, 0x00, 0x0a,  // description len (10 bytes)
+///     0x54, 0x65, 0x73, 0x74, 0x20, 0x49, 0x6d, 0x61, 0x67, 0x65,
+///     0x00, 0x00, 0x00, 0x10,  // width
+///     0x00, 0x00, 0x00, 0x09,  // height
+///     0x00, 0x00, 0x00, 0x18,  // color depth
+///     0x00, 0x00, 0x00, 0x00,  // color count
+///     0x00, 0x00, 0x00, 0x5c,  // data len (92 bytes)
+///     0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+///     0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+///     0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x09,
+///     0x08, 0x02, 0x00, 0x00, 0x00, 0xb4, 0x48, 0x3b,
+///     0x65, 0x00, 0x00, 0x00, 0x09, 0x70, 0x48, 0x59,
+///     0x73, 0x00, 0x00, 0x2e, 0x23, 0x00, 0x00, 0x2e,
+///     0x23, 0x01, 0x78, 0xa5, 0x3f, 0x76, 0x00, 0x00,
+///     0x00, 0x0e, 0x49, 0x44, 0x41, 0x54, 0x18, 0xd3,
+///     0x63, 0x60, 0x18, 0x05, 0x43, 0x12, 0x00, 0x00,
+///     0x01, 0xb9, 0x00, 0x01, 0xed, 0x78, 0x29, 0x25,
+///     0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44,
+///     0xae, 0x42, 0x60, 0x82,
+/// ];
+///
+/// let mut r = BitReader::endian(data, BigEndian);
+/// assert_eq!(
+///     r.parse::<Picture>().unwrap(),
+///     Picture {
+///         picture_type: PictureType::FrontCover,  // type 3
+///         media_type: "image/png".to_owned(),
+///         description: "Test Image".to_owned(),
+///         width: 0x00_00_00_10,                   // 16 pixels
+///         height: 0x00_00_00_09,                  // 9 pixels
+///         color_depth: 0x00_00_00_18,             // 24 bits-per-pixel
+///         colors_used: None,                      // not indexed
+///         data: vec![
+///             0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+///             0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+///             0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x09,
+///             0x08, 0x02, 0x00, 0x00, 0x00, 0xb4, 0x48, 0x3b,
+///             0x65, 0x00, 0x00, 0x00, 0x09, 0x70, 0x48, 0x59,
+///             0x73, 0x00, 0x00, 0x2e, 0x23, 0x00, 0x00, 0x2e,
+///             0x23, 0x01, 0x78, 0xa5, 0x3f, 0x76, 0x00, 0x00,
+///             0x00, 0x0e, 0x49, 0x44, 0x41, 0x54, 0x18, 0xd3,
+///             0x63, 0x60, 0x18, 0x05, 0x43, 0x12, 0x00, 0x00,
+///             0x01, 0xb9, 0x00, 0x01, 0xed, 0x78, 0x29, 0x25,
+///             0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44,
+///             0xae, 0x42, 0x60, 0x82,
+///         ],
+///     },
+/// );
+/// ```
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct Picture {
     /// The picture type
@@ -1764,7 +1988,7 @@ pub struct Picture {
     /// The color depth of the picture in bits per pixel
     pub color_depth: u32,
     /// For indexed-color pictures, the number of colors used
-    pub colors_used: u32,
+    pub colors_used: Option<NonZero<u32>>,
     /// The binary picture data
     pub data: Vec<u8>,
 }
@@ -1818,7 +2042,7 @@ impl FromBitStream for Picture {
             width: r.read_to()?,
             height: r.read_to()?,
             color_depth: r.read_to()?,
-            colors_used: r.read_to()?,
+            colors_used: r.read::<32, _>()?,
             data: prefixed_field(r)?,
         })
     }
@@ -1844,7 +2068,7 @@ impl ToBitStream for Picture {
         w.write_from(self.width)?;
         w.write_from(self.height)?;
         w.write_from(self.color_depth)?;
-        w.write_from(self.colors_used)?;
+        w.write::<32, _>(self.colors_used)?;
         prefixed_field(w, &self.data, Error::ExcessivePictureSize)
     }
 }
@@ -1998,7 +2222,7 @@ struct PictureMetrics {
     width: u32,
     height: u32,
     color_depth: u32,
-    colors_used: u32,
+    colors_used: Option<NonZero<u32>>,
 }
 
 impl PictureMetrics {
@@ -2061,11 +2285,11 @@ impl PictureMetrics {
         let _crc = r.read::<u32>()?;
 
         let (color_depth, colors_used) = match color_type {
-            0 => (bit_depth.into(), 0),       // grayscale
-            2 => ((bit_depth * 3).into(), 0), // RGB
-            3 => (0, plte_colors(r)?),        // palette
-            4 => ((bit_depth * 2).into(), 0), // grayscale + alpha
-            6 => ((bit_depth * 4).into(), 0), // RGB + alpha
+            0 => (bit_depth.into(), None),           // grayscale
+            2 => ((bit_depth * 3).into(), None),     // RGB
+            3 => (0, NonZero::new(plte_colors(r)?)), // palette
+            4 => ((bit_depth * 2).into(), None),     // grayscale + alpha
+            6 => ((bit_depth * 4).into(), None),     // RGB + alpha
             _ => return Err(InvalidPicture::Png("invalid color type")),
         };
 
@@ -2102,7 +2326,7 @@ impl PictureMetrics {
                         width: width.into(),
                         height: height.into(),
                         color_depth: (data_precision * components).into(),
-                        colors_used: 0,
+                        colors_used: None,
                     });
                 }
                 _ => {
@@ -2129,7 +2353,7 @@ impl PictureMetrics {
             media_type: "image/gif",
             width: r.read::<16, _>()?,
             height: r.read::<16, _>()?,
-            colors_used: 1 << (r.read::<3, u32>()? + 1),
+            colors_used: NonZero::new(1 << (r.read::<3, u32>()? + 1)),
             color_depth: 0,
         })
     }
