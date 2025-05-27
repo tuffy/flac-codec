@@ -1342,7 +1342,7 @@ pub enum SubframeHeaderType {
     /// r.skip(1).unwrap();  // pad bit
     /// assert_eq!(
     ///     r.parse::<SubframeHeaderType>().unwrap(),
-    ///     SubframeHeaderType::Fixed { order: 4 },
+    ///     SubframeHeaderType::Fixed { order: 0b001100 - 8 },  // order = 4
     /// );
     /// ```
     Fixed {
@@ -1362,7 +1362,9 @@ pub enum SubframeHeaderType {
     /// r.skip(1).unwrap();  // pad bit
     /// assert_eq!(
     ///     r.parse::<SubframeHeaderType>().unwrap(),
-    ///     SubframeHeaderType::Lpc { order: NonZero::new(1).unwrap() },
+    ///     SubframeHeaderType::Lpc {
+    ///         order: NonZero::new(0b100000 - 31).unwrap(),  // order = 1
+    ///     },
     /// );
     /// ```
     Lpc {
@@ -1713,7 +1715,11 @@ pub enum Subframe {
     /// assert_eq!(
     ///     r.parse_using::<Subframe>((20, SignedBitCount::new::<16>())).unwrap(),
     ///     Subframe::Constant {
+    ///         // constant subframes always have exactly one sample
+    ///         // this sample's size is a signed 16-bit value
+    ///         // taken from the subframe signed bit count
     ///         sample: 0x00_00,
+    ///         // wasted bits-per-sample is taken from the subframe header
     ///         wasted_bps: 0,
     ///     },
     /// );
@@ -1749,12 +1755,17 @@ pub enum Subframe {
     /// assert_eq!(
     ///     r.parse_using::<Subframe>((20, SignedBitCount::new::<16>())).unwrap(),
     ///     Subframe::Verbatim {
+    ///         // the total number of samples equals the block size
+    ///         // (20 in this case)
+    ///         // each sample is a signed 16-bit value,
+    ///         // taken from the subframe signed bit count
     ///         samples: vec![
     ///             0x00, 0x01, 0x02, 0x03, 0x04,
     ///             0x05, 0x06, 0x07, 0x08, 0x09,
     ///             0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
     ///             0x0f, 0x10, 0x11, 0x12, 0x13,
     ///         ],
+    ///         // wasted bits-per-sample is taken from the subframe header
     ///         wasted_bps: 0,
     ///     },
     /// );
@@ -1775,8 +1786,9 @@ pub enum Subframe {
     ///
     /// let data: &[u8] = &[
     ///     0x18,  // subframe header
-    ///     // subframe data
+    ///     // warm-up samples
     ///     0x00, 0x00, 0x00, 0x01, 0x00, 0x02, 0x00, 0x03,
+    ///     // residuals
     ///     0x00, 0x3f, 0xff, 0xc0,
     /// ];
     ///
@@ -1785,8 +1797,15 @@ pub enum Subframe {
     /// assert_eq!(
     ///     r.parse_using::<Subframe>((20, SignedBitCount::new::<16>())).unwrap(),
     ///     Subframe::Fixed {
+    ///         // predictor order is determined from subframe header
     ///         order: 4,
+    ///         // the total number of warm-up samples equals the predictor order (4)
+    ///         // each warm-up sample is a signed 16-bit value,
+    ///         // taken from the subframe signed bit count
     ///         warm_up: vec![0x00, 0x01, 0x02, 0x03],
+    ///         // the total number of residuals equals the block size
+    ///         // minus the predictor order,
+    ///         // which is 20 - 4 = 16 in this case
     ///         residuals: Residuals::Method0 {
     ///             partitions: vec![
     ///                 ResidualPartition::Standard {
@@ -1795,6 +1814,7 @@ pub enum Subframe {
     ///                 }
     ///             ],
     ///         },
+    ///         // wasted bits-per-sample is taken from the subframe header
     ///         wasted_bps: 0,
     ///     },
     /// );
@@ -1820,9 +1840,12 @@ pub enum Subframe {
     ///
     /// let data: &[u8] = &[
     ///     0x40,  // subframe header
-    ///     // subframe data
-    ///     0x00, 0x00, 0xb5, 0xbe, 0x28, 0x02, 0x88, 0x88,
-    ///     0x88, 0x88, 0x88, 0x88, 0x88, 0x88, 0x88, 0x80,
+    ///     // warm-up sample
+    ///     0x00, 0x00,
+    ///     // precision + shift + coefficient
+    ///     0b1011_0101, 0b1_0111110, 0b00101_000,
+    ///     // residuals
+    ///     0x02, 0x88, 0x88, 0x88, 0x88, 0x88, 0x88, 0x88, 0x88, 0x88, 0x80,
     /// ];
     ///
     /// let mut r = BitReader::endian(data, BigEndian);
@@ -1830,11 +1853,22 @@ pub enum Subframe {
     /// assert_eq!(
     ///     r.parse_using::<Subframe>((20, SignedBitCount::new::<16>())).unwrap(),
     ///     Subframe::Lpc {
+    ///         // predictor order is determined from the subframe header
     ///         order: NonZero::new(1).unwrap(),
+    ///         // the total number of warm-up samples equals the predictor order (1)
+    ///         // each warm-up sample is a signed 16-bit value,
+    ///         // taken from the subframe signed bit count
     ///         warm_up: vec![0x00],
-    ///         precision: SignedBitCount::new::<12>(),
-    ///         shift: 11,
-    ///         coefficients: vec![1989],
+    ///         // precision is a 4 bit value, plus one
+    ///         precision: SignedBitCount::new::<{0b1011 + 1}>(),  // 12 bits
+    ///         // shift is a 5 bit value
+    ///         shift: 0b0101_1,  // 11
+    ///         // the total number of coefficients equals the predictor order (1)
+    ///         // size of each coefficient is a signed 12-bit value, from precision
+    ///         coefficients: vec![0b0111110_00101],  // 1989
+    ///         // the total number of residuals equals the block size
+    ///         // minus the predictor order,
+    ///         // which is 20 - 1 = 19 in this case
     ///         residuals: Residuals::Method0 {
     ///             partitions: vec![
     ///                 ResidualPartition::Standard {
@@ -1846,6 +1880,7 @@ pub enum Subframe {
     ///                 }
     ///             ],
     ///         },
+    ///         // wasted bits-per-sample is taken from the subframe header
     ///         wasted_bps: 0,
     ///     },
     /// );
@@ -2077,6 +2112,64 @@ impl ToBitStreamUsing for Subframe {
 }
 
 /// Residual values for FIXED or LPC subframes
+///
+/// | Bits | Meaning |
+/// |-----:|---------|
+/// | 2    | residual coding method
+/// | 4    | partition order
+/// |      | residual partition₀
+/// |      | (residual partition₁)
+/// |      | ⋮
+///
+/// The residual coding method can be 0 or 1.
+/// A coding method of 0 means 4-bit Rice parameters
+/// in residual partitions.  A coding method of 5
+/// means 5-bit Rice parameters in residual partitions
+/// (method 0 is the common case).
+///
+/// The number of residual partitions equals
+/// 2ⁿ where n is the partion order.
+///
+/// # Example
+/// ```
+/// use flac_codec::stream::{Residuals, ResidualPartition};
+/// use bitstream_io::{BitReader, BitRead, BigEndian, BitCount};
+///
+/// let data: &[u8] = &[
+///     0b00_0000_00,  // coding method + partition order + partition
+///     // residual partition
+///     0b01010001,
+///     0b00010001,
+///     0b00010001,
+///     0b00010001,
+///     0b00010001,
+///     0b00010001,
+///     0b00010001,
+///     0b00010001,
+///     0b00010001,
+///     0b00010000,
+///     0b00000000,
+/// ];
+///
+/// let mut r = BitReader::endian(data, BigEndian);
+///
+/// assert_eq!(
+///     r.parse_using::<Residuals>((20, 1)).unwrap(),
+///     // coding method = 0b00
+///     // partition order = 0b0000, or 1 partition
+///     Residuals::Method0 {
+///         partitions: vec![
+///             ResidualPartition::Standard {
+///                 rice: BitCount::new::<1>(),
+///                 residuals: vec![
+///                      1, 2, 2, 2, 2, 2, 2, 2, 2, 2,
+///                      2, 2, 2, 2, 2, 2, 2, 2, 2
+///                 ],
+///             }
+///         ],
+///     },
+/// );
+/// ```
 #[derive(Debug, Eq, PartialEq)]
 pub enum Residuals {
     /// Coding method 0
@@ -2095,7 +2188,10 @@ impl FromBitStreamUsing for Residuals {
     type Context = (usize, usize);
     type Error = Error;
 
-    fn from_reader<R: BitRead + ?Sized>(r: &mut R, params: (usize, usize)) -> Result<Self, Error> {
+    fn from_reader<R: BitRead + ?Sized>(
+        r: &mut R,
+        (block_size, predictor_order): (usize, usize),
+    ) -> Result<Self, Error> {
         fn read_partitions<const RICE_MAX: u32, R: BitRead + ?Sized>(
             reader: &mut R,
             (block_size, predictor_order): (usize, usize),
@@ -2116,10 +2212,10 @@ impl FromBitStreamUsing for Residuals {
 
         match r.read::<2, u8>()? {
             0 => Ok(Self::Method0 {
-                partitions: read_partitions::<0b1111, R>(r, params)?,
+                partitions: read_partitions::<0b1111, R>(r, (block_size, predictor_order))?,
             }),
             1 => Ok(Self::Method1 {
-                partitions: read_partitions::<0b11111, R>(r, params)?,
+                partitions: read_partitions::<0b11111, R>(r, (block_size, predictor_order))?,
             }),
             _ => Err(Error::InvalidCodingMethod),
         }
@@ -2160,6 +2256,111 @@ impl ToBitStream for Residuals {
 }
 
 /// An individual residual block partition
+///
+/// Each partition consists of a Rice parameter
+/// followed by an optional escape code and signed residual values.
+/// The number of bits to read for the Rice parameters
+/// depends on if we're using coding method 0 or 1.
+/// If the Rice parameter equals the maximum,
+/// it means the partition is escaped in some way
+/// (this is an uncommon case).
+///
+/// | Bits    | Meaning |
+/// |--------:|---------|
+/// | 4 or 5  | Rice parameter
+/// | (5)     | escape code if parameter is `1111` or `11111`
+///
+/// The total number of residuals in the partition is:
+///
+/// > block size ÷ partition count - predictor order
+///
+/// for the first partition, and:
+///
+/// > block size ÷ partition count
+///
+/// for subsequent partitions.
+///
+/// If the partition is escaped, we read an additional 5 bit value
+/// to determine the size of each signed residual in the partition.
+/// If the *escape code* is 0, all the residuals in the partition are 0
+/// (this is an even more uncommon case).
+///
+/// # Example
+/// ```
+/// use flac_codec::stream::ResidualPartition;
+/// use bitstream_io::{BitReader, BitRead, BigEndian, BitCount};
+///
+/// let data: &[u8] = &[
+///     0b0001_01_0_0,  // Rice code + residuals
+///     0b01_0_001_0_0,
+///     0b01_0_001_0_0,
+///     0b01_0_001_0_0,
+///     0b01_0_001_0_0,
+///     0b01_0_001_0_0,
+///     0b01_0_001_0_0,
+///     0b01_0_001_0_0,
+///     0b01_0_001_0_0,
+///     0b01_0_001_0_0,
+/// ];
+///
+/// let mut r = BitReader::endian(data, BigEndian);
+/// assert_eq!(
+///     r.parse_using::<ResidualPartition<0b1111>>(19).unwrap(),
+///     ResidualPartition::Standard {
+///         rice: BitCount::new::<0b0001>(),
+///         residuals: vec![
+///              1, 2, 2, 2, 2, 2, 2, 2, 2, 2,
+///              2, 2, 2, 2, 2, 2, 2, 2, 2
+///         ],
+///     },
+/// );
+/// ```
+///
+/// Each individual residual is a unary value with a stop bit of 1
+/// for the most-significant bits, followed by "Rice" number of
+/// bits as the least significant bits, combined into a single
+/// unsigned value.
+///
+/// Unary-encoding is simply counting the number of 0 bits
+/// before the next 1 bit:
+///
+/// | Bits    | Value |
+/// |--------:|-------|
+/// | `1`     | 0
+/// | `01`    | 1
+/// | `001`   | 2
+/// | `0001`  | 3
+/// | `00001` | 4
+/// | ⋮       |
+///
+/// Unlike regular twos-complement signed values, individual residuals
+/// are stored with the sign in the *least* significant bit position.
+/// They can be transformed from unsigned to signed like:
+/// ```
+/// fn unsigned_to_signed(unsigned: u32) -> i32 {
+///     if (unsigned & 1) == 1 {
+///         // negative residual
+///         -((unsigned >> 1) as i32) - 1
+///     } else {
+///         // positive residual
+///         (unsigned >> 1) as i32
+///     }
+/// }
+/// ```
+///
+/// In our example, above, the Rice parameter happens to be 1
+/// and all the sign bits happen to be 0, so the value of each
+/// signed residual is simply its preceding unary value
+/// (which are all `01` or `001`, meaning 1 and 2).
+///
+/// As one can see, the smaller the value each residual has,
+/// the smaller it can be when written to disk.
+/// And the key to making residual values small is to choose
+/// predictor coefficients which best match the input signal.
+/// The more accurate the prediction, the less difference
+/// there is between the predicted values and the actual
+/// values - which means smaller residuals - which means
+/// better compression.
 #[derive(Debug, Eq, PartialEq)]
 pub enum ResidualPartition<const RICE_MAX: u32> {
     /// A standard residual partition
