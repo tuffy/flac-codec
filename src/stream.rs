@@ -1228,6 +1228,21 @@ fn test_frame_number() {
 }
 
 /// A Subframe Header
+///
+/// | Bits | Field   | Meaning
+/// |-----:|---------|--------
+/// | 1    | pad (0) |
+/// | 6    | `type_` | subframe type and order (if any)
+/// | 1    | has wasted bits | whether the subframe has wasted bits-per-sample
+/// | (0+) | `wasted_bps`| the number of wasted bits-per-sample, as unary
+///
+/// "Wasted" bits is when all of the samples in a given subframe
+/// have one or more `0` bits in the least-significant bits position.
+/// In this case, the samples can all be safely right shifted
+/// by that amount of wasted bits during encoding, and left
+/// shifted by that amount of bits during decoding, without loss.
+///
+/// This is an uncommon case.
 #[derive(Debug)]
 pub struct SubframeHeader {
     /// The subframe header's type
@@ -1269,19 +1284,87 @@ impl ToBitStream for SubframeHeader {
     }
 }
 
-/// A subframe header's type
-#[derive(Debug)]
+/// A subframe header's type and order
+///
+/// This is always a 6-bit field.
+///
+/// | Bits     | Type and Order
+/// |----------|---------------
+/// | `000000` | Constant
+/// | `000001` | Verbatim
+/// | `000010` to `000111` | reserved
+/// | `001000` to `001100` | Fixed subframe with order `v - 8`
+/// | `001101` to `011111` | reserved
+/// | `100000` to `111111` | LPC subframe with order `v - 31`
+#[derive(Debug, Eq, PartialEq)]
 pub enum SubframeHeaderType {
     /// All samples are the same
+    ///
+    /// # Example
+    /// ```
+    /// use flac_codec::stream::SubframeHeaderType;
+    /// use bitstream_io::{BitReader, BitRead, BigEndian};
+    ///
+    /// let data: &[u8] = &[0b0_000000_0];
+    /// let mut r = BitReader::endian(data, BigEndian);
+    /// r.skip(1).unwrap();  // pad bit
+    /// assert_eq!(
+    ///     r.parse::<SubframeHeaderType>().unwrap(),
+    ///     SubframeHeaderType::Constant,
+    /// );
+    /// ```
     Constant,
     /// All samples as stored verbatim, without compression
+    ///
+    /// # Example
+    /// ```
+    /// use flac_codec::stream::SubframeHeaderType;
+    /// use bitstream_io::{BitReader, BitRead, BigEndian};
+    ///
+    /// let data: &[u8] = &[0b0_000001_0];
+    /// let mut r = BitReader::endian(data, BigEndian);
+    /// r.skip(1).unwrap();  // pad bit
+    /// assert_eq!(
+    ///     r.parse::<SubframeHeaderType>().unwrap(),
+    ///     SubframeHeaderType::Verbatim,
+    /// );
+    /// ```
     Verbatim,
     /// Samples are stored with one of a set of fixed LPC parameters
+    ///
+    /// # Example
+    /// ```
+    /// use flac_codec::stream::SubframeHeaderType;
+    /// use bitstream_io::{BitReader, BitRead, BigEndian};
+    ///
+    /// let data: &[u8] = &[0b0_001100_0];
+    /// let mut r = BitReader::endian(data, BigEndian);
+    /// r.skip(1).unwrap();  // pad bit
+    /// assert_eq!(
+    ///     r.parse::<SubframeHeaderType>().unwrap(),
+    ///     SubframeHeaderType::Fixed { order: 4 },
+    /// );
+    /// ```
     Fixed {
         /// The predictor order, from 0..5
         order: u8,
     },
     /// Samples are stored with dynamic LPC parameters
+    ///
+    /// # Example
+    /// ```
+    /// use flac_codec::stream::SubframeHeaderType;
+    /// use bitstream_io::{BitReader, BitRead, BigEndian};
+    /// use std::num::NonZero;
+    ///
+    /// let data: &[u8] = &[0b0_100000_0];
+    /// let mut r = BitReader::endian(data, BigEndian);
+    /// r.skip(1).unwrap();  // pad bit
+    /// assert_eq!(
+    ///     r.parse::<SubframeHeaderType>().unwrap(),
+    ///     SubframeHeaderType::Lpc { order: NonZero::new(1).unwrap() },
+    /// );
+    /// ```
     Lpc {
         /// The predictor order, from 1..33
         order: NonZero<u8>,
@@ -1330,7 +1413,7 @@ impl ToBitStream for SubframeHeaderType {
 }
 
 /// A FLAC residual partition header
-#[derive(Debug)]
+#[derive(Debug, Eq, PartialEq)]
 pub enum ResidualPartitionHeader<const RICE_MAX: u32> {
     /// Standard, un-escaped partition
     Standard {
@@ -1610,6 +1693,31 @@ impl Frame {
 #[derive(Debug, Eq, PartialEq)]
 pub enum Subframe {
     /// A CONSTANT subframe, in which all samples are identical
+    ///
+    /// This is typically for long stretches of silence,
+    /// or for when both channels are identical in a stereo stream.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use flac_codec::stream::Subframe;
+    /// use bitstream_io::{BitReader, BitRead, BigEndian, SignedBitCount};
+    ///
+    /// let data: &[u8] = &[
+    ///     0x00,        // subframe header
+    ///     0x00, 0x00,  // subframe data
+    /// ];
+    ///
+    /// let mut r = BitReader::endian(data, BigEndian);
+    ///
+    /// assert_eq!(
+    ///     r.parse_using::<Subframe>((20, SignedBitCount::new::<16>())).unwrap(),
+    ///     Subframe::Constant {
+    ///         sample: 0x00_00,
+    ///         wasted_bps: 0,
+    ///     },
+    /// );
+    /// ```
     Constant {
         /// The subframe's sample
         sample: i32,
@@ -1617,6 +1725,40 @@ pub enum Subframe {
         wasted_bps: u32,
     },
     /// A VERBATIM subframe, in which all samples are stored uncompressed
+    ///
+    /// This is for random noise which does not compress well
+    /// by any other method.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use flac_codec::stream::Subframe;
+    /// use bitstream_io::{BitReader, BitRead, BigEndian, SignedBitCount};
+    ///
+    /// let data: &[u8] = &[
+    ///     0x02,  // subframe header
+    ///     // subframe data
+    ///     0x00, 0x00, 0x00, 0x01, 0x00, 0x02, 0x00, 0x03, 0x00, 0x04,
+    ///     0x00, 0x05, 0x00, 0x06, 0x00, 0x07, 0x00, 0x08, 0x00, 0x09,
+    ///     0x00, 0x0a, 0x00, 0x0b, 0x00, 0x0c, 0x00, 0x0d, 0x00, 0x0e,
+    ///     0x00, 0x0f, 0x00, 0x10, 0x00, 0x11, 0x00, 0x12, 0x00, 0x13,
+    /// ];
+    ///
+    /// let mut r = BitReader::endian(data, BigEndian);
+    ///
+    /// assert_eq!(
+    ///     r.parse_using::<Subframe>((20, SignedBitCount::new::<16>())).unwrap(),
+    ///     Subframe::Verbatim {
+    ///         samples: vec![
+    ///             0x00, 0x01, 0x02, 0x03, 0x04,
+    ///             0x05, 0x06, 0x07, 0x08, 0x09,
+    ///             0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
+    ///             0x0f, 0x10, 0x11, 0x12, 0x13,
+    ///         ],
+    ///         wasted_bps: 0,
+    ///     },
+    /// );
+    /// ```
     Verbatim {
         /// The subframe's samples
         samples: Vec<i32>,
@@ -1624,6 +1766,39 @@ pub enum Subframe {
         wasted_bps: u32,
     },
     /// A FIXED subframe, encoded with a fixed set of parameters
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use flac_codec::stream::{Subframe, Residuals, ResidualPartition};
+    /// use bitstream_io::{BitReader, BitRead, BigEndian, BitCount, SignedBitCount};
+    ///
+    /// let data: &[u8] = &[
+    ///     0x18,  // subframe header
+    ///     // subframe data
+    ///     0x00, 0x00, 0x00, 0x01, 0x00, 0x02, 0x00, 0x03,
+    ///     0x00, 0x3f, 0xff, 0xc0,
+    /// ];
+    ///
+    /// let mut r = BitReader::endian(data, BigEndian);
+    ///
+    /// assert_eq!(
+    ///     r.parse_using::<Subframe>((20, SignedBitCount::new::<16>())).unwrap(),
+    ///     Subframe::Fixed {
+    ///         order: 4,
+    ///         warm_up: vec![0x00, 0x01, 0x02, 0x03],
+    ///         residuals: Residuals::Method0 {
+    ///             partitions: vec![
+    ///                 ResidualPartition::Standard {
+    ///                     rice: BitCount::new::<0>(),
+    ///                     residuals: vec![0; 16],
+    ///                 }
+    ///             ],
+    ///         },
+    ///         wasted_bps: 0,
+    ///     },
+    /// );
+    /// ```
     Fixed {
         /// The subframe's predictor order from 0 to 4 (inclusive)
         order: u8,
@@ -1635,6 +1810,46 @@ pub enum Subframe {
         wasted_bps: u32,
     },
     /// An LPC subframe, encoded with a variable set of parameters
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use flac_codec::stream::{Subframe, Residuals, ResidualPartition};
+    /// use bitstream_io::{BitReader, BitRead, BigEndian, BitCount, SignedBitCount};
+    /// use std::num::NonZero;
+    ///
+    /// let data: &[u8] = &[
+    ///     0x40,  // subframe header
+    ///     // subframe data
+    ///     0x00, 0x00, 0xb5, 0xbe, 0x28, 0x02, 0x88, 0x88,
+    ///     0x88, 0x88, 0x88, 0x88, 0x88, 0x88, 0x88, 0x80,
+    /// ];
+    ///
+    /// let mut r = BitReader::endian(data, BigEndian);
+    ///
+    /// assert_eq!(
+    ///     r.parse_using::<Subframe>((20, SignedBitCount::new::<16>())).unwrap(),
+    ///     Subframe::Lpc {
+    ///         order: NonZero::new(1).unwrap(),
+    ///         warm_up: vec![0x00],
+    ///         precision: SignedBitCount::new::<12>(),
+    ///         shift: 11,
+    ///         coefficients: vec![1989],
+    ///         residuals: Residuals::Method0 {
+    ///             partitions: vec![
+    ///                 ResidualPartition::Standard {
+    ///                     rice: BitCount::new::<1>(),
+    ///                     residuals: vec![
+    ///                          1, 2, 2, 2, 2, 2, 2, 2, 2, 2,
+    ///                          2, 2, 2, 2, 2, 2, 2, 2, 2
+    ///                     ],
+    ///                 }
+    ///             ],
+    ///         },
+    ///         wasted_bps: 0,
+    ///     },
+    /// );
+    /// ```
     Lpc {
         /// The subframe's predictor order
         order: NonZero<u8>,
@@ -1890,11 +2105,11 @@ impl FromBitStreamUsing for Residuals {
 
             (0..partition_count)
                 .map(|p| {
-                    let partition_size = (block_size / partition_count)
-                        .checked_sub(if p == 0 { predictor_order } else { 0 })
-                        .ok_or(Error::InvalidPartitionOrder)?;
-
-                    reader.parse_using(partition_size)
+                    reader.parse_using(
+                        (block_size / partition_count)
+                            .checked_sub(if p == 0 { predictor_order } else { 0 })
+                            .ok_or(Error::InvalidPartitionOrder)?,
+                    )
                 })
                 .collect()
         }

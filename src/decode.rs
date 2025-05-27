@@ -895,12 +895,12 @@ fn read_residuals<R: BitRead>(
         let partition_count = 1 << partition_order;
 
         for p in 0..partition_count {
-            let partition_size = (block_size / partition_count)
-                .checked_sub(if p == 0 { predictor_order } else { 0 })
-                .ok_or(Error::InvalidPartitionOrder)?;
-
             let (partition, next) = residuals
-                .split_at_mut_checked(partition_size)
+                .split_at_mut_checked(
+                    (block_size / partition_count)
+                        .checked_sub(if p == 0 { predictor_order } else { 0 })
+                        .ok_or(Error::InvalidPartitionOrder)?,
+                )
                 .ok_or(Error::InvalidPartitionOrder)?;
 
             match reader.parse()? {
