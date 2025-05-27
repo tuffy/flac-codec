@@ -2427,13 +2427,31 @@ impl BlockList {
     }
 
     /// Gets reference to metadata block, if present
+    ///
+    /// If the block type occurs multiple times,
+    /// this returns the first instance.
     pub fn get<B: OptionalMetadataBlock>(&self) -> Option<&B> {
         self.blocks.iter().find_map(B::try_from_opt_block)
     }
 
     /// Gets mutable reference to metadata block, if present
+    ///
+    /// If the block type occurs multiple times,
+    /// this returns the first instance.
     pub fn get_mut<B: OptionalMetadataBlock>(&mut self) -> Option<&mut B> {
         self.blocks.iter_mut().find_map(B::try_from_opt_block_mut)
+    }
+
+    /// Gets references to all metadata blocks of the given type
+    pub fn get_all<'b, B: OptionalMetadataBlock + 'b>(&'b self) -> impl Iterator<Item = &'b B> {
+        self.blocks.iter().filter_map(B::try_from_opt_block)
+    }
+
+    /// Gets exclusive references to all metadata blocks of the given type
+    pub fn get_all_mut<'b, B: OptionalMetadataBlock + 'b>(
+        &'b mut self,
+    ) -> impl Iterator<Item = &'b mut B> {
+        self.blocks.iter_mut().filter_map(B::try_from_opt_block_mut)
     }
 
     /// Updates Vorbis comment, creating a new block if necessary
