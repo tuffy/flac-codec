@@ -823,6 +823,41 @@ impl TryFrom<usize> for Independent {
 ///     ChannelAssignment::Independent(Independent::Mono),
 /// );
 /// ```
+///
+/// The samples in the side channel can be calculated like:
+///
+/// > sideᵢ = leftᵢ - rightᵢ
+///
+/// This requires that the side channel have one additional
+/// bit-per-sample during decoding, since the difference
+/// between the left and right channels could overflow
+/// if the two are at opposite extremes.
+///
+/// And with a bit of math, we can see that:
+///
+/// > rightᵢ = leftᵢ - sideᵢ
+///
+/// or:
+///
+/// > leftᵢ = sideᵢ + rightᵢ
+///
+/// For transforming left-side and side-right assignments back
+/// to left-right for output.
+///
+/// The samples in the mid channel can be calculated like:
+///
+/// > midᵢ = (leftᵢ + rightᵢ) ÷ 2
+///
+/// Mid-side assignment can be restored to left-right like:
+///
+/// > sumᵢ = midᵢ × 2 + |sideᵢ| % 2
+/// >
+/// > leftᵢ = (sumᵢ + sideᵢ) ÷ 2
+/// >
+/// > rightᵢ = (sumᵢ - sideᵢ) ÷ 2
+///
+/// The mid channel does *not* require any additional bits
+/// to decode, since the average cannot exceed either channel.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum ChannelAssignment {
     /// Channels are stored independently
