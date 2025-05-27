@@ -955,6 +955,17 @@ macro_rules! optional_block {
                 private::OptionalBlock::$v(vorbis)
             }
         }
+
+        impl TryFrom<private::OptionalBlock> for $t {
+            type Error = ();
+
+            fn try_from(block: private::OptionalBlock) -> Result<Self, ()> {
+                match block {
+                    private::OptionalBlock::$v(b) => Ok(b),
+                    _ => Err(()),
+                }
+            }
+        }
     };
 }
 
@@ -2398,12 +2409,21 @@ impl BlockList {
     ///
     /// If the block may only occur once in the stream
     /// (such as the SEEKTABLE), any existing block of
-    /// the same type is removed first.
-    pub fn insert<B: OptionalMetadataBlock>(&mut self, block: B) {
-        if !B::MULTIPLE {
-            self.blocks.retain(|b| b.block_type() != B::TYPE);
+    /// the same type removed and extracted first.
+    pub fn insert<B: OptionalMetadataBlock>(&mut self, block: B) -> Option<B> {
+        if B::MULTIPLE {
+            self.blocks.push(block.into());
+            None
+        } else {
+            let mut v = self
+                .blocks
+                .extract_if(.., |b| b.block_type() == B::TYPE)
+                .collect::<Vec<_>>();
+
+            self.blocks.push(block.into());
+
+            v.pop().and_then(|b| b.try_into().ok())
         }
-        self.blocks.push(block.into());
     }
 
     /// Gets reference to metadata block, if present
@@ -2441,12 +2461,24 @@ impl FromIterator<Block> for Result<BlockList, Error> {
         for block in iter {
             match block {
                 Block::Streaminfo(_) => return Err(Error::MultipleStreaminfo),
-                Block::Padding(p) => list.insert(p),
-                Block::Application(p) => list.insert(p),
-                Block::SeekTable(p) => list.insert(p),
-                Block::VorbisComment(p) => list.insert(p),
-                Block::Cuesheet(p) => list.insert(p),
-                Block::Picture(p) => list.insert(p),
+                Block::Padding(p) => {
+                    list.insert(p);
+                }
+                Block::Application(p) => {
+                    list.insert(p);
+                }
+                Block::SeekTable(p) => {
+                    list.insert(p);
+                }
+                Block::VorbisComment(p) => {
+                    list.insert(p);
+                }
+                Block::Cuesheet(p) => {
+                    list.insert(p);
+                }
+                Block::Picture(p) => {
+                    list.insert(p);
+                }
             }
         }
 
@@ -2542,7 +2574,7 @@ mod private {
         }
     }
 
-    pub trait OptionalMetadataBlock: Into<OptionalBlock> {
+    pub trait OptionalMetadataBlock: Into<OptionalBlock> + TryFrom<OptionalBlock> {
         fn try_from_opt_block(block: &OptionalBlock) -> Option<&Self>;
 
         fn try_from_opt_block_mut(block: &mut OptionalBlock) -> Option<&mut Self>;

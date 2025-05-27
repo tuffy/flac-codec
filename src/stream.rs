@@ -895,7 +895,7 @@ impl ToBitStream for ChannelAssignment {
 /// Bits-per-sample defined in the STREAMINFO metadata block
 /// are only possible on a "non-subset" stream, which is
 /// not streamable.
-/// 
+///
 /// | Bits  | Bits-per-Sample |
 /// |------:|-------------|
 /// | `000` | get from STREAMINFO
