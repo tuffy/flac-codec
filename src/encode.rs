@@ -527,23 +527,29 @@ pub struct EncodingOptions {
 
 impl Default for EncodingOptions {
     fn default() -> Self {
+        // a dummy placeholder value
+        // since we can't know the stream parameters yet
+        let mut metadata = BlockList::new(Streaminfo {
+            minimum_block_size: 0,
+            maximum_block_size: 0,
+            minimum_frame_size: None,
+            maximum_frame_size: None,
+            sample_rate: 0,
+            channels: NonZero::new(1).unwrap(),
+            bits_per_sample: SignedBitCount::new::<4>(),
+            total_samples: None,
+            md5: None,
+        });
+
+        metadata.insert(crate::metadata::Padding {
+            size: 4096u16.into(),
+        });
+
         Self {
             block_size: 4096,
             mid_side: true,
             max_partition_order: 5,
-            // a dummy placeholder value
-            // since we can't know the stream parameters yet
-            metadata: BlockList::new(Streaminfo {
-                minimum_block_size: 0,
-                maximum_block_size: 0,
-                minimum_frame_size: None,
-                maximum_frame_size: None,
-                sample_rate: 0,
-                channels: NonZero::new(1).unwrap(),
-                bits_per_sample: SignedBitCount::new::<4>(),
-                total_samples: None,
-                md5: None,
-            }),
+            metadata,
             seektable_style: SeektableStyle::Seconds(NonZero::new(10).unwrap()),
             max_lpc_order: NonZero::new(8),
             window: Window::default(),
@@ -608,14 +614,20 @@ impl EncodingOptions {
     /// Files may contain multiple [`crate::metadata::Padding`] blocks,
     /// and this adds a new block each time it is used.
     ///
-    /// The default is to not add any padding to the output file,
-    /// which may be inconvenient if one wishes to modify metadata
-    /// later since it will likely require rewriting the whole file
-    /// instead of only metadata blocks.
+    /// The default is to add a 4096 byte padding block.
     pub fn padding<B: Into<BlockSize>>(mut self, size: B) -> Self {
         use crate::metadata::Padding;
 
         self.metadata.insert(Padding { size: size.into() });
+        self
+    }
+
+    /// Remove any padding blocks from metadata
+    ///
+    /// This makes the file smaller, but will likely require
+    /// rewriting it if any metadata needs to be modified later.
+    pub fn no_padding(mut self) -> Self {
+        self.metadata.remove::<crate::metadata::Padding>();
         self
     }
 
@@ -1891,7 +1903,7 @@ fn estimate_best_order(
             let header_bits =
                 u32::from(order) * (u32::from(bits_per_sample) + u32::from(precision));
             let bits_per_residual =
-                (f64::from(error) * error_scale).ln() / (2.0 * std::f64::consts::LN_2).max(0.0);
+                (error * error_scale).ln() / (2.0 * std::f64::consts::LN_2).max(0.0);
             let subframe_bits = dbg!(bits_per_residual.mul_add(
                 f64::from(sample_count - u16::from(order)),
                 f64::from(header_bits),

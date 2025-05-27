@@ -37,7 +37,7 @@ use std::path::Path;
 ///     BlockHeader {
 ///         last: true,
 ///         block_type: BlockType::Streaminfo,
-///         size: 0x00_00_22.into(),
+///         size: 0x00_00_22u16.into(),
 ///     },
 /// );
 /// ```
@@ -262,6 +262,12 @@ impl ToBitStream for BlockSize {
 
 impl From<u8> for BlockSize {
     fn from(u: u8) -> Self {
+        Self(u.into())
+    }
+}
+
+impl From<u16> for BlockSize {
+    fn from(u: u16) -> Self {
         Self(u.into())
     }
 }
@@ -1156,14 +1162,14 @@ impl ToBitStream for Streaminfo {
 ///     &BlockHeader {
 ///         last: true,
 ///         block_type: BlockType::Padding,
-///         size: 0x0a.into(),
+///         size: 0x0au8.into(),
 ///     },
 /// );
 ///
 /// assert_eq!(
 ///     r.parse_using::<Padding>(header.size).unwrap(),
 ///     Padding {
-///         size: 0x0a.into(),
+///         size: 0x0au8.into(),
 ///     },
 /// );
 /// ```
@@ -1279,7 +1285,7 @@ impl ToBitStream for Application {
 ///     &BlockHeader {
 ///         last: true,
 ///         block_type: BlockType::SeekTable,
-///         size: 0x48.into(),
+///         size: 0x48u8.into(),
 ///     },
 /// );
 ///
@@ -2452,6 +2458,11 @@ impl BlockList {
         &'b mut self,
     ) -> impl Iterator<Item = &'b mut B> {
         self.blocks.iter_mut().filter_map(B::try_from_opt_block_mut)
+    }
+
+    /// Removes all instances of the given metadata block type
+    pub fn remove<B: OptionalMetadataBlock>(&mut self) {
+        self.blocks.retain(|b| b.block_type() != B::TYPE)
     }
 
     /// Updates Vorbis comment, creating a new block if necessary
