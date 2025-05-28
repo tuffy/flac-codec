@@ -1512,8 +1512,8 @@ fn encode_fixed_subframe<W: BitWrite>(
             .min_by_key(|(_, residuals)| {
                 residuals[(residuals.len() - min_fixed)..]
                     .iter()
-                    .map(|r| r.unsigned_abs())
-                    .sum::<u32>()
+                    .map(|r| u64::from(r.unsigned_abs()))
+                    .sum::<u64>()
             })
             .map(|(order, residuals)| (order as u8, &channel[0..order], residuals))
             .unwrap()
