@@ -2010,16 +2010,25 @@ fn write_residuals<W: BitWrite>(
                 let mut estimated_bits = 0;
 
                 let partitions = residuals
-                    .rchunks(block_size / partition_count as usize)
+                    .rchunks(block_size / partition_count)
                     .rev()
                     .map(|partition| Partition::new(partition, &mut estimated_bits))
-                    .collect::<Option<ArrayVec<_, MAX_PARTITIONS>>>()?;
+                    .collect::<Option<ArrayVec<_, MAX_PARTITIONS>>>()
+                    .filter(|p| !p.is_empty() && p.len().is_power_of_two())?;
 
                 Some((partitions, estimated_bits))
             })
             .min_by_key(|(_, estimated_bits)| *estimated_bits)
             .map(|(partitions, _)| partitions)
-            .expect("no best set of partitions found")
+            .unwrap_or_else(
+                || std::iter::once(Partition {
+                    header: ResidualPartitionHeader::Escaped {
+                        escape_size: SignedBitCount::new::<0b11111>(),
+                    },
+                    residuals,
+                })
+                .collect(),
+            )
     }
 
     fn write_block<const RICE_MAX: u32, W: BitWrite>(
@@ -2031,8 +2040,6 @@ fn write_residuals<W: BitWrite>(
         let block_size = predictor_order + residuals.len();
 
         let partitions = best_partitions::<RICE_MAX>(options, block_size, residuals);
-        debug_assert!(!partitions.is_empty());
-        debug_assert!(partitions.len().is_power_of_two());
 
         writer.write::<4, u32>(partitions.len().ilog2())?; // partition order
 
