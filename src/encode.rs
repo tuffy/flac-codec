@@ -1904,10 +1904,10 @@ fn estimate_best_order(
                 u32::from(order) * (u32::from(bits_per_sample) + u32::from(precision));
             let bits_per_residual =
                 (error * error_scale).ln() / (2.0 * std::f64::consts::LN_2).max(0.0);
-            let subframe_bits = dbg!(bits_per_residual.mul_add(
+            let subframe_bits = bits_per_residual.mul_add(
                 f64::from(sample_count - u16::from(order)),
                 f64::from(header_bits),
-            ));
+            );
             (subframe_bits, order, coeffs)
         })
         .min_by(|(x, _, _), (y, _, _)| x.total_cmp(y))
@@ -1933,25 +1933,45 @@ fn write_residuals<W: BitWrite>(
     }
 
     impl<'r, const RICE_MAX: u32> Partition<'r, RICE_MAX> {
-        fn new(partition: &'r [i32], estimated_bits: &mut u32) -> Self {
-            debug_assert!(!partition.is_empty());
-
+        fn new(partition: &'r [i32], estimated_bits: &mut u32) -> Option<Self> {
             let partition_samples = partition.len() as u32;
+            if partition_samples == 0 {
+                return None;
+            }
+
             let partition_sum = partition.iter().map(|i| i.unsigned_abs()).sum::<u32>();
 
             if partition_sum > 0 {
                 let rice = if partition_sum > partition_samples {
-                    BitCount::try_from(
-                        ((partition_sum as f32) / (partition_samples as f32))
-                            .log2()
-                            .ceil() as u32,
-                    )
-                    .expect("excessive Rice parameters")
+                    let bits_needed = ((partition_sum as f32) / (partition_samples as f32))
+                        .log2()
+                        .ceil() as u32;
+
+                    match BitCount::try_from(bits_needed).ok().filter(|rice| {
+                        u32::from(*rice) < u32::from(BitCount::<RICE_MAX>::new::<RICE_MAX>())
+                    }) {
+                        Some(rice) => rice,
+                        None => {
+                            let escape_size = (partition
+                                .iter()
+                                .map(|i| i.unsigned_abs())
+                                .sum::<u32>()
+                                .ilog2()
+                                + 2)
+                            .try_into()
+                            .ok()?;
+
+                            *estimated_bits += u32::from(escape_size) * partition_samples;
+
+                            return Some(Self {
+                                header: ResidualPartitionHeader::Escaped { escape_size },
+                                residuals: partition,
+                            });
+                        }
+                    }
                 } else {
                     BitCount::new::<0>()
                 };
-
-                debug_assert!(u32::from(rice) < u32::from(BitCount::<RICE_MAX>::new::<RICE_MAX>()));
 
                 let partition_size: u32 = 4u32
                     + ((1 + u32::from(rice)) * partition_samples)
@@ -1964,20 +1984,16 @@ fn write_residuals<W: BitWrite>(
 
                 *estimated_bits += partition_size;
 
-                // TODO - if estimated bits is larger than
-                // a verbatim (escaped) partition,
-                // just escape the residuals instead
-
-                Partition {
+                Some(Partition {
                     header: ResidualPartitionHeader::Standard { rice },
                     residuals: partition,
-                }
+                })
             } else {
                 // all partition residuals are 0, so use a constant
-                Partition {
+                Some(Partition {
                     header: ResidualPartitionHeader::Constant,
                     residuals: partition,
-                }
+                })
             }
         }
     }
@@ -1989,18 +2005,18 @@ fn write_residuals<W: BitWrite>(
     ) -> ArrayVec<Partition<'r, RICE_MAX>, MAX_PARTITIONS> {
         (0..=block_size.trailing_zeros().min(options.max_partition_order))
             .map(|partition_order| 1 << partition_order)
-            .map(|partition_count| {
+            .take_while(|partition_count: &usize| partition_count.is_power_of_two())
+            .filter_map(|partition_count| {
                 let mut estimated_bits = 0;
 
-                let partitions: ArrayVec<_, MAX_PARTITIONS> = residuals
+                let partitions = residuals
                     .rchunks(block_size / partition_count as usize)
                     .rev()
                     .map(|partition| Partition::new(partition, &mut estimated_bits))
-                    .collect();
+                    .collect::<Option<ArrayVec<_, MAX_PARTITIONS>>>()?;
 
-                (partitions, estimated_bits)
+                Some((partitions, estimated_bits))
             })
-            .take_while(|(partitions, _)| partitions.len().is_power_of_two())
             .min_by_key(|(_, estimated_bits)| *estimated_bits)
             .map(|(partitions, _)| partitions)
             .expect("no best set of partitions found")
