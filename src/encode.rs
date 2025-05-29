@@ -700,6 +700,32 @@ impl EncodingOptions {
             ..self
         }
     }
+
+    /// Returns the fastest encoding options
+    ///
+    /// These are tuned to encode as quickly as possible.
+    pub fn fast() -> Self {
+        Self {
+            block_size: 1152,
+            mid_side: false,
+            max_partition_order: 3,
+            max_lpc_order: None,
+            ..Self::default()
+        }
+    }
+
+    /// Returns the fastest encoding options
+    ///
+    /// These are tuned to encode files as small as possible.
+    pub fn best() -> Self {
+        Self {
+            block_size: 4096,
+            mid_side: true,
+            max_partition_order: 6,
+            max_lpc_order: NonZero::new(12),
+            ..Self::default()
+        }
+    }
 }
 
 /// An error when specifying encoding options
