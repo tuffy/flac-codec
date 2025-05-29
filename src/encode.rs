@@ -576,7 +576,7 @@ impl EncodingOptions {
     /// no LPC subframes will be encoded.
     pub fn max_lpc_order(self, max_lpc_order: Option<NonZero<u8>>) -> Result<Self, OptionsError> {
         match max_lpc_order {
-            Some(o) if o.get() <= 32 => Err(OptionsError::InvalidLpcOrder),
+            Some(o) if o.get() > 32 => Err(OptionsError::InvalidLpcOrder),
             _ => Ok(Self {
                 max_lpc_order,
                 ..self

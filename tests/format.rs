@@ -7,6 +7,126 @@ use std::io::{Cursor, Read, Seek, Write};
 use std::num::NonZero;
 
 #[test]
+fn test_small_files() {
+    struct Samples {
+        channels: NonZero<u8>,
+        data: &'static [u8],
+    }
+
+    for Samples { channels, data } in [
+        Samples {
+            channels: NonZero::new(1).unwrap(),
+            data: b"\x00\x80",
+        },
+        Samples {
+            channels: NonZero::new(2).unwrap(),
+            data: b"\x00\x80\xff\x7f",
+        },
+        Samples {
+            channels: NonZero::new(1).unwrap(),
+            data: b"\xe7\xff\x00\x00\x19\x00\x32\x00\x64\x00",
+        },
+        Samples {
+            channels: NonZero::new(2).unwrap(),
+            data:
+                b"\xe7\xff\xf4\x01\x00\x00\x90\x01\x19\x00\x2c\x01\x32\x00\xc8\x00\x64\x00\x64\x00",
+        },
+    ] {
+        let mut flac = Cursor::new(vec![]);
+        let mut samples = data;
+
+        assert_eq!(
+            std::io::copy(
+                &mut samples,
+                &mut FlacWriter::endian(
+                    &mut flac,
+                    LittleEndian,
+                    EncodingOptions::fast()
+                        .max_lpc_order(NonZero::new(16))
+                        .unwrap()
+                        .mid_side(true)
+                        .no_padding(),
+                    44100,
+                    16,
+                    channels,
+                    u64::try_from(data.len() / 2 / channels.get() as usize)
+                        .ok()
+                        .and_then(NonZero::new),
+                )
+                .unwrap(),
+            )
+            .unwrap(),
+            data.len().try_into().unwrap()
+        );
+
+        assert!(flac.rewind().is_ok());
+
+        let mut output = vec![];
+
+        assert_eq!(
+            std::io::copy(
+                &mut FlacReader::endian(flac, LittleEndian).unwrap(),
+                &mut output,
+            )
+            .unwrap(),
+            data.len().try_into().unwrap(),
+        );
+
+        assert_eq!(&output, &data);
+    }
+}
+
+#[test]
+fn test_blocksize_variations() {
+    let data: &[u8] = include_bytes!("data/noise32.raw");
+
+    for blocksize in [16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33] {
+        for lpc_order in &[0, 1, 2, 3, 4, 5, 7, 8, 9, 15, 16, 17, 31, 32] {
+            let mut flac = Cursor::new(vec![]);
+            let mut samples = data;
+
+            assert_eq!(
+                std::io::copy(
+                    &mut samples,
+                    &mut FlacWriter::endian(
+                        &mut flac,
+                        LittleEndian,
+                        EncodingOptions::best()
+                            .max_lpc_order(NonZero::new(*lpc_order))
+                            .unwrap()
+                            .block_size(blocksize)
+                            .unwrap()
+                            .no_padding(),
+                        44100,
+                        8,
+                        NonZero::new(1).unwrap(),
+                        u64::try_from(data.len()).ok().and_then(NonZero::new),
+                    )
+                    .unwrap(),
+                )
+                .unwrap(),
+                data.len().try_into().unwrap()
+            );
+
+            assert!(flac.rewind().is_ok());
+
+            let mut output = vec![];
+
+            assert_eq!(
+                std::io::copy(
+                    &mut FlacReader::endian(flac, LittleEndian).unwrap(),
+                    &mut output,
+                )
+                .unwrap(),
+                data.len().try_into().unwrap(),
+            );
+
+            assert_eq!(&output, &data);
+        }
+    }
+}
+
+#[test]
 fn test_fractional() {
     fn perform_test(blocksize: u16, samples: usize) {
         let data = include_bytes!("data/noise.raw");
