@@ -496,3 +496,59 @@ fn test_full_scale_deflection() {
         }
     }
 }
+
+#[test]
+fn test_wasted_bits() {
+    use flac_codec::{
+        metadata::read_blocks,
+        stream::{Frame, Subframe},
+    };
+
+    let data = include_bytes!("data/wasted-bits.raw");
+
+    let mut flac = Cursor::new(vec![]);
+
+    assert!(
+        FlacWriter::endian(
+            &mut flac,
+            LittleEndian,
+            EncodingOptions::default().no_padding(),
+            44100,
+            16,
+            NonZero::new(1).unwrap(),
+            u64::try_from(data.len() / 2).ok().and_then(NonZero::new),
+        )
+        .unwrap()
+        .write_all(data)
+        .is_ok()
+    );
+
+    assert!(flac.rewind().is_ok());
+
+    let mut output = vec![];
+
+    // ensure file round-trips properly
+    assert!(
+        std::io::copy(
+            &mut FlacReader::endian(&mut flac, LittleEndian).unwrap(),
+            &mut output,
+        )
+        .is_ok(),
+    );
+
+    assert_eq!(&output, data);
+
+    assert!(flac.rewind().is_ok());
+
+    // ensure there are some actual wasted bits recorded
+    assert!(read_blocks(&mut flac).count() > 0);
+    let frame1 = Frame::read_subset(&mut flac).unwrap();
+    assert!(
+        match frame1.subframes[0] {
+            Subframe::Constant { wasted_bps, .. }
+            | Subframe::Verbatim { wasted_bps, .. }
+            | Subframe::Fixed { wasted_bps, .. }
+            | Subframe::Lpc { wasted_bps, .. } => wasted_bps,
+        } > 0
+    );
+}
