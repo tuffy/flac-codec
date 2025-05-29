@@ -1383,20 +1383,24 @@ fn encode_subframe<'c>(
         };
 
     fixed_output.clear();
-    encode_fixed_subframe(
+    if let Err(_) = encode_fixed_subframe(
         options,
         fixed_cache,
         fixed_output,
         channel,
         bits_per_sample,
         wasted_bps,
-    )?;
+    ) {
+        verbatim_output.clear();
+        encode_verbatim_subframe(verbatim_output, channel, bits_per_sample, wasted_bps)?;
+        return Ok(verbatim_output);
+    }
 
     let best = match options.max_lpc_order {
         Some(max_lpc_order) if channel.len() > usize::from(max_lpc_order.get()) => {
             lpc_output.clear();
 
-            encode_lpc_subframe(
+            match encode_lpc_subframe(
                 options,
                 max_lpc_order,
                 lpc_cache,
@@ -1404,12 +1408,13 @@ fn encode_subframe<'c>(
                 channel,
                 bits_per_sample,
                 wasted_bps,
-            )?;
-
-            [fixed_output, lpc_output]
-                .into_iter()
-                .min_by_key(|c| c.written())
-                .unwrap()
+            ) {
+                Ok(()) => [fixed_output, lpc_output]
+                    .into_iter()
+                    .min_by_key(|c| c.written())
+                    .unwrap(),
+                Err(_) => fixed_output,
+            }
         }
         _ => fixed_output,
     };
@@ -1482,17 +1487,19 @@ fn encode_fixed_subframe<W: BitWrite>(
         fixed_orders.push(channel);
 
         // accumulate a set of FIXED diffs
-        for buf in buffers.iter_mut() {
+        'outer: for buf in buffers.iter_mut() {
             let prev_order = fixed_orders.last().unwrap();
             match prev_order.split_at_checked(1) {
                 Some((_, r)) => {
                     buf.clear();
-                    buf.extend(
-                        r.iter()
-                            .zip(*prev_order)
-                            .map(|(n, p)| n - p)
-                            .collect::<Vec<_>>(),
-                    );
+                    for (n, p) in r.iter().zip(*prev_order) {
+                        match n.checked_sub(*p) {
+                            Some(v) => {
+                                buf.push(v);
+                            }
+                            None => break 'outer,
+                        }
+                    }
                     if buf.is_empty() {
                         break;
                     } else {
@@ -1934,16 +1941,19 @@ fn write_residuals<W: BitWrite>(
 
     impl<'r, const RICE_MAX: u32> Partition<'r, RICE_MAX> {
         fn new(partition: &'r [i32], estimated_bits: &mut u32) -> Option<Self> {
-            let partition_samples = partition.len() as u32;
+            let partition_samples = partition.len() as u16;
             if partition_samples == 0 {
                 return None;
             }
 
-            let partition_sum = partition.iter().map(|i| i.unsigned_abs()).sum::<u32>();
+            let partition_sum = partition
+                .iter()
+                .map(|i| u64::from(i.unsigned_abs()))
+                .sum::<u64>();
 
             if partition_sum > 0 {
-                let rice = if partition_sum > partition_samples {
-                    let bits_needed = ((partition_sum as f32) / (partition_samples as f32))
+                let rice = if partition_sum > partition_samples.into() {
+                    let bits_needed = ((partition_sum as f64) / f64::from(partition_samples))
                         .log2()
                         .ceil() as u32;
 
@@ -1954,14 +1964,15 @@ fn write_residuals<W: BitWrite>(
                         None => {
                             let escape_size = (partition
                                 .iter()
-                                .map(|i| i.unsigned_abs())
-                                .sum::<u32>()
+                                .map(|i| u64::from(i.unsigned_abs()))
+                                .sum::<u64>()
                                 .ilog2()
                                 + 2)
                             .try_into()
                             .ok()?;
 
-                            *estimated_bits += u32::from(escape_size) * partition_samples;
+                            *estimated_bits +=
+                                u32::from(escape_size) * u32::from(partition_samples);
 
                             return Some(Self {
                                 header: ResidualPartitionHeader::Escaped { escape_size },
@@ -1974,13 +1985,13 @@ fn write_residuals<W: BitWrite>(
                 };
 
                 let partition_size: u32 = 4u32
-                    + ((1 + u32::from(rice)) * partition_samples)
+                    + ((1 + u32::from(rice)) * u32::from(partition_samples))
                     + if u32::from(rice) > 0 {
-                        partition_sum >> (u32::from(rice) - 1)
+                        u32::try_from(partition_sum >> (u32::from(rice) - 1)).ok()?
                     } else {
-                        partition_sum << 1
+                        u32::try_from(partition_sum << 1).ok()?
                     }
-                    - (partition_samples / 2);
+                    - (u32::from(partition_samples) / 2);
 
                 *estimated_bits += partition_size;
 
