@@ -2020,15 +2020,15 @@ fn write_residuals<W: BitWrite>(
             })
             .min_by_key(|(_, estimated_bits)| *estimated_bits)
             .map(|(partitions, _)| partitions)
-            .unwrap_or_else(
-                || std::iter::once(Partition {
+            .unwrap_or_else(|| {
+                std::iter::once(Partition {
                     header: ResidualPartitionHeader::Escaped {
                         escape_size: SignedBitCount::new::<0b11111>(),
                     },
                     residuals,
                 })
-                .collect(),
-            )
+                .collect()
+            })
     }
 
     fn write_block<const RICE_MAX: u32, W: BitWrite>(

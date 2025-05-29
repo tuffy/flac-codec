@@ -3,7 +3,7 @@ use flac_codec::{
     decode::FlacReader,
     encode::{EncodingOptions, FlacWriter},
 };
-use std::io::{Cursor, Seek, Write};
+use std::io::{Cursor, Read, Seek, Write};
 use std::num::NonZero;
 
 #[test]
@@ -272,18 +272,26 @@ fn test_roundtrip() {
         channels,
         bps,
         data,
-    } in all {
+    } in all
+    {
         let mut flac = Cursor::new(vec![]);
 
-        assert!(FlacWriter::endian(
-            &mut flac,
-            LittleEndian,
-            EncodingOptions::default().no_padding(),
-            44100,
-            bps as u32,
-            NonZero::new(channels as u8).unwrap(),
-            u64::try_from(data.len() / (bps / 8) / channels).ok().and_then(NonZero::new),
-        ).unwrap().write_all(data).is_ok());
+        assert!(
+            FlacWriter::endian(
+                &mut flac,
+                LittleEndian,
+                EncodingOptions::default().no_padding(),
+                44100,
+                bps as u32,
+                NonZero::new(channels as u8).unwrap(),
+                u64::try_from(data.len() / (bps / 8) / channels)
+                    .ok()
+                    .and_then(NonZero::new),
+            )
+            .unwrap()
+            .write_all(data)
+            .is_ok()
+        );
 
         assert!(flac.rewind().is_ok());
 
@@ -298,5 +306,193 @@ fn test_roundtrip() {
         );
 
         assert_eq!(&output, data);
+    }
+}
+
+#[test]
+fn test_full_scale_deflection() {
+    #[derive(Copy, Clone, Debug)]
+    struct Samples {
+        bps: u32,
+        bytes: &'static [u8],
+        iters: usize,
+    }
+
+    let all: [Samples; 28] = [
+        Samples {
+            bps: 8,
+            bytes: b"\x7f\x80",
+            iters: 100,
+        },
+        Samples {
+            bps: 8,
+            bytes: b"\x7f\x7f\x80",
+            iters: 100,
+        },
+        Samples {
+            bps: 8,
+            bytes: b"\x7f\x80\x80",
+            iters: 100,
+        },
+        Samples {
+            bps: 8,
+            bytes: b"\x7f\x80",
+            iters: 200,
+        },
+        Samples {
+            bps: 8,
+            bytes: b"\x7f\x80\x80\x7f",
+            iters: 200,
+        },
+        Samples {
+            bps: 8,
+            bytes: b"\x7f\x80\x7f\x7f\x80",
+            iters: 100,
+        },
+        Samples {
+            bps: 8,
+            bytes: b"\x7f\x80\x80\x7f\x80",
+            iters: 100,
+        },
+        Samples {
+            bps: 16,
+            bytes: b"\xff\x7f\x00\x80",
+            iters: 100,
+        },
+        Samples {
+            bps: 16,
+            bytes: b"\xff\x7f\xff\x7f\x00\x80",
+            iters: 100,
+        },
+        Samples {
+            bps: 16,
+            bytes: b"\xff\x7f\x00\x80\x00\x80",
+            iters: 100,
+        },
+        Samples {
+            bps: 16,
+            bytes: b"\xff\x7f\x00\x80",
+            iters: 200,
+        },
+        Samples {
+            bps: 16,
+            bytes: b"\xff\x7f\x00\x80\x00\x80\xff\x7f",
+            iters: 100,
+        },
+        Samples {
+            bps: 16,
+            bytes: b"\xff\x7f\x00\x80\xff\x7f\xff\x7f\x00\x80",
+            iters: 100,
+        },
+        Samples {
+            bps: 16,
+            bytes: b"\xff\x7f\x00\x80\x00\x80\xff\x7f\x00\x80",
+            iters: 100,
+        },
+        Samples {
+            bps: 24,
+            bytes: b"\xff\xff\x7f\x00\x00\x80",
+            iters: 100,
+        },
+        Samples {
+            bps: 24,
+            bytes: b"\xff\xff\x7f\xff\xff\x7f\x00\x00\x80",
+            iters: 100,
+        },
+        Samples {
+            bps: 24,
+            bytes: b"\xff\xff\x7f\x00\x00\x80\x00\x00\x80",
+            iters: 100,
+        },
+        Samples {
+            bps: 24,
+            bytes: b"\xff\xff\x7f\x00\x00\x80\xff\xff\x7f\x00\x00\x80",
+            iters: 100,
+        },
+        Samples {
+            bps: 24,
+            bytes: b"\xff\xff\x7f\x00\x00\x80\x00\x00\x80\xff\xff\x7f",
+            iters: 100,
+        },
+        Samples {
+            bps: 24,
+            bytes: b"\xff\xff\x7f\x00\x00\x80\xff\xff\x7f\xff\xff\x7f\x00\x00\x80",
+            iters: 100,
+        },
+        Samples {
+            bps: 24,
+            bytes: b"\xff\xff\x7f\x00\x00\x80\x00\x00\x80\xff\xff\x7f\x00\x00\x80",
+            iters: 100,
+        },
+        Samples {
+            bps: 32,
+            bytes: b"\xff\xff\xff\x7f\x00\x00\x00\x80",
+            iters: 100,
+        },
+        Samples {
+            bps: 32,
+            bytes: b"\xff\xff\xff\x7f\xff\xff\xff\x7f\x00\x00\x00\x80",
+            iters: 100,
+        },
+        Samples {
+            bps: 32,
+            bytes: b"\xff\xff\xff\x7f\x00\x00\x00\x80\x00\x00\x00\x80",
+            iters: 100,
+        },
+        Samples {
+            bps: 32,
+            bytes: b"\xff\xff\xff\x7f\x00\x00\x00\x80",
+            iters: 200,
+        },
+        Samples {
+            bps: 32,
+            bytes: b"\xff\xff\xff\x7f\x00\x00\x00\x80\x00\x00\x00\x80\xff\xff\xff\x7f",
+            iters: 100,
+        },
+        Samples {
+            bps: 32,
+            bytes:
+                b"\xff\xff\xff\x7f\x00\x00\x00\x80\xff\xff\xff\x7f\xff\xff\xff\x7f\x00\x00\x00\x80",
+            iters: 100,
+        },
+        Samples {
+            bps: 32,
+            bytes:
+                b"\xff\xff\xff\x7f\x00\x00\x00\x80\x00\x00\x00\x80\xff\xff\xff\x7f\x00\x00\x00\x80",
+            iters: 100,
+        },
+    ];
+
+    for Samples { bps, bytes, iters } in all {
+        let mut flac = Cursor::new(vec![]);
+
+        let mut w = FlacWriter::endian(
+            &mut flac,
+            LittleEndian,
+            EncodingOptions::default().no_padding(),
+            44100,
+            bps,
+            NonZero::new(1).unwrap(),
+            u64::try_from((bytes.len() * iters) / (bps as usize / 8))
+                .ok()
+                .and_then(NonZero::new),
+        )
+        .unwrap();
+
+        for _ in 0..iters {
+            assert!(w.write_all(bytes).is_ok());
+        }
+
+        assert!(w.finalize().is_ok());
+        assert!(flac.rewind().is_ok());
+
+        let mut r = FlacReader::endian(flac, LittleEndian).unwrap();
+        let mut buf = vec![];
+        buf.resize(bytes.len(), 0);
+
+        for _ in 0..iters {
+            assert!(r.read_exact(&mut buf).is_ok());
+            assert_eq!(buf.as_slice(), bytes);
+        }
     }
 }
