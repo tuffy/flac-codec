@@ -80,7 +80,9 @@ fn test_small_files() {
 fn test_blocksize_variations() {
     let data: &[u8] = include_bytes!("data/noise32.raw");
 
-    for blocksize in [16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33] {
+    for blocksize in [
+        16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33,
+    ] {
         for lpc_order in &[0, 1, 2, 3, 4, 5, 7, 8, 9, 15, 16, 17, 31, 32] {
             let mut flac = Cursor::new(vec![]);
             let mut samples = data;

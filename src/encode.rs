@@ -2084,17 +2084,16 @@ fn write_residuals<W: BitWrite>(
             writer.build(&header)?;
             match header {
                 ResidualPartitionHeader::Standard { rice } => {
-                    let shift = 1 << u32::from(rice);
+                    let mask = rice.mask_lsb();
 
                     residuals.iter().try_for_each(|s| {
-                        let unsigned = if s.is_negative() {
+                        let (msb, lsb) = mask(if s.is_negative() {
                             ((-*s as u32 - 1) << 1) + 1
                         } else {
                             (*s as u32) << 1
-                        };
-                        let (quot, rem) = (unsigned / shift, unsigned % shift);
-                        writer.write_unary::<1>(quot)?;
-                        writer.write_counted(rice, rem)
+                        });
+                        writer.write_unary::<1>(msb)?;
+                        writer.write_checked(lsb)
                     })?;
                 }
                 ResidualPartitionHeader::Escaped { escape_size } => {
