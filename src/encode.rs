@@ -1268,89 +1268,155 @@ fn correlate_channels<'c>(
 ) -> Result<Correlated<'c>, Error> {
     match bits_per_sample.checked_add::<32>(1) {
         Some(difference_bits_per_sample) if options.mid_side => {
-            // TODO - calculate these in parallel
+            let mut left_abs_sum = 0;
+            let mut right_abs_sum = 0;
+            let mut mid_abs_sum = 0;
+            let mut side_abs_sum = 0;
 
             average_samples.clear();
-            average_samples.extend(left.iter().zip(right).map(|(l, r)| (l + r) >> 1));
+            average_samples.extend(
+                left.iter()
+                    .inspect(|s| left_abs_sum += u64::from(s.unsigned_abs()))
+                    .zip(
+                        right
+                            .iter()
+                            .inspect(|s| right_abs_sum += u64::from(s.unsigned_abs())),
+                    )
+                    .map(|(l, r)| (l + r) >> 1)
+                    .inspect(|s| mid_abs_sum += u64::from(s.unsigned_abs())),
+            );
 
             difference_samples.clear();
-            difference_samples.extend(left.iter().zip(right).map(|(l, r)| l - r));
+            difference_samples.extend(
+                left.iter()
+                    .zip(right)
+                    .map(|(l, r)| l - r)
+                    .inspect(|s| side_abs_sum += u64::from(s.unsigned_abs())),
+            );
 
-            let left_channel = encode_subframe(options, left_channel_cache, left, bits_per_sample)?;
-            let right_channel =
-                encode_subframe(options, right_channel_cache, right, bits_per_sample)?;
-            let average_channel =
-                encode_subframe(options, average_cache, average_samples, bits_per_sample)?;
-            let difference_channel = encode_subframe(
-                options,
-                difference_cache,
-                difference_samples,
-                difference_bits_per_sample,
-            )?;
-
-            Ok([
-                Correlated {
-                    channel_assignment: ChannelAssignment::LeftSide,
-                    channels: [left_channel, difference_channel],
-                },
-                Correlated {
-                    channel_assignment: ChannelAssignment::SideRight,
-                    channels: [difference_channel, right_channel],
-                },
-                Correlated {
-                    channel_assignment: ChannelAssignment::MidSide,
-                    channels: [average_channel, difference_channel],
-                },
-                Correlated {
-                    channel_assignment: ChannelAssignment::Independent(Independent::Stereo),
-                    channels: [left_channel, right_channel],
-                },
+            match [
+                (ChannelAssignment::LeftSide, left_abs_sum + side_abs_sum),
+                (ChannelAssignment::SideRight, side_abs_sum + right_abs_sum),
+                (ChannelAssignment::MidSide, mid_abs_sum + side_abs_sum),
+                (
+                    ChannelAssignment::Independent(Independent::Stereo),
+                    left_abs_sum + right_abs_sum,
+                ),
             ]
             .into_iter()
-            .min_by_key(
-                |Correlated {
-                     channels: [c1, c2], ..
-                 }| c1.written() + c2.written(),
-            )
-            .unwrap())
+            .min_by_key(|(_, total)| *total)
+            .unwrap()
+            .0
+            {
+                channel_assignment @ ChannelAssignment::LeftSide => Ok(Correlated {
+                    channel_assignment,
+                    channels: [
+                        encode_subframe(options, left_channel_cache, left, bits_per_sample)?,
+                        encode_subframe(
+                            options,
+                            difference_cache,
+                            difference_samples,
+                            difference_bits_per_sample,
+                        )?,
+                    ],
+                }),
+                channel_assignment @ ChannelAssignment::SideRight => Ok(Correlated {
+                    channel_assignment,
+                    channels: [
+                        encode_subframe(
+                            options,
+                            difference_cache,
+                            difference_samples,
+                            difference_bits_per_sample,
+                        )?,
+                        encode_subframe(options, right_channel_cache, right, bits_per_sample)?,
+                    ],
+                }),
+                channel_assignment @ ChannelAssignment::MidSide => Ok(Correlated {
+                    channel_assignment,
+                    channels: [
+                        encode_subframe(options, average_cache, average_samples, bits_per_sample)?,
+                        encode_subframe(
+                            options,
+                            difference_cache,
+                            difference_samples,
+                            difference_bits_per_sample,
+                        )?,
+                    ],
+                }),
+                channel_assignment @ ChannelAssignment::Independent(_) => Ok(Correlated {
+                    channel_assignment,
+                    channels: [
+                        encode_subframe(options, left_channel_cache, left, bits_per_sample)?,
+                        encode_subframe(options, right_channel_cache, right, bits_per_sample)?,
+                    ],
+                }),
+            }
         }
         Some(difference_bits_per_sample) => {
-            // TODO - calculate these in parallel
+            let mut left_abs_sum = 0;
+            let mut right_abs_sum = 0;
+            let mut side_abs_sum = 0;
 
             difference_samples.clear();
-            difference_samples.extend(left.iter().zip(right).map(|(l, r)| l - r));
+            difference_samples.extend(
+                left.iter()
+                    .inspect(|s| left_abs_sum += u64::from(s.unsigned_abs()))
+                    .zip(
+                        right
+                            .iter()
+                            .inspect(|s| right_abs_sum += u64::from(s.unsigned_abs())),
+                    )
+                    .map(|(l, r)| l - r)
+                    .inspect(|s| side_abs_sum += u64::from(s.unsigned_abs())),
+            );
 
-            let left_channel = encode_subframe(options, left_channel_cache, left, bits_per_sample)?;
-            let right_channel =
-                encode_subframe(options, right_channel_cache, right, bits_per_sample)?;
-            let difference_channel = encode_subframe(
-                options,
-                difference_cache,
-                difference_samples,
-                difference_bits_per_sample,
-            )?;
-
-            Ok([
-                Correlated {
-                    channel_assignment: ChannelAssignment::LeftSide,
-                    channels: [left_channel, difference_channel],
-                },
-                Correlated {
-                    channel_assignment: ChannelAssignment::SideRight,
-                    channels: [difference_channel, right_channel],
-                },
-                Correlated {
-                    channel_assignment: ChannelAssignment::Independent(Independent::Stereo),
-                    channels: [left_channel, right_channel],
-                },
+            match [
+                (ChannelAssignment::LeftSide, left_abs_sum + side_abs_sum),
+                (ChannelAssignment::SideRight, side_abs_sum + right_abs_sum),
+                (
+                    ChannelAssignment::Independent(Independent::Stereo),
+                    left_abs_sum + right_abs_sum,
+                ),
             ]
             .into_iter()
-            .min_by_key(
-                |Correlated {
-                     channels: [c1, c2], ..
-                 }| c1.written() + c2.written(),
-            )
-            .unwrap())
+            .min_by_key(|(_, total)| *total)
+            .unwrap()
+            .0
+            {
+                channel_assignment @ ChannelAssignment::LeftSide => Ok(Correlated {
+                    channel_assignment,
+                    channels: [
+                        encode_subframe(options, left_channel_cache, left, bits_per_sample)?,
+                        encode_subframe(
+                            options,
+                            difference_cache,
+                            difference_samples,
+                            difference_bits_per_sample,
+                        )?,
+                    ],
+                }),
+                channel_assignment @ ChannelAssignment::SideRight => Ok(Correlated {
+                    channel_assignment,
+                    channels: [
+                        encode_subframe(
+                            options,
+                            difference_cache,
+                            difference_samples,
+                            difference_bits_per_sample,
+                        )?,
+                        encode_subframe(options, right_channel_cache, right, bits_per_sample)?,
+                    ],
+                }),
+                ChannelAssignment::MidSide => unreachable!(),
+                channel_assignment @ ChannelAssignment::Independent(_) => Ok(Correlated {
+                    channel_assignment,
+                    channels: [
+                        encode_subframe(options, left_channel_cache, left, bits_per_sample)?,
+                        encode_subframe(options, right_channel_cache, right, bits_per_sample)?,
+                    ],
+                }),
+            }
         }
         None => {
             // 32 bps stream, so forego difference channel
