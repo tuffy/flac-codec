@@ -1,7 +1,7 @@
 use flac_codec::{
     byteorder::LittleEndian,
-    decode::FlacReader,
-    encode::{EncodingOptions, FlacWriter},
+    decode::{FlacReader, FlacSampleReader},
+    encode::{EncodingOptions, FlacSampleWriter, FlacWriter},
 };
 use std::io::{Cursor, Read, Seek, Write};
 use std::num::NonZero;
@@ -673,4 +673,365 @@ fn test_wasted_bits() {
             | Subframe::Lpc { wasted_bps, .. } => wasted_bps,
         } > 0
     );
+}
+
+fn generate_sine_1(
+    full_scale: f64,
+    sample_rate: f64,
+    samples: usize,
+    f1: f64,
+    a1: f64,
+    f2: f64,
+    a2: f64,
+) -> Vec<i32> {
+    use std::f64::consts::PI;
+
+    let delta1: f64 = 2.0 * PI / (sample_rate / f1);
+    let delta2: f64 = 2.0 * PI / (sample_rate / f2);
+    let mut theta1: f64 = 0.0;
+    let mut theta2: f64 = 0.0;
+
+    (0..samples)
+        .map(|_| {
+            let val = a1 * theta1.sin() + a2 * theta2.sin() * full_scale;
+            theta1 += delta1;
+            theta2 += delta2;
+            val as i32
+        })
+        .collect()
+}
+
+fn generate_sine_2(
+    full_scale: f64,
+    sample_rate: f64,
+    samples: usize,
+    f1: f64,
+    a1: f64,
+    f2: f64,
+    a2: f64,
+    fmult: f64,
+) -> Vec<i32> {
+    use std::f64::consts::PI;
+
+    let delta1: f64 = 2.0 * PI / (sample_rate / f1);
+    let delta2: f64 = 2.0 * PI / (sample_rate / f2);
+    let mut theta1: f64 = 0.0;
+    let mut theta2: f64 = 0.0;
+
+    (0..samples)
+        .map(|_| {
+            let val = [
+                a1 * theta1.sin() + a2 * theta2.sin() * full_scale,
+                -(a1 * (theta1 * fmult).sin()) + a2 * (theta2 * fmult).sin() * full_scale,
+            ];
+            theta1 += delta1;
+            theta2 += delta2;
+            val.map(|v| v as i32)
+        })
+        .flatten()
+        .collect()
+}
+
+#[test]
+fn test_sine_wave_streams() {
+    fn test_flac<const STEREO: bool, const SAMPLE_RATE: u32>(sine: Vec<i32>, bits_per_sample: u8) {
+        use bitstream_io::SignedBitCount;
+
+        let mut flac = Cursor::new(vec![]);
+
+        let mut w = FlacSampleWriter::new(
+            &mut flac,
+            EncodingOptions::default(),
+            SAMPLE_RATE,
+            SignedBitCount::try_from(u32::from(bits_per_sample)).unwrap(),
+            match STEREO {
+                true => NonZero::new(2).unwrap(),
+                false => NonZero::new(1).unwrap(),
+            },
+            (sine.len() / if STEREO { 2 } else { 1 })
+                .try_into()
+                .ok()
+                .and_then(NonZero::new),
+        )
+        .unwrap();
+
+        assert!(w.write(&sine).is_ok());
+        assert!(w.finalize().is_ok());
+
+        assert!(flac.rewind().is_ok());
+
+        let mut r = FlacSampleReader::new(flac).unwrap();
+        let mut sine = sine.as_slice();
+
+        loop {
+            match r.fill_buf() {
+                Ok([]) => break,
+                Ok(buf) => {
+                    let (start, rest) = sine.split_at(buf.len());
+                    assert_eq!(buf, start);
+                    r.consume(start.len());
+                    sine = rest;
+                }
+                Err(_) => panic!("error reading from FLAC file"),
+            }
+        }
+    }
+
+    for bits_per_sample in [8, 16, 24, 32] {
+        test_flac::<false, 48000>(
+            // sine{BPS}-00
+            generate_sine_1(
+                f64::from(1 << (bits_per_sample - 1)),
+                48000.0,
+                200000,
+                441.0,
+                0.50,
+                441.0,
+                0.49,
+            ),
+            bits_per_sample,
+        );
+
+        test_flac::<false, 96000>(
+            // sine{BPS}-01
+            generate_sine_1(
+                f64::from(1 << (bits_per_sample - 1)),
+                96000.0,
+                200000,
+                441.0,
+                0.61,
+                661.5,
+                0.37,
+            ),
+            bits_per_sample,
+        );
+
+        for sine in [
+            // sine{BPS}-02
+            generate_sine_1(
+                f64::from(1 << (bits_per_sample - 1)),
+                44100.0,
+                200000,
+                441.0,
+                0.50,
+                882.0,
+                0.49,
+            ),
+            // sine{BPS}-03
+            generate_sine_1(
+                f64::from(1 << (bits_per_sample - 1)),
+                44100.0,
+                200000,
+                441.0,
+                0.50,
+                4410.0,
+                0.49,
+            ),
+            // sine{BPS}-04
+            generate_sine_1(
+                f64::from(1 << (bits_per_sample - 1)),
+                44100.0,
+                200000,
+                8820.0,
+                0.70,
+                4410.0,
+                0.29,
+            ),
+        ] {
+            test_flac::<false, 44100>(sine, bits_per_sample);
+        }
+
+        for sine in [
+            // sine{BPS}-10
+            generate_sine_2(
+                f64::from(1 << (bits_per_sample - 1)),
+                48000.0,
+                200000,
+                441.0,
+                0.50,
+                441.0,
+                0.49,
+                1.0,
+            ),
+            // sine{BPS}-11
+            generate_sine_2(
+                f64::from(1 << (bits_per_sample - 1)),
+                48000.0,
+                200000,
+                441.0,
+                0.61,
+                661.5,
+                0.37,
+                1.0,
+            ),
+        ] {
+            test_flac::<true, 48000>(sine, bits_per_sample);
+        }
+
+        // sine{BPS}-12
+        test_flac::<true, 96000>(
+            generate_sine_2(
+                f64::from(1 << (bits_per_sample - 1)),
+                96000.0,
+                200000,
+                441.0,
+                0.50,
+                882.0,
+                0.49,
+                1.0,
+            ),
+            bits_per_sample,
+        );
+
+        for sine in [
+            // sine{BPS}-13
+            generate_sine_2(
+                f64::from(1 << (bits_per_sample - 1)),
+                44100.0,
+                200000,
+                441.0,
+                0.50,
+                4410.0,
+                0.49,
+                1.0,
+            ),
+            // sine{BPS}-14
+            generate_sine_2(
+                f64::from(1 << (bits_per_sample - 1)),
+                44100.0,
+                200000,
+                8820.0,
+                0.70,
+                4410.0,
+                0.29,
+                1.0,
+            ),
+            // sine{BPS}-15
+            generate_sine_2(
+                f64::from(1 << (bits_per_sample - 1)),
+                44100.0,
+                200000,
+                441.0,
+                0.50,
+                441.0,
+                0.49,
+                0.5,
+            ),
+            // sine{BPS}-16
+            generate_sine_2(
+                f64::from(1 << (bits_per_sample - 1)),
+                44100.0,
+                200000,
+                441.0,
+                0.61,
+                661.5,
+                0.37,
+                2.0,
+            ),
+            // sine{BPS}-17
+            generate_sine_2(
+                f64::from(1 << (bits_per_sample - 1)),
+                44100.0,
+                200000,
+                441.0,
+                0.50,
+                882.0,
+                0.49,
+                0.7,
+            ),
+            // sine{BPS}-18
+            generate_sine_2(
+                f64::from(1 << (bits_per_sample - 1)),
+                44100.0,
+                200000,
+                441.0,
+                0.50,
+                4410.0,
+                0.49,
+                1.3,
+            ),
+            // sine{BPS}-19
+            generate_sine_2(
+                f64::from(1 << (bits_per_sample - 1)),
+                44100.0,
+                200000,
+                8820.0,
+                0.70,
+                4410.0,
+                0.29,
+                0.1,
+            ),
+        ] {
+            test_flac::<true, 44100>(sine, bits_per_sample);
+        }
+    }
+}
+
+#[test]
+fn test_noise() {
+    enum Opt {
+        Fast,
+        Best,
+    }
+
+    let noise = std::iter::repeat_with(|| fastrand::u8(..))
+        .take(1572864)
+        .collect::<Vec<u8>>();
+
+    for channels in [1, 2, 4, 8] {
+        for bits_per_sample in [8, 16, 24, 32] {
+            for option in [None, Some(Opt::Fast), Some(Opt::Best)] {
+                for block_size in [None, Some(32), Some(32768), Some(65535)] {
+                    let mut flac = Cursor::new(vec![]);
+
+                    assert!(
+                        FlacWriter::endian(
+                            &mut flac,
+                            LittleEndian,
+                            {
+                                let mut opt = match option {
+                                    None => EncodingOptions::default(),
+                                    Some(Opt::Fast) => EncodingOptions::fast(),
+                                    Some(Opt::Best) => EncodingOptions::best(),
+                                };
+                                opt = match block_size {
+                                    None => opt,
+                                    Some(size) => opt.block_size(size).unwrap(),
+                                };
+                                opt.no_padding()
+                            },
+                            44100,
+                            bits_per_sample,
+                            NonZero::new(channels).unwrap(),
+                            u64::try_from(
+                                noise.len() as u64
+                                    / u64::from(bits_per_sample / 8)
+                                    / u64::from(channels)
+                            )
+                            .ok()
+                            .and_then(NonZero::new),
+                        )
+                        .unwrap()
+                        .write_all(&noise)
+                        .is_ok()
+                    );
+
+                    assert!(flac.rewind().is_ok());
+
+                    let mut output = vec![];
+
+                    // ensure file round-trips properly
+                    assert!(
+                        std::io::copy(
+                            &mut FlacReader::endian(&mut flac, LittleEndian).unwrap(),
+                            &mut output,
+                        )
+                        .is_ok(),
+                    );
+
+                    assert_eq!(&output, &noise);
+                }
+            }
+        }
+    }
 }
