@@ -2456,17 +2456,16 @@ impl<const RICE_MAX: u32> ToBitStream for ResidualPartition<RICE_MAX> {
             Self::Standard { residuals, rice } => {
                 w.build(&ResidualPartitionHeader::Standard { rice: *rice })?;
 
-                let shift = 1 << u32::from(*rice);
+                let mask = rice.mask_lsb();
 
                 for residual in residuals {
-                    let unsigned = if residual.is_negative() {
+                    let (msb, lsb) = mask(if residual.is_negative() {
                         ((-*residual as u32 - 1) << 1) + 1
                     } else {
                         (*residual as u32) << 1
-                    };
-                    let (quot, rem) = (unsigned / shift, unsigned % shift);
-                    w.write_unary::<1>(quot)?;
-                    w.write_counted(*rice, rem)?;
+                    });
+                    w.write_unary::<1>(msb)?;
+                    w.write_checked(lsb)?;
                 }
                 Ok(())
             }
