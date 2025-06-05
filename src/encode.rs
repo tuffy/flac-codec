@@ -869,14 +869,6 @@ struct CorrelationCache {
     average_samples: Vec<i32>,
     // the difference channel samples
     difference_samples: Vec<i32>,
-    // the left channel
-    left: ChannelCache,
-    // the right channel
-    right: ChannelCache,
-    // the average channel
-    average: ChannelCache,
-    // the difference channel
-    difference: ChannelCache,
 }
 
 #[derive(Default)]
@@ -1160,7 +1152,12 @@ where
             let Correlated {
                 channel_assignment,
                 channels,
-            } = correlate_channels(options, cache, [left, right], streaminfo.bits_per_sample)?;
+            } = correlate_channels(
+                options,
+                &mut cache.correlated,
+                [left, right],
+                streaminfo.bits_per_sample,
+            );
 
             FrameHeader {
                 blocking_strategy: false,
@@ -1177,7 +1174,7 @@ where
             bw = BitWriter::new(w);
 
             for channel in channels {
-                channel.playback(&mut bw)?;
+                encode_subframe(options, &mut cache.independent, channel)?.playback(&mut bw)?;
             }
         }
         frame => {
@@ -1203,8 +1200,7 @@ where
                 encode_subframe(
                     options,
                     &mut cache.independent,
-                    channel,
-                    streaminfo.bits_per_sample,
+                    CorrelatedChannel::independent(streaminfo.bits_per_sample, channel),
                 )?
                 .playback(bw.by_ref())?;
             }
@@ -1246,26 +1242,35 @@ where
 
 struct Correlated<'c> {
     channel_assignment: ChannelAssignment,
-    channels: [&'c BitRecorder<u32, BigEndian>; 2],
+    channels: [CorrelatedChannel<'c>; 2],
+}
+
+struct CorrelatedChannel<'c> {
+    samples: &'c [i32],
+    bits_per_sample: SignedBitCount<32>,
+    abs_sum: u64,
+}
+
+impl<'c> CorrelatedChannel<'c> {
+    fn independent(bits_per_sample: SignedBitCount<32>, samples: &'c [i32]) -> Self {
+        Self {
+            abs_sum: samples.iter().map(|s| u64::from(s.unsigned_abs())).sum(),
+            bits_per_sample,
+            samples,
+        }
+    }
 }
 
 fn correlate_channels<'c>(
     options: &Options,
-    EncodingCaches {
-        correlated:
-            CorrelationCache {
-                left: left_channel_cache,
-                right: right_channel_cache,
-                average_samples,
-                average: average_cache,
-                difference_samples,
-                difference: difference_cache,
-            },
+    CorrelationCache {
+        average_samples,
+        difference_samples,
         ..
-    }: &'c mut EncodingCaches,
-    [left, right]: [&[i32]; 2],
+    }: &'c mut CorrelationCache,
+    [left, right]: [&'c [i32]; 2],
     bits_per_sample: SignedBitCount<32>,
-) -> Result<Correlated<'c>, Error> {
+) -> Correlated<'c> {
     match bits_per_sample.checked_add::<32>(1) {
         Some(difference_bits_per_sample) if options.mid_side => {
             let mut left_abs_sum = 0;
@@ -1308,49 +1313,66 @@ fn correlate_channels<'c>(
             .unwrap()
             .0
             {
-                channel_assignment @ ChannelAssignment::LeftSide => Ok(Correlated {
+                channel_assignment @ ChannelAssignment::LeftSide => Correlated {
                     channel_assignment,
                     channels: [
-                        encode_subframe(options, left_channel_cache, left, bits_per_sample)?,
-                        encode_subframe(
-                            options,
-                            difference_cache,
-                            difference_samples,
-                            difference_bits_per_sample,
-                        )?,
+                        CorrelatedChannel {
+                            samples: left,
+                            bits_per_sample,
+                            abs_sum: left_abs_sum,
+                        },
+                        CorrelatedChannel {
+                            samples: difference_samples,
+                            bits_per_sample: difference_bits_per_sample,
+                            abs_sum: side_abs_sum,
+                        },
                     ],
-                }),
-                channel_assignment @ ChannelAssignment::SideRight => Ok(Correlated {
+                },
+                channel_assignment @ ChannelAssignment::SideRight => Correlated {
                     channel_assignment,
                     channels: [
-                        encode_subframe(
-                            options,
-                            difference_cache,
-                            difference_samples,
-                            difference_bits_per_sample,
-                        )?,
-                        encode_subframe(options, right_channel_cache, right, bits_per_sample)?,
+                        CorrelatedChannel {
+                            samples: difference_samples,
+                            bits_per_sample: difference_bits_per_sample,
+                            abs_sum: side_abs_sum,
+                        },
+                        CorrelatedChannel {
+                            samples: right,
+                            bits_per_sample,
+                            abs_sum: right_abs_sum,
+                        },
                     ],
-                }),
-                channel_assignment @ ChannelAssignment::MidSide => Ok(Correlated {
+                },
+                channel_assignment @ ChannelAssignment::MidSide => Correlated {
                     channel_assignment,
                     channels: [
-                        encode_subframe(options, average_cache, average_samples, bits_per_sample)?,
-                        encode_subframe(
-                            options,
-                            difference_cache,
-                            difference_samples,
-                            difference_bits_per_sample,
-                        )?,
+                        CorrelatedChannel {
+                            samples: average_samples,
+                            bits_per_sample,
+                            abs_sum: mid_abs_sum,
+                        },
+                        CorrelatedChannel {
+                            samples: difference_samples,
+                            bits_per_sample: difference_bits_per_sample,
+                            abs_sum: side_abs_sum,
+                        },
                     ],
-                }),
-                channel_assignment @ ChannelAssignment::Independent(_) => Ok(Correlated {
+                },
+                channel_assignment @ ChannelAssignment::Independent(_) => Correlated {
                     channel_assignment,
                     channels: [
-                        encode_subframe(options, left_channel_cache, left, bits_per_sample)?,
-                        encode_subframe(options, right_channel_cache, right, bits_per_sample)?,
+                        CorrelatedChannel {
+                            samples: left,
+                            bits_per_sample,
+                            abs_sum: left_abs_sum,
+                        },
+                        CorrelatedChannel {
+                            samples: right,
+                            bits_per_sample,
+                            abs_sum: right_abs_sum,
+                        },
                     ],
-                }),
+                },
             }
         }
         Some(difference_bits_per_sample) => {
@@ -1384,50 +1406,65 @@ fn correlate_channels<'c>(
             .unwrap()
             .0
             {
-                channel_assignment @ ChannelAssignment::LeftSide => Ok(Correlated {
+                channel_assignment @ ChannelAssignment::LeftSide => Correlated {
                     channel_assignment,
                     channels: [
-                        encode_subframe(options, left_channel_cache, left, bits_per_sample)?,
-                        encode_subframe(
-                            options,
-                            difference_cache,
-                            difference_samples,
-                            difference_bits_per_sample,
-                        )?,
+                        CorrelatedChannel {
+                            samples: left,
+                            bits_per_sample,
+                            abs_sum: left_abs_sum,
+                        },
+                        CorrelatedChannel {
+                            samples: difference_samples,
+                            bits_per_sample: difference_bits_per_sample,
+                            abs_sum: side_abs_sum,
+                        },
                     ],
-                }),
-                channel_assignment @ ChannelAssignment::SideRight => Ok(Correlated {
+                },
+                channel_assignment @ ChannelAssignment::SideRight => Correlated {
                     channel_assignment,
                     channels: [
-                        encode_subframe(
-                            options,
-                            difference_cache,
-                            difference_samples,
-                            difference_bits_per_sample,
-                        )?,
-                        encode_subframe(options, right_channel_cache, right, bits_per_sample)?,
+                        CorrelatedChannel {
+                            samples: difference_samples,
+                            bits_per_sample: difference_bits_per_sample,
+                            abs_sum: side_abs_sum,
+                        },
+                        CorrelatedChannel {
+                            samples: right,
+                            bits_per_sample,
+                            abs_sum: right_abs_sum,
+                        },
                     ],
-                }),
+                },
                 ChannelAssignment::MidSide => unreachable!(),
-                channel_assignment @ ChannelAssignment::Independent(_) => Ok(Correlated {
+                channel_assignment @ ChannelAssignment::Independent(_) => Correlated {
                     channel_assignment,
                     channels: [
-                        encode_subframe(options, left_channel_cache, left, bits_per_sample)?,
-                        encode_subframe(options, right_channel_cache, right, bits_per_sample)?,
+                        CorrelatedChannel {
+                            samples: left,
+                            bits_per_sample,
+                            abs_sum: left_abs_sum,
+                        },
+                        CorrelatedChannel {
+                            samples: right,
+                            bits_per_sample,
+                            abs_sum: right_abs_sum,
+                        },
                     ],
-                }),
+                },
             }
         }
         None => {
             // 32 bps stream, so forego difference channel
             // and encode them both indepedently
-            Ok(Correlated {
+
+            Correlated {
                 channel_assignment: ChannelAssignment::Independent(Independent::Stereo),
                 channels: [
-                    encode_subframe(options, left_channel_cache, left, bits_per_sample)?,
-                    encode_subframe(options, right_channel_cache, right, bits_per_sample)?,
+                    CorrelatedChannel::independent(bits_per_sample, left),
+                    CorrelatedChannel::independent(bits_per_sample, right),
                 ],
-            })
+            }
         }
     }
 }
@@ -1442,8 +1479,11 @@ fn encode_subframe<'c>(
         constant_output,
         verbatim_output,
     }: &'c mut ChannelCache,
-    channel: &[i32],
-    bits_per_sample: SignedBitCount<32>,
+    CorrelatedChannel {
+        samples: channel,
+        bits_per_sample,
+        ..
+    }: CorrelatedChannel,
 ) -> Result<&'c BitRecorder<u32, BigEndian>, Error> {
     const WASTED_MAX: NonZero<u32> = NonZero::new(32).unwrap();
 
