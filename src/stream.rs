@@ -1319,6 +1319,19 @@ impl ToBitStream for SubframeHeader {
     }
 }
 
+/// A subframe's type
+#[derive(Debug, Eq, PartialEq, Copy, Clone, Hash, Ord, PartialOrd)]
+pub enum SubframeType {
+    /// A constant subframe
+    Constant,
+    /// A verbatim subframe
+    Verbatim,
+    /// A fixed subframe
+    Fixed,
+    /// An LPC subframe
+    Lpc,
+}
+
 /// A subframe header's type and order
 ///
 /// This is always a 6-bit field.
@@ -1938,6 +1951,88 @@ pub enum Subframe {
     },
 }
 
+impl Subframe {
+    /// Our subframe type
+    pub fn subframe_type(&self) -> SubframeType {
+        match self {
+            Self::Constant { .. } => SubframeType::Constant,
+            Self::Verbatim { .. } => SubframeType::Verbatim,
+            Self::Fixed { .. } => SubframeType::Fixed,
+            Self::Lpc { .. } => SubframeType::Lpc,
+        }
+    }
+
+    /// Decodes subframe to samples
+    ///
+    /// `block_size` should be taken from the subframe's [`FrameHeader`]
+    ///
+    /// Note that decoding subframes to samples using this method
+    /// is intended for analysis purposes.  The [`crate::decode`]
+    /// module's decoders are preferred for general-purpose
+    /// decoding as they perform fewer temporary allocations.
+    pub fn decode(&self, block_size: u16) -> Box<dyn Iterator<Item = i32> + '_> {
+        fn predict(coefficients: &[i64], qlp_shift: u32, channel: &mut [i32]) {
+            for split in coefficients.len()..channel.len() {
+                let (predicted, residuals) = channel.split_at_mut(split);
+
+                residuals[0] += (predicted
+                    .iter()
+                    .rev()
+                    .zip(coefficients)
+                    .map(|(x, y)| *x as i64 * y)
+                    .sum::<i64>()
+                    >> qlp_shift) as i32;
+            }
+        }
+
+        match self {
+            Self::Constant { sample, wasted_bps } => {
+                Box::new((0..block_size).map(move |_| sample << wasted_bps))
+            }
+            Self::Verbatim {
+                samples,
+                wasted_bps,
+            } => Box::new(samples.iter().map(move |sample| sample << wasted_bps)),
+            Self::Fixed {
+                order,
+                warm_up,
+                residuals,
+                wasted_bps,
+            } => {
+                let mut samples = warm_up.clone();
+                samples.extend(residuals.residuals());
+                predict(
+                    SubframeHeaderType::FIXED_COEFFS[*order as usize],
+                    0,
+                    &mut samples,
+                );
+                Box::new(samples.into_iter().map(move |sample| sample << wasted_bps))
+            }
+            Self::Lpc {
+                warm_up,
+                coefficients,
+                residuals,
+                wasted_bps,
+                shift,
+                ..
+            } => {
+                let mut samples = warm_up.clone();
+                samples.extend(residuals.residuals());
+                predict(
+                    &coefficients
+                        .iter()
+                        .copied()
+                        .map(i64::from)
+                        .collect::<Vec<_>>(),
+                    *shift,
+                    &mut samples,
+                );
+                Box::new(samples.into_iter().map(move |sample| sample << wasted_bps))
+            }
+        }
+    }
+}
+
 impl FromBitStreamUsing for Subframe {
     type Context = (u16, SignedBitCount<32>);
     type Error = Error;
@@ -2219,6 +2314,16 @@ pub enum Residuals {
     },
 }
 
+impl Residuals {
+    /// Iterates over all individual residual values
+    fn residuals(&self) -> Box<dyn Iterator<Item = i32> + '_> {
+        match self {
+            Self::Method0 { partitions } => Box::new(partitions.iter().flat_map(|p| p.residuals())),
+            Self::Method1 { partitions } => Box::new(partitions.iter().flat_map(|p| p.residuals())),
+        }
+    }
+}
+
 impl FromBitStreamUsing for Residuals {
     type Context = (usize, usize);
     type Error = Error;
@@ -2413,7 +2518,21 @@ pub enum ResidualPartition<const RICE_MAX: u32> {
         residuals: Vec<i32>,
     },
     /// A partition in which all residuals are 0
-    Constant,
+    Constant {
+        /// The length of the partition in samples
+        partition_len: usize,
+    },
+}
+
+impl<const RICE_MAX: u32> ResidualPartition<RICE_MAX> {
+    fn residuals(&self) -> Box<dyn Iterator<Item = i32> + '_> {
+        match self {
+            Self::Standard { residuals, .. } | Self::Escaped { residuals, .. } => {
+                Box::new(residuals.iter().copied())
+            }
+            Self::Constant { partition_len } => Box::new(std::iter::repeat(0).take(*partition_len)),
+        }
+    }
 }
 
 impl<const RICE_MAX: u32> FromBitStreamUsing for ResidualPartition<RICE_MAX> {
@@ -2443,7 +2562,7 @@ impl<const RICE_MAX: u32> FromBitStreamUsing for ResidualPartition<RICE_MAX> {
                     .collect::<Result<Vec<_>, _>>()?,
                 escape_size,
             }),
-            ResidualPartitionHeader::Constant => Ok(Self::Constant),
+            ResidualPartitionHeader::Constant => Ok(Self::Constant { partition_len }),
         }
     }
 }
@@ -2483,7 +2602,7 @@ impl<const RICE_MAX: u32> ToBitStream for ResidualPartition<RICE_MAX> {
 
                 Ok(())
             }
-            Self::Constant => Ok(w.build(&ResidualPartitionHeader::<RICE_MAX>::Constant)?),
+            Self::Constant { .. } => Ok(w.build(&ResidualPartitionHeader::<RICE_MAX>::Constant)?),
         }
     }
 }
