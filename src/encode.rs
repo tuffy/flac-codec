@@ -879,6 +879,7 @@ struct ChannelCache {
     lpc_output: BitRecorder<u32, BigEndian>,
     constant_output: BitRecorder<u32, BigEndian>,
     verbatim_output: BitRecorder<u32, BigEndian>,
+    wasted: Vec<i32>,
 }
 
 #[derive(Default)]
@@ -1478,21 +1479,26 @@ fn encode_subframe<'c>(
         lpc_output,
         constant_output,
         verbatim_output,
+        wasted,
     }: &'c mut ChannelCache,
     CorrelatedChannel {
         samples: channel,
         bits_per_sample,
-        ..
+        abs_sum,
     }: CorrelatedChannel,
 ) -> Result<&'c BitRecorder<u32, BigEndian>, Error> {
     const WASTED_MAX: NonZero<u32> = NonZero::new(32).unwrap();
 
     debug_assert!(!channel.is_empty());
 
-    // determine any wasted bits
-    // FIXME - pull this from an external buffer?
-    let mut wasted = Vec::new();
+    if abs_sum == 0 {
+        // all samples are 0
+        constant_output.clear();
+        encode_constant_subframe(constant_output, channel[0], bits_per_sample, 0)?;
+        return Ok(constant_output);
+    }
 
+    // determine any wasted bits
     let (channel, bits_per_sample, wasted_bps) =
         match channel.iter().try_fold(WASTED_MAX, |acc, sample| {
             NonZero::new(sample.trailing_zeros()).map(|sample| sample.min(acc))
@@ -1505,6 +1511,7 @@ fn encode_subframe<'c>(
             }
             Some(wasted_bps) => {
                 let wasted_bps = wasted_bps.get();
+                wasted.clear();
                 wasted.extend(channel.iter().map(|sample| sample >> wasted_bps));
                 (
                     wasted.as_slice(),
