@@ -2530,7 +2530,7 @@ impl<const RICE_MAX: u32> ResidualPartition<RICE_MAX> {
             Self::Standard { residuals, .. } | Self::Escaped { residuals, .. } => {
                 Box::new(residuals.iter().copied())
             }
-            Self::Constant { partition_len } => Box::new(std::iter::repeat(0).take(*partition_len)),
+            Self::Constant { partition_len } => Box::new(std::iter::repeat_n(0, *partition_len)),
         }
     }
 }

@@ -1522,14 +1522,16 @@ fn encode_subframe<'c>(
         };
 
     fixed_output.clear();
-    if let Err(_) = encode_fixed_subframe(
+    if encode_fixed_subframe(
         options,
         fixed_cache,
         fixed_output,
         channel,
         bits_per_sample,
         wasted_bps,
-    ) {
+    )
+    .is_err()
+    {
         verbatim_output.clear();
         encode_verbatim_subframe(verbatim_output, channel, bits_per_sample, wasted_bps)?;
         return Ok(verbatim_output);
