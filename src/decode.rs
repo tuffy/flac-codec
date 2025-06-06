@@ -454,6 +454,124 @@ impl<R: std::io::Read + std::io::Seek> FlacSampleReader<R> {
     }
 }
 
+/// A FLAC reader which operates on streamed input
+///
+/// Because this reader needs to scan the stream for
+/// valid frame sync codes before playback,
+/// it requires [`std::io::BufRead`] instead of [`std::io::Read`].
+pub struct FlacStreamReader<R> {
+    // the wrapped reader
+    reader: R,
+    // raw decoded frame samples
+    buf: Frame,
+    // interlaced frame samples
+    samples: Vec<i32>,
+}
+
+impl<R: std::io::BufRead> FlacStreamReader<R> {
+    /// Opens new FLAC stream reader which wraps the given reader
+    #[inline]
+    pub fn new(reader: R) -> Self {
+        Self {
+            reader,
+            buf: Frame::default(),
+            samples: Vec::default(),
+        }
+    }
+
+    /// Returns the next decoded FLAC frame
+    pub fn read(&mut self) -> Result<StreamBuf<'_>, Error> {
+        use crate::crc::{Checksum, Crc16, CrcReader};
+        use crate::stream::FrameHeader;
+        use bitstream_io::{BigEndian, BitReader};
+        use std::io::Read;
+
+        // Finding the next frame header in a BufRead is
+        // tougher than it seems because fill_buf might
+        // slice a frame sync code in half, which needs
+        // to be accounted for.
+
+        let (header, mut crc16_reader) = loop {
+            // scan for the first byte of the frame sync
+            self.reader.skip_until(0b11111111)?;
+
+            // either gotten the first half of the frame sync,
+            // or have reached EOF
+
+            // check that the next byte is the other half of a frame sync
+            match self.reader.fill_buf() {
+                Ok([]) => {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::UnexpectedEof,
+                        "eof looking for frame sync",
+                    )
+                    .into());
+                }
+                Ok([byte, ..]) if byte >> 1 == 0b1111100 => {
+                    // got a whole frame sync
+                    // so try to parse a whole frame header
+                    let mut crc_reader: CrcReader<_, Crc16> = CrcReader::new(
+                        std::slice::from_ref(&0b11111111).chain(self.reader.by_ref()),
+                    );
+
+                    if let Ok(header) = FrameHeader::read_subset(&mut crc_reader) {
+                        break (header, crc_reader);
+                    }
+                }
+                Ok(_) => continue,
+                // didn't get the other half of frame sync,
+                // so continue without consuming anything
+                Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(e) => return Err(e.into()),
+            }
+        };
+
+        read_subframes(
+            BitReader::endian(crc16_reader.by_ref(), BigEndian),
+            &header,
+            &mut self.buf,
+        )?;
+
+        if crc16_reader.into_checksum().valid() {
+            self.samples.clear();
+            self.samples.extend(self.buf.iter());
+
+            Ok(StreamBuf {
+                samples: self.samples.as_slice(),
+                sample_rate: header.sample_rate.into(),
+                channels: NonZero::new(header.channel_assignment.count()).unwrap(),
+                bits_per_sample: header.bits_per_sample.into(),
+            })
+        } else {
+            Err(Error::Crc16Mismatch)
+        }
+    }
+}
+
+/// A buffer of samples read from a [`FlacStreamReader`]
+///
+/// In a conventional FLAC reader, the stream's metadata
+/// is known in advance from the required STREAMINFO metadata block
+/// and is an error for it to change mid-file.
+///
+/// In a streamed reader, that metadata isn't known in advance
+/// and can change from frame to frame.  This buffer contains
+/// all the metadata fields in the frame for decoding/playback.
+#[derive(Copy, Clone, Debug)]
+pub struct StreamBuf<'s> {
+    /// Decoded samples, interleaved by channel
+    pub samples: &'s [i32],
+
+    /// The sample rate, in Hz
+    pub sample_rate: u32,
+
+    /// Channel count, from 1 to 8
+    pub channels: NonZero<u8>,
+
+    /// Bits-per-sample, from 4 to 32
+    pub bits_per_sample: SignedBitCount<32>,
+}
+
 /// A FLAC decoder
 struct Decoder<R> {
     reader: R,
@@ -463,6 +581,7 @@ struct Decoder<R> {
     frames_start: u64,
     // the current sample, in channel-independent samples
     current_sample: u64,
+    // raw decoded frame samples
     buf: Frame,
 }
 
@@ -536,7 +655,7 @@ impl<R: std::io::Read> Decoder<R> {
     /// Returns any decoding error from the stream.
     fn read_frame(&mut self) -> Result<Option<&Frame>, Error> {
         use crate::crc::{Checksum, Crc16, CrcReader};
-        use crate::stream::{ChannelAssignment, FrameHeader};
+        use crate::stream::FrameHeader;
         use bitstream_io::{BigEndian, BitReader};
         use std::io::Read;
 
@@ -569,89 +688,11 @@ impl<R: std::io::Read> Decoder<R> {
             },
         };
 
-        let mut reader = BitReader::endian(crc16_reader.by_ref(), BigEndian);
-        let buf = &mut self.buf;
-
-        match header.channel_assignment {
-            ChannelAssignment::Independent(total_channels) => {
-                buf.resized_channels(
-                    header.bits_per_sample.into(),
-                    total_channels.into(),
-                    u16::from(header.block_size).into(),
-                )
-                .try_for_each(|channel| {
-                    read_subframe(&mut reader, header.bits_per_sample.into(), channel)
-                })?;
-            }
-            ChannelAssignment::LeftSide => {
-                let (left, side) = buf.resized_stereo(
-                    header.bits_per_sample.into(),
-                    u16::from(header.block_size).into(),
-                );
-
-                read_subframe(&mut reader, header.bits_per_sample.into(), left)?;
-
-                read_subframe(
-                    &mut reader,
-                    header
-                        .bits_per_sample
-                        .checked_add(1)
-                        .ok_or(Error::ExcessiveBps)?,
-                    side,
-                )?;
-
-                left.iter().zip(side.iter_mut()).for_each(|(left, side)| {
-                    *side = *left - *side;
-                });
-            }
-            ChannelAssignment::SideRight => {
-                let (side, right) = buf.resized_stereo(
-                    header.bits_per_sample.into(),
-                    u16::from(header.block_size).into(),
-                );
-
-                read_subframe(
-                    &mut reader,
-                    header
-                        .bits_per_sample
-                        .checked_add(1)
-                        .ok_or(Error::ExcessiveBps)?,
-                    side,
-                )?;
-
-                read_subframe(&mut reader, header.bits_per_sample.into(), right)?;
-
-                side.iter_mut().zip(right.iter()).for_each(|(side, right)| {
-                    *side += *right;
-                });
-            }
-            ChannelAssignment::MidSide => {
-                let (mid, side) = buf.resized_stereo(
-                    header.bits_per_sample.into(),
-                    u16::from(header.block_size).into(),
-                );
-
-                read_subframe(&mut reader, header.bits_per_sample.into(), mid)?;
-
-                read_subframe(
-                    &mut reader,
-                    header
-                        .bits_per_sample
-                        .checked_add(1)
-                        .ok_or(Error::ExcessiveBps)?,
-                    side,
-                )?;
-
-                mid.iter_mut().zip(side.iter_mut()).for_each(|(mid, side)| {
-                    let sum = *mid * 2 + side.abs() % 2;
-                    *mid = (sum + *side) >> 1;
-                    *side = (sum - *side) >> 1;
-                });
-            }
-        }
-
-        reader.byte_align();
-        reader.skip(16)?; // CRC-16 checksum
+        read_subframes(
+            BitReader::endian(crc16_reader.by_ref(), BigEndian),
+            &header,
+            &mut self.buf,
+        )?;
 
         if !crc16_reader.into_checksum().valid() {
             return Err(Error::Crc16Mismatch);
@@ -659,7 +700,7 @@ impl<R: std::io::Read> Decoder<R> {
 
         self.current_sample += u64::from(u16::from(header.block_size));
 
-        Ok(Some(buf))
+        Ok(Some(&self.buf))
     }
 }
 
@@ -713,6 +754,97 @@ impl<R: std::io::Seek> Decoder<R> {
             }
         }
     }
+}
+
+fn read_subframes<R: BitRead>(
+    mut reader: R,
+    header: &crate::stream::FrameHeader,
+    buf: &mut Frame,
+) -> Result<(), Error> {
+    use crate::stream::ChannelAssignment;
+
+    match header.channel_assignment {
+        ChannelAssignment::Independent(total_channels) => {
+            buf.resized_channels(
+                header.bits_per_sample.into(),
+                total_channels.into(),
+                u16::from(header.block_size).into(),
+            )
+            .try_for_each(|channel| {
+                read_subframe(&mut reader, header.bits_per_sample.into(), channel)
+            })?;
+        }
+        ChannelAssignment::LeftSide => {
+            let (left, side) = buf.resized_stereo(
+                header.bits_per_sample.into(),
+                u16::from(header.block_size).into(),
+            );
+
+            read_subframe(&mut reader, header.bits_per_sample.into(), left)?;
+
+            read_subframe(
+                &mut reader,
+                header
+                    .bits_per_sample
+                    .checked_add(1)
+                    .ok_or(Error::ExcessiveBps)?,
+                side,
+            )?;
+
+            left.iter().zip(side.iter_mut()).for_each(|(left, side)| {
+                *side = *left - *side;
+            });
+        }
+        ChannelAssignment::SideRight => {
+            let (side, right) = buf.resized_stereo(
+                header.bits_per_sample.into(),
+                u16::from(header.block_size).into(),
+            );
+
+            read_subframe(
+                &mut reader,
+                header
+                    .bits_per_sample
+                    .checked_add(1)
+                    .ok_or(Error::ExcessiveBps)?,
+                side,
+            )?;
+
+            read_subframe(&mut reader, header.bits_per_sample.into(), right)?;
+
+            side.iter_mut().zip(right.iter()).for_each(|(side, right)| {
+                *side += *right;
+            });
+        }
+        ChannelAssignment::MidSide => {
+            let (mid, side) = buf.resized_stereo(
+                header.bits_per_sample.into(),
+                u16::from(header.block_size).into(),
+            );
+
+            read_subframe(&mut reader, header.bits_per_sample.into(), mid)?;
+
+            read_subframe(
+                &mut reader,
+                header
+                    .bits_per_sample
+                    .checked_add(1)
+                    .ok_or(Error::ExcessiveBps)?,
+                side,
+            )?;
+
+            mid.iter_mut().zip(side.iter_mut()).for_each(|(mid, side)| {
+                let sum = *mid * 2 + side.abs() % 2;
+                *mid = (sum + *side) >> 1;
+                *side = (sum - *side) >> 1;
+            });
+        }
+    }
+
+    reader.byte_align();
+    reader.skip(16)?; // CRC-16 checksum
+
+    Ok(())
 }
 
 fn read_subframe<R: BitRead>(

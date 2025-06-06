@@ -146,6 +146,8 @@ pub enum Error {
     NoSamples,
     /// Number of samples written to stream differs from expected
     SampleCountMismatch,
+    /// Residual overflow
+    ResidualOverflow,
 }
 
 impl From<std::io::Error> for Error {
@@ -236,6 +238,7 @@ impl std::fmt::Display for Error {
             Self::ExcessiveTotalSamples => "too many samples requested".fmt(f),
             Self::NoSamples => "no samples written to encoder".fmt(f),
             Self::SampleCountMismatch => "samples written to stream differ from expected".fmt(f),
+            Self::ResidualOverflow => "residual value too large".fmt(f),
         }
     }
 }

@@ -1737,7 +1737,7 @@ fn encode_lpc_subframe<W: BitWrite>(
                 shift,
                 coefficients,
             },
-    } = LpcSubframeParameters::best(options, bits_per_sample, max_lpc_order, cache, channel);
+    } = LpcSubframeParameters::best(options, bits_per_sample, max_lpc_order, cache, channel)?;
 
     writer.build(&SubframeHeader {
         type_: SubframeHeaderType::Lpc { order },
@@ -1781,7 +1781,7 @@ impl<'w, 'r> LpcSubframeParameters<'w, 'r> {
             windowed,
         }: &'r mut LpcCache,
         channel: &'w [i32],
-    ) -> Self {
+    ) -> Result<Self, ResidualOverflow> {
         let parameters = LpcParameters::best(
             options,
             bits_per_sample,
@@ -1791,41 +1791,51 @@ impl<'w, 'r> LpcSubframeParameters<'w, 'r> {
             channel,
         );
 
-        let (warm_up, residuals) = Self::encode_residuals(&parameters, channel, residuals);
-
-        Self {
+        Self::encode_residuals(&parameters, channel, residuals).map(|(warm_up, residuals)| Self {
             warm_up,
             residuals,
             parameters,
-        }
+        })
     }
 
     fn encode_residuals(
         parameters: &LpcParameters,
         channel: &'w [i32],
         residuals: &'r mut Vec<i32>,
-    ) -> (&'w [i32], &'r [i32]) {
+    ) -> Result<(&'w [i32], &'r [i32]), ResidualOverflow> {
         residuals.clear();
 
-        residuals.extend(
-            (usize::from(parameters.order.get())..channel.len()).map(|split| {
-                let (previous, current) = channel.split_at(split);
+        for split in usize::from(parameters.order.get())..channel.len() {
+            let (previous, current) = channel.split_at(split);
 
+            residuals.push(
                 current[0]
-                    - (previous
-                        .iter()
-                        .rev()
-                        .zip(&parameters.coefficients)
-                        .map(|(x, y)| *x as i64 * *y as i64)
-                        .sum::<i64>()
-                        >> parameters.shift) as i32
-            }),
-        );
+                    .checked_sub(
+                        (previous
+                            .iter()
+                            .rev()
+                            .zip(&parameters.coefficients)
+                            .map(|(x, y)| *x as i64 * *y as i64)
+                            .sum::<i64>()
+                            >> parameters.shift) as i32,
+                    )
+                    .ok_or(ResidualOverflow)?,
+            );
+        }
 
-        (
+        Ok((
             &channel[0..parameters.order.get().into()],
             residuals.as_slice(),
-        )
+        ))
+    }
+}
+
+struct ResidualOverflow;
+
+impl From<ResidualOverflow> for Error {
+    #[inline]
+    fn from(_: ResidualOverflow) -> Self {
+        Error::ResidualOverflow
     }
 }
 
@@ -1851,7 +1861,8 @@ fn test_residual_encoding_1() {
         },
         &samples,
         &mut actual_residuals,
-    );
+    )
+    .unwrap();
 
     assert_eq!(warm_up, &samples[0..2]);
     assert_eq!(residuals, &expected_residuals);
@@ -1879,7 +1890,8 @@ fn test_residual_encoding_2() {
         },
         &samples,
         &mut actual_residuals,
-    );
+    )
+    .unwrap();
 
     assert_eq!(warm_up, &samples[0..2]);
     assert_eq!(residuals, &expected_residuals);
