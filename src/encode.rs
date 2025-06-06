@@ -1279,25 +1279,30 @@ fn correlate_channels<'c>(
             let mut mid_abs_sum = 0;
             let mut side_abs_sum = 0;
 
-            average_samples.clear();
-            average_samples.extend(
-                left.iter()
-                    .inspect(|s| left_abs_sum += u64::from(s.unsigned_abs()))
-                    .zip(
-                        right
-                            .iter()
-                            .inspect(|s| right_abs_sum += u64::from(s.unsigned_abs())),
-                    )
-                    .map(|(l, r)| (l + r) >> 1)
-                    .inspect(|s| mid_abs_sum += u64::from(s.unsigned_abs())),
-            );
-
-            difference_samples.clear();
-            difference_samples.extend(
-                left.iter()
-                    .zip(right)
-                    .map(|(l, r)| l - r)
-                    .inspect(|s| side_abs_sum += u64::from(s.unsigned_abs())),
+            join(
+                || {
+                    average_samples.clear();
+                    average_samples.extend(
+                        left.iter()
+                            .inspect(|s| left_abs_sum += u64::from(s.unsigned_abs()))
+                            .zip(
+                                right
+                                    .iter()
+                                    .inspect(|s| right_abs_sum += u64::from(s.unsigned_abs())),
+                            )
+                            .map(|(l, r)| (l + r) >> 1)
+                            .inspect(|s| mid_abs_sum += u64::from(s.unsigned_abs())),
+                    );
+                },
+                || {
+                    difference_samples.clear();
+                    difference_samples.extend(
+                        left.iter()
+                            .zip(right)
+                            .map(|(l, r)| l - r)
+                            .inspect(|s| side_abs_sum += u64::from(s.unsigned_abs())),
+                    );
+                },
             );
 
             match [
@@ -1522,42 +1527,74 @@ fn encode_subframe<'c>(
         };
 
     fixed_output.clear();
-    if encode_fixed_subframe(
-        options,
-        fixed_cache,
-        fixed_output,
-        channel,
-        bits_per_sample,
-        wasted_bps,
-    )
-    .is_err()
-    {
-        verbatim_output.clear();
-        encode_verbatim_subframe(verbatim_output, channel, bits_per_sample, wasted_bps)?;
-        return Ok(verbatim_output);
-    }
 
     let best = match options.max_lpc_order {
         Some(max_lpc_order) if channel.len() > usize::from(max_lpc_order.get()) => {
             lpc_output.clear();
 
-            match encode_lpc_subframe(
+            match join(
+                || {
+                    encode_fixed_subframe(
+                        options,
+                        fixed_cache,
+                        fixed_output,
+                        channel,
+                        bits_per_sample,
+                        wasted_bps,
+                    )
+                },
+                || {
+                    encode_lpc_subframe(
+                        options,
+                        max_lpc_order,
+                        lpc_cache,
+                        lpc_output,
+                        channel,
+                        bits_per_sample,
+                        wasted_bps,
+                    )
+                },
+            ) {
+                (Ok(()), Ok(())) => [fixed_output, lpc_output]
+                    .into_iter()
+                    .min_by_key(|c| c.written())
+                    .unwrap(),
+                (Err(_), Ok(())) => lpc_output,
+                (Ok(()), Err(_)) => fixed_output,
+                (Err(_), Err(_)) => {
+                    verbatim_output.clear();
+                    encode_verbatim_subframe(
+                        verbatim_output,
+                        channel,
+                        bits_per_sample,
+                        wasted_bps,
+                    )?;
+                    return Ok(verbatim_output);
+                }
+            }
+        }
+        _ => {
+            match encode_fixed_subframe(
                 options,
-                max_lpc_order,
-                lpc_cache,
-                lpc_output,
+                fixed_cache,
+                fixed_output,
                 channel,
                 bits_per_sample,
                 wasted_bps,
             ) {
-                Ok(()) => [fixed_output, lpc_output]
-                    .into_iter()
-                    .min_by_key(|c| c.written())
-                    .unwrap(),
-                Err(_) => fixed_output,
+                Ok(()) => fixed_output,
+                Err(_) => {
+                    verbatim_output.clear();
+                    encode_verbatim_subframe(
+                        verbatim_output,
+                        channel,
+                        bits_per_sample,
+                        wasted_bps,
+                    )?;
+                    return Ok(verbatim_output);
+                }
             }
         }
-        _ => fixed_output,
     };
 
     let verbatim_len = channel.len() as u32 * u32::from(bits_per_sample);
@@ -2225,4 +2262,18 @@ fn write_residuals<W: BitWrite>(
     // TODO - we only support a coding method of 0
     writer.write::<2, u8>(0)?; // coding method
     write_block::<0b1111, W>(options, writer, predictor_order, residuals)
+}
+
+#[cfg(feature = "rayon")]
+use rayon::join;
+
+#[cfg(not(feature = "rayon"))]
+fn join<A, B, RA, RB>(oper_a: A, oper_b: B) -> (RA, RB)
+where
+    A: FnOnce() -> RA + Send,
+    B: FnOnce() -> RB + Send,
+    RA: Send,
+    RB: Send,
+{
+    (oper_a(), oper_b())
 }

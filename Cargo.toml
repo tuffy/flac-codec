@@ -8,6 +8,7 @@ rust-version = "1.87"
 arrayvec = "0.7.6"
 bitstream-io = "4.1"
 md5 = "0.7"
+rayon = { version = "1.10", optional = true }
 
 [dev-dependencies]
 fastrand = "2.3"
