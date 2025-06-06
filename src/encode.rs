@@ -473,6 +473,197 @@ impl<W: std::io::Write + std::io::Seek> FlacSampleWriter<W> {
     }
 }
 
+/// A FLAC writer which operates on streamed output
+///
+/// Because this encodes FLAC frames without any metadata
+/// blocks or finalizing, it does not need to be seekable.
+///
+/// # Example
+///
+/// ```
+/// use flac_codec::{
+///     decode::{FlacStreamReader, FrameBuf},
+///     encode::{FlacStreamWriter, EncodingOptions},
+/// };
+/// use std::io::{Cursor, Seek};
+/// use std::num::NonZero;
+/// use bitstream_io::SignedBitCount;
+///
+/// let mut flac = Cursor::new(vec![]);
+///
+/// let samples = (0..100).collect::<Vec<i32>>();
+///
+/// let mut w = FlacStreamWriter::new(&mut flac, EncodingOptions::default());
+///
+/// // write a single FLAC frame with some samples
+/// w.write(
+///     44100,                        // sample rate
+///     NonZero::new(1).unwrap(),     // channels
+///     SignedBitCount::new::<16>(),  // bits-per-sample
+///     &samples,
+/// ).unwrap();
+///
+/// flac.rewind().unwrap();
+///
+/// let mut r = FlacStreamReader::new(&mut flac);
+///
+/// // read a single FLAC frame with some samples
+/// assert_eq!(
+///     r.read().unwrap(),
+///     FrameBuf {
+///         samples: &samples,
+///         sample_rate: 44100,
+///         channels: NonZero::new(1).unwrap(),
+///         bits_per_sample: SignedBitCount::new::<16>(),
+///     },
+/// );
+/// ```
+pub struct FlacStreamWriter<W> {
+    // the writer we're outputting to
+    writer: W,
+    // various encoding optins
+    options: Options,
+    // various encoder caches
+    caches: EncodingCaches,
+    // a whole set of samples for a FLAC frame
+    frame: Frame,
+    // the current frame number
+    frame_number: FrameNumber,
+}
+
+impl<W: std::io::Write> FlacStreamWriter<W> {
+    /// Creates new stream writer
+    pub fn new(writer: W, options: EncodingOptions) -> Self {
+        Self {
+            writer,
+            options: Options {
+                max_partition_order: options.max_partition_order,
+                mid_side: options.mid_side,
+                seektable_style: options.seektable_style,
+                max_lpc_order: options.max_lpc_order,
+                window: options.window,
+            },
+            caches: EncodingCaches::default(),
+            frame: Frame::default(),
+            frame_number: FrameNumber::default(),
+        }
+    }
+
+    /// Writes a whole FLAC frame to our output stream
+    pub fn write(
+        &mut self,
+        sample_rate: u32,
+        channels: NonZero<u8>,
+        bits_per_sample: SignedBitCount<32>,
+        samples: &[i32],
+    ) -> Result<(), Error> {
+        use crate::crc::{Crc16, CrcWriter};
+        use crate::stream::{BitsPerSample, FrameHeader, SampleRate};
+
+        // samples must divide evenly into channels
+        assert!(samples.len() % usize::from(channels.get()) == 0);
+
+        self.frame
+            .resize(bits_per_sample.into(), channels.get().into(), 0);
+        self.frame.fill_from_samples(samples);
+
+        // block size must be valid
+        let block_size: crate::stream::BlockSize<u16> = crate::stream::BlockSize::try_from(
+            u16::try_from(self.frame.pcm_frames()).map_err(|_| Error::InvalidBlockSize)?,
+        )
+        .map_err(|_| Error::InvalidBlockSize)?;
+
+        // sample rate must be valid for subset streams
+        let sample_rate: SampleRate<u32> = sample_rate.try_into().and_then(|rate| match rate {
+            SampleRate::Streaminfo(_) => Err(Error::NonSubsetSampleRate),
+            rate => Ok(rate),
+        })?;
+
+        if !(1..=8).contains(&channels.get()) {
+            return Err(Error::ExcessiveChannels);
+        }
+
+        // bits-per-sample must be valid for subset streams
+        let header_bits_per_sample = match BitsPerSample::from(bits_per_sample) {
+            BitsPerSample::Streaminfo(_) => return Err(Error::NonSubsetBitsPerSample),
+            bps => bps,
+        };
+
+        let mut w: CrcWriter<_, Crc16> = CrcWriter::new(&mut self.writer);
+        let mut bw: BitWriter<CrcWriter<&mut W, Crc16>, BigEndian>;
+
+        match self
+            .frame
+            .channels()
+            .collect::<ArrayVec<&[i32], MAX_CHANNELS>>()
+            .as_slice()
+        {
+            [left, right] => {
+                let Correlated {
+                    channel_assignment,
+                    channels,
+                } = correlate_channels(
+                    &self.options,
+                    &mut self.caches.correlated,
+                    [left, right],
+                    bits_per_sample,
+                );
+
+                FrameHeader {
+                    blocking_strategy: false,
+                    frame_number: self.frame_number,
+                    block_size,
+                    sample_rate,
+                    bits_per_sample: header_bits_per_sample,
+                    channel_assignment,
+                }
+                .write_subset(&mut w)?;
+
+                bw = BitWriter::new(w);
+
+                for channel in channels {
+                    encode_subframe(&self.options, &mut self.caches.independent, channel)?
+                        .playback(&mut bw)?;
+                }
+            }
+            frame => {
+                // non-stereo frames are always encoded independently
+                FrameHeader {
+                    blocking_strategy: false,
+                    frame_number: self.frame_number,
+                    block_size,
+                    sample_rate,
+                    bits_per_sample: header_bits_per_sample,
+                    channel_assignment: ChannelAssignment::Independent(
+                        frame.len().try_into().expect("invalid channel count"),
+                    ),
+                }
+                .write_subset(&mut w)?;
+
+                bw = BitWriter::new(w);
+
+                for channel in frame {
+                    encode_subframe(
+                        &self.options,
+                        &mut self.caches.independent,
+                        CorrelatedChannel::independent(bits_per_sample, channel),
+                    )?
+                    .playback(bw.by_ref())?;
+                }
+            }
+        }
+
+        let crc16: u16 = bw.aligned_writer()?.checksum().into();
+        bw.write_from(crc16)?;
+
+        if self.frame_number.try_increment().is_err() {
+            self.frame_number = FrameNumber::default();
+        }
+
+        Ok(())
+    }
+}
+
 fn update_md5<W: std::io::Write + std::io::Seek>(
     encoder: &mut Encoder<W>,
     samples: &[i32],
@@ -1830,6 +2021,7 @@ impl<'w, 'r> LpcSubframeParameters<'w, 'r> {
     }
 }
 
+#[derive(Debug)]
 struct ResidualOverflow;
 
 impl From<ResidualOverflow> for Error {

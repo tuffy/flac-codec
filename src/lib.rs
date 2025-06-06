@@ -148,6 +148,8 @@ pub enum Error {
     SampleCountMismatch,
     /// Residual overflow
     ResidualOverflow,
+    /// Number of samples not evenly divisible by number of channels
+    SamplesNotDivisibleByChannels,
 }
 
 impl From<std::io::Error> for Error {
@@ -239,6 +241,9 @@ impl std::fmt::Display for Error {
             Self::NoSamples => "no samples written to encoder".fmt(f),
             Self::SampleCountMismatch => "samples written to stream differ from expected".fmt(f),
             Self::ResidualOverflow => "residual value too large".fmt(f),
+            Self::SamplesNotDivisibleByChannels => {
+                "number of samples not divisible number number of channels".fmt(f)
+            }
         }
     }
 }

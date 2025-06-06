@@ -459,6 +459,47 @@ impl<R: std::io::Read + std::io::Seek> FlacSampleReader<R> {
 /// Because this reader needs to scan the stream for
 /// valid frame sync codes before playback,
 /// it requires [`std::io::BufRead`] instead of [`std::io::Read`].
+///
+/// # Example
+///
+/// ```
+/// use flac_codec::{
+///     decode::{FlacStreamReader, FrameBuf},
+///     encode::{FlacStreamWriter, EncodingOptions},
+/// };
+/// use std::io::{Cursor, Seek};
+/// use std::num::NonZero;
+/// use bitstream_io::SignedBitCount;
+///
+/// let mut flac = Cursor::new(vec![]);
+///
+/// let samples = (0..100).collect::<Vec<i32>>();
+///
+/// let mut w = FlacStreamWriter::new(&mut flac, EncodingOptions::default());
+///
+/// // write a single FLAC frame with some samples
+/// w.write(
+///     44100,                        // sample rate
+///     NonZero::new(1).unwrap(),     // channels
+///     SignedBitCount::new::<16>(),  // bits-per-sample
+///     &samples,
+/// ).unwrap();
+///
+/// flac.rewind().unwrap();
+///
+/// let mut r = FlacStreamReader::new(&mut flac);
+///
+/// // read a single FLAC frame with some samples
+/// assert_eq!(
+///     r.read().unwrap(),
+///     FrameBuf {
+///         samples: &samples,
+///         sample_rate: 44100,
+///         channels: NonZero::new(1).unwrap(),
+///         bits_per_sample: SignedBitCount::new::<16>(),
+///     },
+/// );
+/// ```
 pub struct FlacStreamReader<R> {
     // the wrapped reader
     reader: R,
@@ -480,7 +521,7 @@ impl<R: std::io::BufRead> FlacStreamReader<R> {
     }
 
     /// Returns the next decoded FLAC frame
-    pub fn read(&mut self) -> Result<StreamBuf<'_>, Error> {
+    pub fn read(&mut self) -> Result<FrameBuf<'_>, Error> {
         use crate::crc::{Checksum, Crc16, CrcReader};
         use crate::stream::FrameHeader;
         use bitstream_io::{BigEndian, BitReader};
@@ -536,7 +577,7 @@ impl<R: std::io::BufRead> FlacStreamReader<R> {
             self.samples.clear();
             self.samples.extend(self.buf.iter());
 
-            Ok(StreamBuf {
+            Ok(FrameBuf {
                 samples: self.samples.as_slice(),
                 sample_rate: header.sample_rate.into(),
                 channels: NonZero::new(header.channel_assignment.count()).unwrap(),
@@ -557,8 +598,8 @@ impl<R: std::io::BufRead> FlacStreamReader<R> {
 /// In a streamed reader, that metadata isn't known in advance
 /// and can change from frame to frame.  This buffer contains
 /// all the metadata fields in the frame for decoding/playback.
-#[derive(Copy, Clone, Debug)]
-pub struct StreamBuf<'s> {
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct FrameBuf<'s> {
     /// Decoded samples, interleaved by channel
     pub samples: &'s [i32],
 
