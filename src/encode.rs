@@ -598,10 +598,34 @@ impl<W: std::io::Write> FlacStreamWriter<W> {
             .collect::<ArrayVec<&[i32], MAX_CHANNELS>>()
             .as_slice()
         {
+            [channel] => {
+                FrameHeader {
+                    blocking_strategy: false,
+                    frame_number: self.frame_number,
+                    block_size: (channel.len() as u16)
+                        .try_into()
+                        .expect("frame cannot be empty"),
+                    sample_rate,
+                    bits_per_sample: header_bits_per_sample,
+                    channel_assignment: ChannelAssignment::Independent(Independent::Mono),
+                }
+                .write_subset(&mut w)?;
+
+                bw = BitWriter::new(w);
+
+                self.caches.channels.resize_with(1, ChannelCache::default);
+
+                encode_subframe(
+                    &self.options,
+                    &mut self.caches.channels[0],
+                    CorrelatedChannel::independent(bits_per_sample, channel),
+                )?
+                .playback(&mut bw)?;
+            }
             [left, right] => {
                 let Correlated {
                     channel_assignment,
-                    channels,
+                    channels: [channel_0, channel_1],
                 } = correlate_channels(
                     &self.options,
                     &mut self.caches.correlated,
@@ -619,14 +643,19 @@ impl<W: std::io::Write> FlacStreamWriter<W> {
                 }
                 .write_subset(&mut w)?;
 
+                self.caches.channels.resize_with(2, ChannelCache::default);
+                let [cache_0, cache_1] = self.caches.channels.get_disjoint_mut([0, 1]).unwrap();
+                let (channel_0, channel_1) = join(
+                    || encode_subframe(&self.options, cache_0, channel_0),
+                    || encode_subframe(&self.options, cache_1, channel_1),
+                );
+
                 bw = BitWriter::new(w);
 
-                for channel in channels {
-                    encode_subframe(&self.options, &mut self.caches.independent, channel)?
-                        .playback(&mut bw)?;
-                }
+                channel_0?.playback(&mut bw)?;
+                channel_1?.playback(&mut bw)?;
             }
-            frame => {
+            channels => {
                 // non-stereo frames are always encoded independently
                 FrameHeader {
                     blocking_strategy: false,
@@ -635,21 +664,29 @@ impl<W: std::io::Write> FlacStreamWriter<W> {
                     sample_rate,
                     bits_per_sample: header_bits_per_sample,
                     channel_assignment: ChannelAssignment::Independent(
-                        frame.len().try_into().expect("invalid channel count"),
+                        channels.len().try_into().expect("invalid channel count"),
                     ),
                 }
                 .write_subset(&mut w)?;
 
                 bw = BitWriter::new(w);
 
-                for channel in frame {
-                    encode_subframe(
-                        &self.options,
-                        &mut self.caches.independent,
-                        CorrelatedChannel::independent(bits_per_sample, channel),
-                    )?
-                    .playback(bw.by_ref())?;
-                }
+                self.caches
+                    .channels
+                    .resize_with(channels.len(), ChannelCache::default);
+
+                vec_map(
+                    self.caches.channels.iter_mut().zip(channels).collect(),
+                    |(cache, channel)| {
+                        encode_subframe(
+                            &self.options,
+                            cache,
+                            CorrelatedChannel::independent(bits_per_sample, channel),
+                        )
+                    },
+                )
+                .into_iter()
+                .try_for_each(|r| r.and_then(|r| r.playback(bw.by_ref()).map_err(Error::Io)))?;
             }
         }
 
@@ -1050,7 +1087,7 @@ impl Default for Window {
 
 #[derive(Default)]
 struct EncodingCaches {
-    independent: ChannelCache,
+    channels: Vec<ChannelCache>,
     correlated: CorrelationCache,
 }
 
@@ -1340,10 +1377,34 @@ where
     let mut bw: BitWriter<CrcWriter<Counter<&mut W>, Crc16>, BigEndian>;
 
     match frame.as_slice() {
+        [channel] => {
+            FrameHeader {
+                blocking_strategy: false,
+                frame_number: *frame_number,
+                block_size: (channel.len() as u16)
+                    .try_into()
+                    .expect("frame cannot be empty"),
+                sample_rate,
+                bits_per_sample: streaminfo.bits_per_sample.into(),
+                channel_assignment: ChannelAssignment::Independent(Independent::Mono),
+            }
+            .write(&mut w, streaminfo)?;
+
+            bw = BitWriter::new(w);
+
+            cache.channels.resize_with(1, ChannelCache::default);
+
+            encode_subframe(
+                options,
+                &mut cache.channels[0],
+                CorrelatedChannel::independent(streaminfo.bits_per_sample, channel),
+            )?
+            .playback(&mut bw)?;
+        }
         [left, right] => {
             let Correlated {
                 channel_assignment,
-                channels,
+                channels: [channel_0, channel_1],
             } = correlate_channels(
                 options,
                 &mut cache.correlated,
@@ -1363,19 +1424,25 @@ where
             }
             .write(&mut w, streaminfo)?;
 
+            cache.channels.resize_with(2, ChannelCache::default);
+            let [cache_0, cache_1] = cache.channels.get_disjoint_mut([0, 1]).unwrap();
+            let (channel_0, channel_1) = join(
+                || encode_subframe(options, cache_0, channel_0),
+                || encode_subframe(options, cache_1, channel_1),
+            );
+
             bw = BitWriter::new(w);
 
-            for channel in channels {
-                encode_subframe(options, &mut cache.independent, channel)?.playback(&mut bw)?;
-            }
+            channel_0?.playback(&mut bw)?;
+            channel_1?.playback(&mut bw)?;
         }
-        frame => {
+        channels => {
             // non-stereo frames are always encoded independently
 
             FrameHeader {
                 blocking_strategy: false,
                 frame_number: *frame_number,
-                block_size: (frame[0].len() as u16)
+                block_size: (channels[0].len() as u16)
                     .try_into()
                     .expect("frame cannot be empty"),
                 sample_rate,
@@ -1388,14 +1455,22 @@ where
 
             bw = BitWriter::new(w);
 
-            for channel in frame {
-                encode_subframe(
-                    options,
-                    &mut cache.independent,
-                    CorrelatedChannel::independent(streaminfo.bits_per_sample, channel),
-                )?
-                .playback(bw.by_ref())?;
-            }
+            cache
+                .channels
+                .resize_with(channels.len(), ChannelCache::default);
+
+            vec_map(
+                cache.channels.iter_mut().zip(channels).collect(),
+                |(cache, channel)| {
+                    encode_subframe(
+                        options,
+                        cache,
+                        CorrelatedChannel::independent(streaminfo.bits_per_sample, channel),
+                    )
+                },
+            )
+            .into_iter()
+            .try_for_each(|r| r.and_then(|r| r.playback(bw.by_ref()).map_err(Error::Io)))?;
         }
     }
 
@@ -2480,4 +2555,26 @@ where
     RB: Send,
 {
     (oper_a(), oper_b())
+}
+
+#[cfg(feature = "rayon")]
+fn vec_map<T, U, F>(src: Vec<T>, f: F) -> Vec<U>
+where
+    T: Send,
+    U: Send,
+    F: Fn(T) -> U + Send + Sync,
+{
+    use rayon::iter::{IntoParallelIterator, ParallelIterator};
+
+    src.into_par_iter().map(f).collect()
+}
+
+#[cfg(not(feature = "rayon"))]
+fn vec_map<T, U, F>(src: Vec<T>, f: F) -> Vec<U>
+where
+    T: Send,
+    U: Send,
+    F: Fn(T) -> U,
+{
+    src.into_iter().map(f).collect()
 }
