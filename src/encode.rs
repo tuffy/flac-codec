@@ -274,9 +274,9 @@ impl<W: std::io::Write + std::io::Seek, E: crate::byteorder::Endianness> std::io
 
     #[inline]
     fn flush(&mut self) -> std::io::Result<()> {
-        // nothing to do since we don't want to flush a partial
-        // FLAC frame to disk until we're done with the whole stream
-        Ok(())
+        // we don't want to flush a partial frame to disk,
+        // but we can at least flush our internal writer
+        self.encoder.writer.flush()
     }
 }
 
