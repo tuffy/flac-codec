@@ -113,7 +113,7 @@ impl<R: std::io::Read, E: crate::byteorder::Endianness> FlacReader<R, E> {
     ///
     /// From 1 to 32
     #[inline]
-    pub fn bits_per_sample(&self) -> SignedBitCount<32> {
+    pub fn bits_per_sample(&self) -> u32 {
         self.decoder.bits_per_sample()
     }
 
@@ -351,7 +351,7 @@ impl<R: std::io::Read> FlacSampleReader<R> {
     ///
     /// From 1 to 32
     #[inline]
-    pub fn bits_per_sample(&self) -> SignedBitCount<32> {
+    pub fn bits_per_sample(&self) -> u32 {
         self.decoder.bits_per_sample()
     }
 
@@ -481,7 +481,7 @@ impl<R: std::io::Read + std::io::Seek> FlacSampleReader<R> {
 /// w.write(
 ///     44100,                        // sample rate
 ///     NonZero::new(1).unwrap(),     // channels
-///     SignedBitCount::new::<16>(),  // bits-per-sample
+///     16,                           // bits-per-sample
 ///     &samples,
 /// ).unwrap();
 ///
@@ -670,8 +670,8 @@ impl<R: std::io::Read> Decoder<R> {
     /// Returns decoder's bits-per-sample
     ///
     /// From 1 to 32
-    fn bits_per_sample(&self) -> SignedBitCount<32> {
-        self.blocks.streaminfo().bits_per_sample
+    fn bits_per_sample(&self) -> u32 {
+        self.blocks.streaminfo().bits_per_sample.into()
     }
 
     /// Returns total number of channel-independent samples, if known

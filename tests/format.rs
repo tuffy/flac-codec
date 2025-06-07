@@ -735,15 +735,13 @@ fn generate_sine_2(
 #[test]
 fn test_sine_wave_streams() {
     fn test_flac<const STEREO: bool, const SAMPLE_RATE: u32>(sine: Vec<i32>, bits_per_sample: u8) {
-        use bitstream_io::SignedBitCount;
-
         let mut flac = Cursor::new(vec![]);
 
         let mut w = FlacSampleWriter::new(
             &mut flac,
             EncodingOptions::default(),
             SAMPLE_RATE,
-            SignedBitCount::try_from(u32::from(bits_per_sample)).unwrap(),
+            u32::from(bits_per_sample),
             match STEREO {
                 true => NonZero::new(2).unwrap(),
                 false => NonZero::new(1).unwrap(),

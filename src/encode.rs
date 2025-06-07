@@ -118,11 +118,11 @@ impl<W: std::io::Write + std::io::Seek, E: crate::byteorder::Endianness> FlacWri
         writer: W,
         options: EncodingOptions,
         sample_rate: u32,
-        bits_per_sample: impl TryInto<SignedBitCount<32>>,
+        bits_per_sample: u32,
         channels: NonZero<u8>,
         total_samples: Option<NonZero<u64>>,
     ) -> Result<Self, Error> {
-        let bits_per_sample = bits_per_sample
+        let bits_per_sample: SignedBitCount<32> = bits_per_sample
             .try_into()
             .map_err(|_| Error::InvalidBitsPerSample)?;
 
@@ -179,7 +179,7 @@ impl<W: std::io::Write + std::io::Seek, E: crate::byteorder::Endianness> FlacWri
         _endianness: E,
         options: EncodingOptions,
         sample_rate: u32,
-        bits_per_sample: impl TryInto<SignedBitCount<32>>,
+        bits_per_sample: u32,
         channels: NonZero<u8>,
         total_samples: Option<NonZero<u64>>,
     ) -> Result<Self, Error> {
@@ -372,11 +372,11 @@ impl<W: std::io::Write + std::io::Seek> FlacSampleWriter<W> {
         writer: W,
         options: EncodingOptions,
         sample_rate: u32,
-        bits_per_sample: impl TryInto<SignedBitCount<32>>,
+        bits_per_sample: u32,
         channels: NonZero<u8>,
         total_samples: Option<NonZero<u64>>,
     ) -> Result<Self, Error> {
-        let bits_per_sample = bits_per_sample
+        let bits_per_sample: SignedBitCount<32> = bits_per_sample
             .try_into()
             .map_err(|_| Error::InvalidBitsPerSample)?;
 
@@ -499,7 +499,7 @@ impl<W: std::io::Write + std::io::Seek> FlacSampleWriter<W> {
 /// w.write(
 ///     44100,                        // sample rate
 ///     NonZero::new(1).unwrap(),     // channels
-///     SignedBitCount::new::<16>(),  // bits-per-sample
+///     16,                           // bits-per-sample
 ///     &samples,
 /// ).unwrap();
 ///
@@ -554,14 +554,19 @@ impl<W: std::io::Write> FlacStreamWriter<W> {
         &mut self,
         sample_rate: u32,
         channels: NonZero<u8>,
-        bits_per_sample: SignedBitCount<32>,
+        bits_per_sample: u32,
         samples: &[i32],
     ) -> Result<(), Error> {
         use crate::crc::{Crc16, CrcWriter};
         use crate::stream::{BitsPerSample, FrameHeader, SampleRate};
 
+        let bits_per_sample: SignedBitCount<32> = bits_per_sample.try_into()
+            .map_err(|_| Error::NonSubsetBitsPerSample)?;
+
         // samples must divide evenly into channels
-        assert!(samples.len() % usize::from(channels.get()) == 0);
+        if samples.len() % usize::from(channels.get()) != 0 {
+            return Err(Error::SamplesNotDivisibleByChannels);
+        }
 
         self.frame
             .resize(bits_per_sample.into(), channels.get().into(), 0);
