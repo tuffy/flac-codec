@@ -44,7 +44,7 @@ const MAX_CHANNELS: usize = 8;
 ///     44100,                       // sample rate
 ///     16,                          // bits-per-sample
 ///     NonZero::new(1).unwrap(),    // channel count
-///     NonZero::new(1000),          // total samples
+///     NonZero::new(2000),          // total bytes
 /// ).unwrap();
 ///
 /// // write 1000 samples as signed, little-endian bytes
@@ -101,9 +101,6 @@ impl<W: std::io::Write + std::io::Seek, E: crate::byteorder::Endianness> FlacWri
     ///
     /// `channels` must be between 1 and 8.
     ///
-    /// `total_samples`, if known, must be between
-    /// 1 and 68,719,476,736 (a 36 bit field).
-    ///
     /// Note that if `total_samples` is indicated,
     /// the number of channel-independent samples written *must*
     /// be equal to that amount or an error will occur when writing
@@ -120,7 +117,7 @@ impl<W: std::io::Write + std::io::Seek, E: crate::byteorder::Endianness> FlacWri
         sample_rate: u32,
         bits_per_sample: u32,
         channels: NonZero<u8>,
-        total_samples: Option<NonZero<u64>>,
+        total_bytes: Option<NonZero<u64>>,
     ) -> Result<Self, Error> {
         let bits_per_sample: SignedBitCount<32> = bits_per_sample
             .try_into()
@@ -142,7 +139,14 @@ impl<W: std::io::Write + std::io::Seek, E: crate::byteorder::Endianness> FlacWri
                 sample_rate,
                 bits_per_sample,
                 channels,
-                total_samples,
+                total_bytes
+                    .map(|bytes| {
+                        exact_div(bytes.get(), channels.get().into())
+                            .and_then(|s| exact_div(s, bytes_per_sample as u64))
+                            .ok_or(Error::SamplesNotDivisibleByChannels)
+                    })
+                    .transpose()?
+                    .and_then(NonZero::new),
             )?,
             finalized: false,
             endianness: std::marker::PhantomData,
@@ -159,9 +163,6 @@ impl<W: std::io::Write + std::io::Seek, E: crate::byteorder::Endianness> FlacWri
     /// `bits_per_sample` must be between 1 and 32.
     ///
     /// `channels` must be between 1 and 8.
-    ///
-    /// `total_samples`, if known, must be between
-    /// 1 and 68,719,476,736 (a 36 bit field).
     ///
     /// Note that if `total_samples` is indicated,
     /// the number of channel-independent samples written *must*
@@ -181,7 +182,7 @@ impl<W: std::io::Write + std::io::Seek, E: crate::byteorder::Endianness> FlacWri
         sample_rate: u32,
         bits_per_sample: u32,
         channels: NonZero<u8>,
-        total_samples: Option<NonZero<u64>>,
+        total_bytes: Option<NonZero<u64>>,
     ) -> Result<Self, Error> {
         Self::new(
             writer,
@@ -189,7 +190,7 @@ impl<W: std::io::Write + std::io::Seek, E: crate::byteorder::Endianness> FlacWri
             sample_rate,
             bits_per_sample,
             channels,
-            total_samples,
+            total_bytes,
         )
     }
 
@@ -560,7 +561,8 @@ impl<W: std::io::Write> FlacStreamWriter<W> {
         use crate::crc::{Crc16, CrcWriter};
         use crate::stream::{BitsPerSample, FrameHeader, SampleRate};
 
-        let bits_per_sample: SignedBitCount<32> = bits_per_sample.try_into()
+        let bits_per_sample: SignedBitCount<32> = bits_per_sample
+            .try_into()
             .map_err(|_| Error::NonSubsetBitsPerSample)?;
 
         // samples must divide evenly into channels
@@ -2582,4 +2584,11 @@ where
     F: Fn(T) -> U,
 {
     src.into_iter().map(f).collect()
+}
+
+fn exact_div<N>(n: N, rhs: N) -> Option<N>
+where
+    N: std::ops::Div<Output = N> + std::ops::Rem<Output = N> + std::cmp::PartialEq + Copy + Default,
+{
+    (n % rhs == N::default()).then_some(n / rhs)
 }

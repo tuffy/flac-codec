@@ -49,9 +49,7 @@ fn test_small_files() {
                     44100,
                     16,
                     channels,
-                    u64::try_from(data.len() / 2 / channels.get() as usize)
-                        .ok()
-                        .and_then(NonZero::new),
+                    u64::try_from(data.len()).ok().and_then(NonZero::new),
                 )
                 .unwrap(),
             )
@@ -149,7 +147,7 @@ fn test_fractional() {
                     44100,
                     16,
                     NonZero::new(2).unwrap(),
-                    u64::try_from(samples).ok().and_then(NonZero::new),
+                    u64::try_from(samples * 2 * 2).ok().and_then(NonZero::new),
                 )
                 .unwrap(),
             )
@@ -406,9 +404,7 @@ fn test_roundtrip() {
                 44100,
                 bps as u32,
                 NonZero::new(channels as u8).unwrap(),
-                u64::try_from(data.len() / (bps / 8) / channels)
-                    .ok()
-                    .and_then(NonZero::new),
+                u64::try_from(data.len()).ok().and_then(NonZero::new),
             )
             .unwrap()
             .write_all(data)
@@ -595,7 +591,7 @@ fn test_full_scale_deflection() {
             44100,
             bps,
             NonZero::new(1).unwrap(),
-            u64::try_from((bytes.len() * iters) / (bps as usize / 8))
+            u64::try_from(bytes.len() * iters)
                 .ok()
                 .and_then(NonZero::new),
         )
@@ -638,7 +634,7 @@ fn test_wasted_bits() {
             44100,
             16,
             NonZero::new(1).unwrap(),
-            u64::try_from(data.len() / 2).ok().and_then(NonZero::new),
+            u64::try_from(data.len()).ok().and_then(NonZero::new),
         )
         .unwrap()
         .write_all(data)
@@ -1001,13 +997,7 @@ fn test_noise() {
                             44100,
                             bits_per_sample,
                             NonZero::new(channels).unwrap(),
-                            u64::try_from(
-                                noise.len() as u64
-                                    / u64::from(bits_per_sample / 8)
-                                    / u64::from(channels)
-                            )
-                            .ok()
-                            .and_then(NonZero::new),
+                            u64::try_from(noise.len()).ok().and_then(NonZero::new),
                         )
                         .unwrap()
                         .write_all(&noise)

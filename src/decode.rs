@@ -37,7 +37,7 @@ use std::num::NonZero;
 ///     44100,                       // sample rate
 ///     16,                          // bits-per-sample
 ///     NonZero::new(1).unwrap(),    // channel count
-///     NonZero::new(1000),          // total samples
+///     NonZero::new(2000),          // total bytes
 /// ).unwrap();
 ///
 /// // write 1000 samples as signed, little-endian bytes
