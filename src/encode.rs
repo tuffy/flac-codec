@@ -18,7 +18,10 @@ use crate::{Counter, Error};
 use arrayvec::ArrayVec;
 use bitstream_io::{BigEndian, BitRecorder, BitWrite, BitWriter, SignedBitCount};
 use std::collections::VecDeque;
+use std::fs::File;
+use std::io::BufWriter;
 use std::num::NonZero;
+use std::path::Path;
 
 const MAX_CHANNELS: usize = 8;
 
@@ -94,14 +97,13 @@ impl<W: std::io::Write + std::io::Seek, E: crate::byteorder::Endianness> FlacWri
     ///
     /// The writer should be positioned at the start of the file.
     ///
-    /// `sample_rate` must be between 0 (for non-audio streams)
-    /// and 1,048,576 (a 20 bit field).
+    /// `sample_rate` must be between 0 (for non-audio streams) and 2²⁰.
     ///
     /// `bits_per_sample` must be between 1 and 32.
     ///
     /// `channels` must be between 1 and 8.
     ///
-    /// Note that if `total_samples` is indicated,
+    /// Note that if `total_bytes` is indicated,
     /// the number of channel-independent samples written *must*
     /// be equal to that amount or an error will occur when writing
     /// or finalizing the stream.
@@ -157,15 +159,14 @@ impl<W: std::io::Write + std::io::Seek, E: crate::byteorder::Endianness> FlacWri
     ///
     /// The writer should be positioned at the start of the file.
     ///
-    /// `sample_rate` must be between 0 (for non-audio streams)
-    /// and 1,048,576 (a 20 bit field).
+    /// `sample_rate` must be between 0 (for non-audio streams) and 2²⁰.
     ///
     /// `bits_per_sample` must be between 1 and 32.
     ///
     /// `channels` must be between 1 and 8.
     ///
-    /// Note that if `total_samples` is indicated,
-    /// the number of channel-independent samples written *must*
+    /// Note that if `total_bytes` is indicated,
+    /// the number of bytes written *must*
     /// be equal to that amount or an error will occur when writing
     /// or finalizing the stream.
     ///
@@ -173,7 +174,6 @@ impl<W: std::io::Write + std::io::Seek, E: crate::byteorder::Endianness> FlacWri
     ///
     /// Returns I/O error if unable to write initial
     /// metadata blocks.
-    /// Returns error if any of the encoding parameters are invalid.
     #[inline]
     pub fn endian(
         writer: W,
@@ -235,6 +235,44 @@ impl<W: std::io::Write + std::io::Seek, E: crate::byteorder::Endianness> FlacWri
     pub fn finalize(mut self) -> Result<(), Error> {
         self.finalize_inner()?;
         Ok(())
+    }
+}
+
+impl<E: crate::byteorder::Endianness> FlacWriter<BufWriter<File>, E> {
+    /// Creates new FLAC file at the given path
+    ///
+    /// `sample_rate` must be between 0 (for non-audio streams) and 2²⁰.
+    ///
+    /// `bits_per_sample` must be between 1 and 32.
+    ///
+    /// `channels` must be between 1 and 8.
+    ///
+    /// Note that if `total_bytes` is indicated,
+    /// the number of bytes written *must*
+    /// be equal to that amount or an error will occur when writing
+    /// or finalizing the stream.
+    ///
+    /// # Errors
+    ///
+    /// Returns I/O error if unable to write initial
+    /// metadata blocks.
+    #[inline]
+    pub fn create<P: AsRef<Path>>(
+        path: P,
+        options: EncodingOptions,
+        sample_rate: u32,
+        bits_per_sample: u32,
+        channels: NonZero<u8>,
+        total_bytes: Option<NonZero<u64>>,
+    ) -> Result<Self, Error> {
+        FlacWriter::new(
+            BufWriter::new(File::create(path.as_ref())?),
+            options,
+            sample_rate,
+            bits_per_sample,
+            channels,
+            total_bytes,
+        )
     }
 }
 
@@ -349,8 +387,7 @@ pub struct FlacSampleWriter<W: std::io::Write + std::io::Seek> {
 impl<W: std::io::Write + std::io::Seek> FlacSampleWriter<W> {
     /// Creates new FLAC writer with the given parameters
     ///
-    /// `sample_rate` must be between 0 (for non-audio streams)
-    /// and 1,048,576 (a 20 bit field).
+    /// `sample_rate` must be between 0 (for non-audio streams) and 2²⁰.
     ///
     /// `bits_per_sample` must be between 1 and 32.
     ///
@@ -474,6 +511,44 @@ impl<W: std::io::Write + std::io::Seek> FlacSampleWriter<W> {
     pub fn finalize(mut self) -> Result<(), Error> {
         self.finalize_inner()?;
         Ok(())
+    }
+}
+
+impl FlacSampleWriter<BufWriter<File>> {
+    /// Creates new FLAC file at the given path
+    ///
+    /// `sample_rate` must be between 0 (for non-audio streams) and 2²⁰.
+    ///
+    /// `bits_per_sample` must be between 1 and 32.
+    ///
+    /// `channels` must be between 1 and 8.
+    ///
+    /// Note that if `total_bytes` is indicated,
+    /// the number of bytes written *must*
+    /// be equal to that amount or an error will occur when writing
+    /// or finalizing the stream.
+    ///
+    /// # Errors
+    ///
+    /// Returns I/O error if unable to write initial
+    /// metadata blocks.
+    #[inline]
+    pub fn create<P: AsRef<Path>>(
+        path: P,
+        options: EncodingOptions,
+        sample_rate: u32,
+        bits_per_sample: u32,
+        channels: NonZero<u8>,
+        total_bytes: Option<NonZero<u64>>,
+    ) -> Result<Self, Error> {
+        FlacSampleWriter::new(
+            BufWriter::new(File::create(path.as_ref())?),
+            options,
+            sample_rate,
+            bits_per_sample,
+            channels,
+            total_bytes,
+        )
     }
 }
 

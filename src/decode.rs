@@ -13,7 +13,10 @@ use crate::audio::Frame;
 use crate::metadata::{BlockList, BlockRef, SeekTable};
 use bitstream_io::{BitRead, SignedBitCount};
 use std::collections::VecDeque;
+use std::fs::File;
+use std::io::BufReader;
 use std::num::NonZero;
+use std::path::Path;
 
 /// A FLAC reader which outputs PCM samples as bytes
 ///
@@ -136,6 +139,14 @@ impl<R: std::io::Read, E: crate::byteorder::Endianness> FlacReader<R, E> {
     #[inline]
     pub fn metadata(&self) -> impl Iterator<Item = BlockRef<'_>> {
         self.decoder.metadata()
+    }
+}
+
+impl<E: crate::byteorder::Endianness> FlacReader<BufReader<File>, E> {
+    /// Opens FLAC file from the given path
+    #[inline]
+    pub fn open<P: AsRef<Path>>(path: P, _endianness: E) -> Result<Self, Error> {
+        FlacReader::new(BufReader::new(File::open(path.as_ref())?))
     }
 }
 
@@ -433,6 +444,14 @@ impl<R: std::io::Read> FlacSampleReader<R> {
     }
 }
 
+impl FlacSampleReader<BufReader<File>> {
+    /// Opens FLAC file from the given path
+    #[inline]
+    pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
+        FlacSampleReader::new(BufReader::new(File::open(path.as_ref())?))
+    }
+}
+
 impl<R: std::io::Read + std::io::Seek> FlacSampleReader<R> {
     /// Seeks to the given channel-independent sample
     ///
@@ -610,7 +629,7 @@ pub struct FrameBuf<'s> {
     pub channels: NonZero<u8>,
 
     /// Bits-per-sample, from 4 to 32
-    pub bits_per_sample: SignedBitCount<32>,
+    pub bits_per_sample: u32,
 }
 
 /// A FLAC decoder
