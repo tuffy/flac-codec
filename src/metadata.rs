@@ -1610,7 +1610,13 @@ impl VorbisComment {
     /// Removes any matching instances of the given field
     ///
     /// Fields are matched case-insensitively
+    ///
+    /// # Panics
+    ///
+    /// Panics if field contains the `=` character.
     pub fn remove_field(&mut self, field: &str) {
+        assert!(!field.contains('='), "field must not contain '='");
+
         self.fields.retain(|f| match f.split_once('=') {
             Some((key, _)) => !key.eq_ignore_ascii_case(field),
             None => true,
