@@ -62,6 +62,8 @@ fn cuesheet_test(f: impl FnOnce(&mut CuesheetTrack)) -> Result<(), Error> {
 
 #[test]
 fn test_write_metadata() {
+    use flac_codec::metadata::fields::TITLE;
+
     assert!(matches!(basic_test(|_| { /* do nothing */ }), Ok(())));
 
     // STREAMINFO must be present
@@ -84,7 +86,7 @@ fn test_write_metadata() {
     assert!(matches!(
         basic_test(|blocks| {
             let mut comment = VorbisComment::default();
-            comment.append_field(VorbisComment::TITLE, "Test Title");
+            comment.append_field(TITLE, "Test Title");
             blocks.push(comment.into());
         }),
         Ok(())
@@ -94,7 +96,7 @@ fn test_write_metadata() {
     assert!(matches!(
         basic_test(|blocks| {
             let mut comment = VorbisComment::default();
-            comment.append_field(VorbisComment::TITLE, "Test Title");
+            comment.append_field(TITLE, "Test Title");
             blocks.insert(0, comment.into());
         }),
         Err(Error::MissingStreaminfo)
@@ -104,7 +106,7 @@ fn test_write_metadata() {
     assert!(matches!(
         basic_test(|blocks| {
             let mut comment = VorbisComment::default();
-            comment.append_field(VorbisComment::TITLE, "Test Title");
+            comment.append_field(TITLE, "Test Title");
             blocks.push(comment.clone().into());
             blocks.push(comment.into());
         }),

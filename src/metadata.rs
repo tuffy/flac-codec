@@ -14,6 +14,8 @@ use bitstream_io::{
     FromBitStreamUsing, FromBitStreamWith, LittleEndian, SignedBitCount, ToBitStream,
     ToBitStreamUsing,
 };
+use std::fs::File;
+use std::io::BufReader;
 use std::num::NonZero;
 use std::path::Path;
 
@@ -52,7 +54,7 @@ pub struct BlockHeader {
 }
 
 /// A type of FLAC metadata block
-pub trait MetadataBlock: ToBitStream<Error: Into<Error>> + Into<Block> {
+pub trait MetadataBlock: ToBitStream<Error: Into<Error>> + Into<Block> + TryFrom<Block> {
     /// The metadata block's type
     const TYPE: BlockType;
 
@@ -486,6 +488,50 @@ impl<R: std::io::Read> Iterator for BlockReader<R> {
 /// when reading from a raw `File`.
 pub fn read_blocks<R: std::io::Read>(r: R) -> BlockReader<R> {
     BlockReader::new(r)
+}
+
+/// Returns iterator of blocks from the given path
+///
+/// # Errors
+///
+/// Returns any I/O error from opening the path.
+/// Note that the iterator itself may return any errors
+/// from reading individual blocks.
+pub fn blocks<P: AsRef<Path>>(p: P) -> std::io::Result<BlockReader<BufReader<File>>> {
+    File::open(p.as_ref()).map(|f| read_blocks(BufReader::new(f)))
+}
+
+/// Returns first instance of the given block from the given reader
+///
+/// Because this may perform many small reads,
+/// using a buffered reader may greatly improve performance
+/// when reading from a raw `File`.
+pub fn read_block<R, B>(r: R) -> Result<Option<B>, Error>
+where
+    R: std::io::Read,
+    B: MetadataBlock,
+{
+    read_blocks(r)
+        .find_map(|r| r.map(|b| B::try_from(b).ok()).transpose())
+        .transpose()
+}
+
+/// Returns first instance of the given block from the given path
+///
+/// # Errors
+///
+/// Returns any error from opening the path, or from reading
+/// blocks from the path.
+pub fn block<P, B>(p: P) -> Result<Option<B>, Error>
+where
+    P: AsRef<Path>,
+    B: MetadataBlock,
+{
+    blocks(p).map_err(Error::Io).and_then(|mut blocks| {
+        blocks
+            .find_map(|r| r.map(|b| B::try_from(b).ok()).transpose())
+            .transpose()
+    })
 }
 
 /// Writes iterator of blocks to the given writer.
@@ -934,6 +980,17 @@ macro_rules! block {
         impl From<$t> for Block {
             fn from(b: $t) -> Self {
                 Self::$v(b)
+            }
+        }
+
+        impl TryFrom<Block> for $t {
+            type Error = ();
+
+            fn try_from(block: Block) -> Result<Self, ()> {
+                match block {
+                    Block::$v(block) => Ok(block),
+                    _ => Err(()),
+                }
             }
         }
 
@@ -1484,7 +1541,7 @@ impl ToBitStream for SeekPoint {
 ///
 /// let mut r = BitReader::endian(data, LittleEndian);
 /// let comment = r.parse::<VorbisComment>().unwrap();
-/// 
+///
 /// assert_eq!(
 ///     &comment,
 ///     &VorbisComment {
@@ -1640,6 +1697,12 @@ impl ToBitStream for VorbisComment {
         self.fields.iter().try_for_each(|s| write_string(w, s))
     }
 }
+
+// As neat as it might be implement IndexMut for VorbisComment,
+// the trait simply isn't compatible.  A "&mut str" is mostly
+// useless, and I can't return a partial "&mut String"
+// in order to assing a new string to everything after the
+// initial "FIELD=" indicator.
 
 /// Vorbis comment metadata tag fields
 ///

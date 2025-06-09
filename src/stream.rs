@@ -924,7 +924,7 @@ impl ToBitStream for ChannelAssignment {
 
 /// The the possible bits-per-sample of a FLAC frame
 ///
-/// Common bits-per-sample are stored as a 4-bit value,
+/// Common bits-per-sample are stored as a 3-bit value,
 /// while uncommon bits-per-sample are stored in the
 /// STREAMINFO metadata block.
 /// Bits-per-sample defined in the STREAMINFO metadata block
@@ -1552,6 +1552,7 @@ impl<const RICE_MAX: u32> ToBitStream for ResidualPartitionHeader<RICE_MAX> {
 ///         },
 ///         subframes: vec![
 ///             Subframe::Constant {
+///                 block_size: 20,
 ///                 sample: 0x00_00,
 ///                 wasted_bps: 0,
 ///             },
@@ -1763,6 +1764,8 @@ pub enum Subframe {
     /// assert_eq!(
     ///     r.parse_using::<Subframe>((20, SignedBitCount::new::<16>())).unwrap(),
     ///     Subframe::Constant {
+    ///         // taken from context
+    ///         block_size: 20,
     ///         // constant subframes always have exactly one sample
     ///         // this sample's size is a signed 16-bit value
     ///         // taken from the subframe signed bit count
@@ -1773,6 +1776,8 @@ pub enum Subframe {
     /// );
     /// ```
     Constant {
+        /// the subframe's block size in samples
+        block_size: u16,
         /// The subframe's sample
         sample: i32,
         /// Any wasted bits-per-sample
@@ -1964,13 +1969,11 @@ impl Subframe {
 
     /// Decodes subframe to samples
     ///
-    /// `block_size` should be taken from the subframe's [`FrameHeader`]
-    ///
     /// Note that decoding subframes to samples using this method
     /// is intended for analysis purposes.  The [`crate::decode`]
     /// module's decoders are preferred for general-purpose
     /// decoding as they perform fewer temporary allocations.
-    pub fn decode(&self, block_size: u16) -> Box<dyn Iterator<Item = i32> + '_> {
+    pub fn decode(&self) -> Box<dyn Iterator<Item = i32> + '_> {
         fn predict(coefficients: &[i64], qlp_shift: u32, channel: &mut [i32]) {
             for split in coefficients.len()..channel.len() {
                 let (predicted, residuals) = channel.split_at_mut(split);
@@ -1986,9 +1989,11 @@ impl Subframe {
         }
 
         match self {
-            Self::Constant { sample, wasted_bps } => {
-                Box::new((0..block_size).map(move |_| sample << wasted_bps))
-            }
+            Self::Constant {
+                sample,
+                block_size,
+                wasted_bps,
+            } => Box::new((0..*block_size).map(move |_| sample << wasted_bps)),
             Self::Verbatim {
                 samples,
                 wasted_bps,
@@ -2046,6 +2051,7 @@ impl FromBitStreamUsing for Subframe {
                 type_: SubframeHeaderType::Constant,
                 wasted_bps,
             } => Ok(Self::Constant {
+                block_size,
                 sample: r.read_signed_counted(
                     bits_per_sample
                         .checked_sub::<32>(wasted_bps)
@@ -2136,7 +2142,9 @@ impl ToBitStreamUsing for Subframe {
         bits_per_sample: SignedBitCount<32>,
     ) -> Result<(), Error> {
         match self {
-            Self::Constant { sample, wasted_bps } => {
+            Self::Constant {
+                sample, wasted_bps, ..
+            } => {
                 w.build(&SubframeHeader {
                     type_: SubframeHeaderType::Constant,
                     wasted_bps: *wasted_bps,
