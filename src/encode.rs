@@ -36,7 +36,6 @@ const MAX_CHANNELS: usize = 8;
 ///     decode::FlacReader
 /// };
 /// use std::io::{Cursor, Read, Seek, Write};
-/// use std::num::NonZero;
 ///
 /// let mut flac = Cursor::new(vec![]);  // a FLAC file in memory
 ///
@@ -47,7 +46,7 @@ const MAX_CHANNELS: usize = 8;
 ///     44100,                       // sample rate
 ///     16,                          // bits-per-sample
 ///     1,                           // channel count
-///     NonZero::new(2000),          // total bytes
+///     Some(2000),                  // total bytes
 /// ).unwrap();
 ///
 /// // write 1000 samples as signed, little-endian bytes
@@ -119,7 +118,7 @@ impl<W: std::io::Write + std::io::Seek, E: crate::byteorder::Endianness> FlacWri
         sample_rate: u32,
         bits_per_sample: u32,
         channels: u8,
-        total_bytes: Option<NonZero<u64>>,
+        total_bytes: Option<impl TryInto<NonZero<u64>>>,
     ) -> Result<Self, Error> {
         let bits_per_sample: SignedBitCount<32> = bits_per_sample
             .try_into()
@@ -143,9 +142,15 @@ impl<W: std::io::Write + std::io::Seek, E: crate::byteorder::Endianness> FlacWri
                 channels,
                 total_bytes
                     .map(|bytes| {
-                        exact_div(bytes.get(), channels.into())
-                            .and_then(|s| exact_div(s, bytes_per_sample as u64))
-                            .ok_or(Error::SamplesNotDivisibleByChannels)
+                        exact_div(
+                            bytes
+                                .try_into()
+                                .map_err(|_| Error::InvalidTotalBytes)?
+                                .get(),
+                            channels.into(),
+                        )
+                        .and_then(|s| exact_div(s, bytes_per_sample as u64))
+                        .ok_or(Error::SamplesNotDivisibleByChannels)
                     })
                     .transpose()?
                     .and_then(NonZero::new),
@@ -182,7 +187,7 @@ impl<W: std::io::Write + std::io::Seek, E: crate::byteorder::Endianness> FlacWri
         sample_rate: u32,
         bits_per_sample: u32,
         channels: u8,
-        total_bytes: Option<NonZero<u64>>,
+        total_bytes: Option<impl TryInto<NonZero<u64>>>,
     ) -> Result<Self, Error> {
         Self::new(
             writer,
@@ -263,7 +268,7 @@ impl<E: crate::byteorder::Endianness> FlacWriter<BufWriter<File>, E> {
         sample_rate: u32,
         bits_per_sample: u32,
         channels: u8,
-        total_bytes: Option<NonZero<u64>>,
+        total_bytes: Option<impl TryInto<NonZero<u64>>>,
     ) -> Result<Self, Error> {
         FlacWriter::new(
             BufWriter::new(File::create(path.as_ref())?),
@@ -409,7 +414,7 @@ impl<W: std::io::Write + std::io::Seek> FlacSampleWriter<W> {
         sample_rate: u32,
         bits_per_sample: u32,
         channels: u8,
-        total_samples: Option<NonZero<u64>>,
+        total_samples: Option<impl TryInto<NonZero<u64>>>,
     ) -> Result<Self, Error> {
         let bits_per_sample: SignedBitCount<32> = bits_per_sample
             .try_into()
@@ -433,8 +438,14 @@ impl<W: std::io::Write + std::io::Seek> FlacSampleWriter<W> {
                 channels,
                 total_samples
                     .map(|bytes| {
-                        exact_div(bytes.get(), channels.into())
-                            .ok_or(Error::SamplesNotDivisibleByChannels)
+                        exact_div(
+                            bytes
+                                .try_into()
+                                .map_err(|_| Error::InvalidTotalSamples)?
+                                .get(),
+                            channels.into(),
+                        )
+                        .ok_or(Error::SamplesNotDivisibleByChannels)
                     })
                     .transpose()?
                     .and_then(NonZero::new),
@@ -539,7 +550,7 @@ impl FlacSampleWriter<BufWriter<File>> {
         sample_rate: u32,
         bits_per_sample: u32,
         channels: u8,
-        total_bytes: Option<NonZero<u64>>,
+        total_samples: Option<impl TryInto<NonZero<u64>>>,
     ) -> Result<Self, Error> {
         FlacSampleWriter::new(
             BufWriter::new(File::create(path.as_ref())?),
@@ -547,7 +558,7 @@ impl FlacSampleWriter<BufWriter<File>> {
             sample_rate,
             bits_per_sample,
             channels,
-            total_bytes,
+            total_samples,
         )
     }
 }

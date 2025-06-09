@@ -29,7 +29,6 @@ use std::path::Path;
 ///     decode::FlacReader
 /// };
 /// use std::io::{Cursor, Read, Seek, Write};
-/// use std::num::NonZero;
 ///
 /// let mut flac = Cursor::new(vec![]);  // a FLAC file in memory
 ///
@@ -40,7 +39,7 @@ use std::path::Path;
 ///     44100,                       // sample rate
 ///     16,                          // bits-per-sample
 ///     1,                           // channel count
-///     NonZero::new(2000),          // total bytes
+///     Some(2000),                  // total bytes
 /// ).unwrap();
 ///
 /// // write 1000 samples as signed, little-endian bytes

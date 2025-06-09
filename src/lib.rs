@@ -22,6 +22,7 @@ pub mod stream;
 
 /// A unified FLAC format error
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum Error {
     /// A general I/O error from the underlying stream
     Io(std::io::Error),
@@ -150,6 +151,10 @@ pub enum Error {
     ResidualOverflow,
     /// Number of samples not evenly divisible by number of channels
     SamplesNotDivisibleByChannels,
+    /// Invalid total byte count
+    InvalidTotalBytes,
+    /// Invalid total samples count
+    InvalidTotalSamples,
 }
 
 impl From<std::io::Error> for Error {
@@ -244,6 +249,8 @@ impl std::fmt::Display for Error {
             Self::SamplesNotDivisibleByChannels => {
                 "number of samples not divisible number number of channels".fmt(f)
             }
+            Self::InvalidTotalBytes => "invalid total byte count".fmt(f),
+            Self::InvalidTotalSamples => "invalid total samples count".fmt(f),
         }
     }
 }
