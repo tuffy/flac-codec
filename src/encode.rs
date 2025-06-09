@@ -356,11 +356,8 @@ impl<W: std::io::Write + std::io::Seek> FlacSampleWriter<W> {
     ///
     /// `channels` must be between 1 and 8.
     ///
-    /// `total_samples`, if known, must be between
-    /// 1 and 68,719,476,736 (a 36 bit field).
-    ///
     /// Note that if `total_samples` is indicated,
-    /// the number of channel-independent samples written *must*
+    /// the number of samples written *must*
     /// be equal to that amount or an error will occur when writing
     /// or finalizing the stream.
     ///
@@ -397,7 +394,13 @@ impl<W: std::io::Write + std::io::Seek> FlacSampleWriter<W> {
                 sample_rate,
                 bits_per_sample,
                 channels,
-                total_samples,
+                total_samples
+                    .map(|bytes| {
+                        exact_div(bytes.get(), channels.get().into())
+                            .ok_or(Error::SamplesNotDivisibleByChannels)
+                    })
+                    .transpose()?
+                    .and_then(NonZero::new),
             )?,
             finalized: false,
         })

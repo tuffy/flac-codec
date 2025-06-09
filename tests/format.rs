@@ -742,10 +742,7 @@ fn test_sine_wave_streams() {
                 true => NonZero::new(2).unwrap(),
                 false => NonZero::new(1).unwrap(),
             },
-            (sine.len() / if STEREO { 2 } else { 1 })
-                .try_into()
-                .ok()
-                .and_then(NonZero::new),
+            sine.len().try_into().ok().and_then(NonZero::new),
         )
         .unwrap();
 
