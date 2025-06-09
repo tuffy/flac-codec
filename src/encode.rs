@@ -160,6 +160,31 @@ impl<W: std::io::Write + std::io::Seek, E: crate::byteorder::Endianness> FlacWri
         })
     }
 
+    /// Creates new FLAC writer with CDDA parameters
+    ///
+    /// The writer should be positioned at the start of the file.
+    ///
+    /// Sample rate is 44100 Hz, bits-per-sample is 16,
+    /// channels is 2.
+    ///
+    /// Note that if `total_bytes` is indicated,
+    /// the number of channel-independent samples written *must*
+    /// be equal to that amount or an error will occur when writing
+    /// or finalizing the stream.
+    ///
+    /// # Errors
+    ///
+    /// Returns I/O error if unable to write initial
+    /// metadata blocks.
+    /// Returns error if any of the encoding parameters are invalid.
+    pub fn new_cdda(
+        writer: W,
+        options: EncodingOptions,
+        total_bytes: Option<impl TryInto<NonZero<u64>>>,
+    ) -> Result<Self, Error> {
+        Self::new(writer, options, 44100, 16, 2, total_bytes)
+    }
+
     /// Creates new FLAC writer in the given endianness with the given parameters
     ///
     /// The writer should be positioned at the start of the file.
@@ -279,11 +304,39 @@ impl<E: crate::byteorder::Endianness> FlacWriter<BufWriter<File>, E> {
             total_bytes,
         )
     }
+
+    /// Creates new FLAC file with CDDA parameters at the given path
+    ///
+    /// Sample rate is 44100 Hz, bits-per-sample is 16,
+    /// channels is 2.
+    ///
+    /// Note that if `total_bytes` is indicated,
+    /// the number of bytes written *must*
+    /// be equal to that amount or an error will occur when writing
+    /// or finalizing the stream.
+    ///
+    /// # Errors
+    ///
+    /// Returns I/O error if unable to write initial
+    /// metadata blocks.
+    pub fn create_cdda<P: AsRef<Path>>(
+        path: P,
+        options: EncodingOptions,
+        total_bytes: Option<impl TryInto<NonZero<u64>>>,
+    ) -> Result<Self, Error> {
+        Self::create(path, options, 44100, 16, 2, total_bytes)
+    }
 }
 
 impl<W: std::io::Write + std::io::Seek, E: crate::byteorder::Endianness> std::io::Write
     for FlacWriter<W, E>
 {
+    /// Writes a set of sample bytes to the FLAC file
+    ///
+    /// Samples are encoded in the stream's given byte order.
+    ///
+    /// Samples are then interleaved by channel, like:
+    /// [left₀ , right₀ , left₁ , right₁ , left₂ , right₂ , …]
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         use crate::byteorder::LittleEndian;
 
@@ -454,7 +507,33 @@ impl<W: std::io::Write + std::io::Seek> FlacSampleWriter<W> {
         })
     }
 
+    /// Creates new FLAC writer with CDDA parameters
+    ///
+    /// Sample rate is 44100 Hz, bits-per-sample is 16,
+    /// channels is 2.
+    ///
+    /// Note that if `total_samples` is indicated,
+    /// the number of samples written *must*
+    /// be equal to that amount or an error will occur when writing
+    /// or finalizing the stream.
+    ///
+    /// # Errors
+    ///
+    /// Returns I/O error if unable to write initial
+    /// metadata blocks.
+    /// Returns error if any of the encoding parameters are invalid.
+    pub fn new_cdda(
+        writer: W,
+        options: EncodingOptions,
+        total_samples: Option<impl TryInto<NonZero<u64>>>,
+    ) -> Result<Self, Error> {
+        Self::new(writer, options, 44100, 16, 2, total_samples)
+    }
+
     /// Given a set of samples, writes them to the FLAC file
+    ///
+    /// Samples are interleaved by channel, like:
+    /// [left₀ , right₀ , left₁ , right₁ , left₂ , right₂ , …]
     ///
     /// This may output 0 or more actual FLAC frames,
     /// depending on the quantity of samples and the amount
@@ -561,6 +640,29 @@ impl FlacSampleWriter<BufWriter<File>> {
             total_samples,
         )
     }
+
+    /// Creates new FLAC file at the given path with CDDA parameters
+    ///
+    /// Sample rate is 44100 Hz, bits-per-sample is 16,
+    /// channels is 2.
+    ///
+    /// Note that if `total_bytes` is indicated,
+    /// the number of bytes written *must*
+    /// be equal to that amount or an error will occur when writing
+    /// or finalizing the stream.
+    ///
+    /// # Errors
+    ///
+    /// Returns I/O error if unable to write initial
+    /// metadata blocks.
+    #[inline]
+    pub fn create_cdda<P: AsRef<Path>>(
+        path: P,
+        options: EncodingOptions,
+        total_samples: Option<impl TryInto<NonZero<u64>>>,
+    ) -> Result<Self, Error> {
+        Self::create(path, options, 44100, 16, 2, total_samples)
+    }
 }
 
 /// A FLAC writer which operates on streamed output
@@ -640,6 +742,16 @@ impl<W: std::io::Write> FlacStreamWriter<W> {
     }
 
     /// Writes a whole FLAC frame to our output stream
+    ///
+    /// Samples are interleaved by channel, like:
+    /// [left₀ , right₀ , left₁ , right₁ , left₂ , right₂ , …]
+    ///
+    /// This write a whole FLAC frame to the output stream on each call.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error of any of the parameters are invalid
+    /// or if an I/O error occurs when writing to the stream.
     pub fn write(
         &mut self,
         sample_rate: u32,
@@ -792,6 +904,21 @@ impl<W: std::io::Write> FlacStreamWriter<W> {
         }
 
         Ok(())
+    }
+
+    /// Writes a whole FLAC frame to our output stream with CDDA parameters
+    ///
+    /// Samples are interleaved by channel, like:
+    /// [left₀ , right₀ , left₁ , right₁ , left₂ , right₂ , …]
+    ///
+    /// This write a whole FLAC frame to the output stream on each call.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error of any of the parameters are invalid
+    /// or if an I/O error occurs when writing to the stream.
+    pub fn write_cdda(&mut self, samples: &[i32]) -> Result<(), Error> {
+        self.write(44100, 2, 16, samples)
     }
 }
 
