@@ -1465,6 +1465,7 @@ impl ToBitStream for SeekPoint {
 /// ```
 /// use bitstream_io::{BitReader, BitRead, LittleEndian};
 /// use flac_codec::metadata::VorbisComment;
+/// use flac_codec::metadata::fields::{TITLE, ALBUM, ARTIST};
 ///
 /// let data: &[u8] = &[
 ///     0x20, 0x00, 0x00, 0x00,  // 32 byte vendor string
@@ -1482,9 +1483,11 @@ impl ToBitStream for SeekPoint {
 /// ];
 ///
 /// let mut r = BitReader::endian(data, LittleEndian);
+/// let comment = r.parse::<VorbisComment>().unwrap();
+/// 
 /// assert_eq!(
-///     r.parse::<VorbisComment>().unwrap(),
-///     VorbisComment {
+///     &comment,
+///     &VorbisComment {
 ///         vendor_string: "reference libFLAC 1.4.3 20230623".to_string(),
 ///         fields: vec![
 ///              "TITLE=Testing".to_string(),
@@ -1492,6 +1495,10 @@ impl ToBitStream for SeekPoint {
 ///         ],
 ///     },
 /// );
+///
+/// assert_eq!(comment.field(TITLE), Some("Testing"));
+/// assert_eq!(comment.field(ALBUM), Some("Test Album"));
+/// assert_eq!(comment.field(ARTIST), None);
 /// ```
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct VorbisComment {
@@ -1512,18 +1519,6 @@ impl Default for VorbisComment {
 }
 
 impl VorbisComment {
-    /// Name of current work
-    pub const TITLE: &str = "TITLE";
-
-    /// Name of the artist generally responsible for the current work
-    pub const ARTIST: &str = "ARTIST";
-
-    /// Name of the collection the current work belongs to
-    pub const ALBUM: &str = "ALBUM";
-
-    /// The channel mask of multi-channel audio streams
-    pub const CHANNEL_MASK: &str = "WAVEFORMATEXTENSIBLE_CHANNEL_MASK";
-
     /// Given a field name, returns first matching value, if any
     ///
     /// Fields are matched case-insensitively
@@ -1644,6 +1639,51 @@ impl ToBitStream for VorbisComment {
         )?;
         self.fields.iter().try_for_each(|s| write_string(w, s))
     }
+}
+
+/// Vorbis comment metadata tag fields
+///
+/// Not all of these fields are officially defined in the specification,
+/// but they are in common use.
+pub mod fields {
+    /// Name of current work
+    pub const TITLE: &str = "TITLE";
+
+    /// Name of the artist generally responsible for the current work
+    pub const ARTIST: &str = "ARTIST";
+
+    /// Name of the collection the current work belongs to
+    pub const ALBUM: &str = "ALBUM";
+
+    /// Release date of work
+    pub const DATE: &str = "DATE";
+
+    /// Generic comment
+    pub const COMMENT: &str = "COMMENT";
+
+    /// Track number in album
+    pub const TRACK_NUMBER: &str = "TRACKNUMBER";
+
+    /// Total tracks in album
+    pub const TRACK_TOTAL: &str = "TRACKTOTAL";
+
+    /// The channel mask of multi-channel audio streams
+    pub const CHANNEL_MASK: &str = "WAVEFORMATEXTENSIBLE_CHANNEL_MASK";
+
+    /// ReplayGain track gain
+    pub const RG_TRACK_GAIN: &str = "REPLAYGAIN_TRACK_GAIN";
+
+    /// ReplayGain album gain
+    pub const RG_ALBUM_GAIN: &str = "REPLAYGAIN_ALBUM_GAIN";
+
+    /// ReplayGain track peak
+    pub const RG_TRACK_PEAK: &str = "REPLAYGAIN_TRACK_PEAK";
+
+    /// ReplayGain album peak
+    pub const RG_ALBUM_PEAK: &str = "REPLAYGAIN_ALBUM_PEAK";
+
+    /// ReplayGain reference loudness
+    pub const RG_REFERENCE_LOUDNESS: &str = "REPLAYGAIN_REFERENCE_LOUDNESS";
 }
 
 /// A CUESHEET metadata block
