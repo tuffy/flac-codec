@@ -1009,9 +1009,11 @@ impl Default for EncodingOptions {
 impl EncodingOptions {
     /// Sets new block size
     ///
-    /// For subset streams, this must be less than or equal
-    /// to 4608 if the sample rate is less than or equal to 48 kHz -
-    /// or less than or equal to 16384 for higher sample rates.
+    /// Block size must be ≥ 16
+    ///
+    /// For subset streams, this must be ≤ 4608
+    /// if the sample rate is ≤ 48 kHz -
+    /// or ≤ 16384 for higher sample rates.
     pub fn block_size(self, block_size: u16) -> Result<Self, OptionsError> {
         match block_size {
             0..16 => Err(OptionsError::InvalidBlockSize),
@@ -1021,16 +1023,24 @@ impl EncodingOptions {
 
     /// Sets new maximum LPC order
     ///
-    /// The maximum value is 32.  A value of `None` means that
-    /// no LPC subframes will be encoded.
-    pub fn max_lpc_order(self, max_lpc_order: Option<NonZero<u8>>) -> Result<Self, OptionsError> {
-        match max_lpc_order {
-            Some(o) if o.get() > 32 => Err(OptionsError::InvalidLpcOrder),
-            _ => Ok(Self {
-                max_lpc_order,
-                ..self
-            }),
-        }
+    /// If indicated, the maximum value must be ≤ 32
+    ///
+    /// A value of `None` means that no LPC subframes will be encoded.
+    pub fn max_lpc_order(
+        self,
+        max_lpc_order: Option<impl TryInto<NonZero<u8>>>,
+    ) -> Result<Self, OptionsError> {
+        Ok(Self {
+            max_lpc_order: max_lpc_order
+                .map(|o| {
+                    o.try_into()
+                        .ok()
+                        .filter(|o| *o <= NonZero::new(32).unwrap())
+                        .ok_or(OptionsError::InvalidLpcOrder)
+                })
+                .transpose()?,
+            ..self
+        })
     }
 
     /// Sets maximum residual partion order.
@@ -1064,11 +1074,15 @@ impl EncodingOptions {
     /// and this adds a new block each time it is used.
     ///
     /// The default is to add a 4096 byte padding block.
-    pub fn padding<B: Into<BlockSize>>(mut self, size: B) -> Self {
+    pub fn padding(mut self, size: impl TryInto<BlockSize>) -> Result<Self, OptionsError> {
         use crate::metadata::Padding;
 
-        self.metadata.insert(Padding { size: size.into() });
-        self
+        self.metadata.insert(Padding {
+            size: size
+                .try_into()
+                .map_err(|_| OptionsError::ExcessivePadding)?,
+        });
+        Ok(self)
     }
 
     /// Remove any padding blocks from metadata
@@ -1186,6 +1200,8 @@ pub enum OptionsError {
     InvalidLpcOrder,
     /// Maximum residual partitions is too large
     InvalidMaxPartitions,
+    /// Selected padding size is too large
+    ExcessivePadding,
 }
 
 impl std::error::Error for OptionsError {}
@@ -1196,6 +1212,7 @@ impl std::fmt::Display for OptionsError {
             Self::InvalidBlockSize => "block size must be >= 16".fmt(f),
             Self::InvalidLpcOrder => "maximum LPC order must be <= 32".fmt(f),
             Self::InvalidMaxPartitions => "max partition order must be <= 15".fmt(f),
+            Self::ExcessivePadding => "padding size is too large for block".fmt(f),
         }
     }
 }

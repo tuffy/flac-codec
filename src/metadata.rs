@@ -282,6 +282,14 @@ impl TryFrom<usize> for BlockSize {
     }
 }
 
+impl TryFrom<u32> for BlockSize {
+    type Error = BlockSizeOverflow;
+
+    fn try_from(u: u32) -> Result<Self, Self::Error> {
+        (u <= Self::MAX).then_some(Self(u)).ok_or(BlockSizeOverflow)
+    }
+}
+
 impl TryFrom<u64> for BlockSize {
     type Error = BlockSizeOverflow;
 
@@ -291,6 +299,7 @@ impl TryFrom<u64> for BlockSize {
             .and_then(|s| (s <= Self::MAX).then_some(Self(s)).ok_or(BlockSizeOverflow))
     }
 }
+
 /// An error that occurs when trying to build an overly large `BlockSize`
 #[derive(Copy, Clone, Debug)]
 pub struct BlockSizeOverflow;
