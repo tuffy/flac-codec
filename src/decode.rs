@@ -39,7 +39,7 @@ use std::path::Path;
 ///     EncodingOptions::default(),  // default encoding options
 ///     44100,                       // sample rate
 ///     16,                          // bits-per-sample
-///     NonZero::new(1).unwrap(),    // channel count
+///     1,                           // channel count
 ///     NonZero::new(2000),          // total bytes
 /// ).unwrap();
 ///
@@ -305,7 +305,7 @@ impl<R: std::io::Read + std::io::Seek, E: crate::byteorder::Endianness> std::io:
 ///     EncodingOptions::default(),  // default encoding options
 ///     44100,                       // sample rate
 ///     16,                          // bits-per-sample
-///     NonZero::new(1).unwrap(),    // channel count
+///     1,                           // channel count
 ///     NonZero::new(1000),          // total samples
 /// ).unwrap();
 ///
@@ -498,9 +498,9 @@ impl<R: std::io::Read + std::io::Seek> FlacSampleReader<R> {
 ///
 /// // write a single FLAC frame with some samples
 /// w.write(
-///     44100,                        // sample rate
-///     NonZero::new(1).unwrap(),     // channels
-///     16,                           // bits-per-sample
+///     44100,  // sample rate
+///     1,      // channels
+///     16,     // bits-per-sample
 ///     &samples,
 /// ).unwrap();
 ///
@@ -514,8 +514,8 @@ impl<R: std::io::Read + std::io::Seek> FlacSampleReader<R> {
 ///     FrameBuf {
 ///         samples: &samples,
 ///         sample_rate: 44100,
-///         channels: NonZero::new(1).unwrap(),
-///         bits_per_sample: SignedBitCount::new::<16>(),
+///         channels: 1,
+///         bits_per_sample: 16,
 ///     },
 /// );
 /// ```
@@ -599,7 +599,7 @@ impl<R: std::io::BufRead> FlacStreamReader<R> {
             Ok(FrameBuf {
                 samples: self.samples.as_slice(),
                 sample_rate: header.sample_rate.into(),
-                channels: NonZero::new(header.channel_assignment.count()).unwrap(),
+                channels: header.channel_assignment.count(),
                 bits_per_sample: header.bits_per_sample.into(),
             })
         } else {
@@ -626,7 +626,7 @@ pub struct FrameBuf<'s> {
     pub sample_rate: u32,
 
     /// Channel count, from 1 to 8
-    pub channels: NonZero<u8>,
+    pub channels: u8,
 
     /// Bits-per-sample, from 4 to 32
     pub bits_per_sample: u32,

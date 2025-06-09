@@ -46,7 +46,7 @@ const MAX_CHANNELS: usize = 8;
 ///     EncodingOptions::default(),  // default encoding options
 ///     44100,                       // sample rate
 ///     16,                          // bits-per-sample
-///     NonZero::new(1).unwrap(),    // channel count
+///     1,                           // channel count
 ///     NonZero::new(2000),          // total bytes
 /// ).unwrap();
 ///
@@ -118,7 +118,7 @@ impl<W: std::io::Write + std::io::Seek, E: crate::byteorder::Endianness> FlacWri
         options: EncodingOptions,
         sample_rate: u32,
         bits_per_sample: u32,
-        channels: NonZero<u8>,
+        channels: u8,
         total_bytes: Option<NonZero<u64>>,
     ) -> Result<Self, Error> {
         let bits_per_sample: SignedBitCount<32> = bits_per_sample
@@ -127,11 +127,11 @@ impl<W: std::io::Write + std::io::Seek, E: crate::byteorder::Endianness> FlacWri
 
         let bytes_per_sample = u32::from(bits_per_sample).div_ceil(8) as usize;
 
-        let pcm_frame_size = bytes_per_sample * channels.get() as usize;
+        let pcm_frame_size = bytes_per_sample * channels as usize;
 
         Ok(Self {
             buf: VecDeque::default(),
-            frame: Frame::empty(channels.get().into(), bits_per_sample.into()),
+            frame: Frame::empty(channels.into(), bits_per_sample.into()),
             bytes_per_sample,
             pcm_frame_size,
             frame_byte_size: pcm_frame_size * options.block_size as usize,
@@ -143,7 +143,7 @@ impl<W: std::io::Write + std::io::Seek, E: crate::byteorder::Endianness> FlacWri
                 channels,
                 total_bytes
                     .map(|bytes| {
-                        exact_div(bytes.get(), channels.get().into())
+                        exact_div(bytes.get(), channels.into())
                             .and_then(|s| exact_div(s, bytes_per_sample as u64))
                             .ok_or(Error::SamplesNotDivisibleByChannels)
                     })
@@ -181,7 +181,7 @@ impl<W: std::io::Write + std::io::Seek, E: crate::byteorder::Endianness> FlacWri
         options: EncodingOptions,
         sample_rate: u32,
         bits_per_sample: u32,
-        channels: NonZero<u8>,
+        channels: u8,
         total_bytes: Option<NonZero<u64>>,
     ) -> Result<Self, Error> {
         Self::new(
@@ -262,7 +262,7 @@ impl<E: crate::byteorder::Endianness> FlacWriter<BufWriter<File>, E> {
         options: EncodingOptions,
         sample_rate: u32,
         bits_per_sample: u32,
-        channels: NonZero<u8>,
+        channels: u8,
         total_bytes: Option<NonZero<u64>>,
     ) -> Result<Self, Error> {
         FlacWriter::new(
@@ -341,7 +341,7 @@ impl<W: std::io::Write + std::io::Seek, E: crate::byteorder::Endianness> Drop fo
 ///     EncodingOptions::default(),  // default encoding options
 ///     44100,                       // sample rate
 ///     16,                          // bits-per-sample
-///     NonZero::new(1).unwrap(),    // channel count
+///     1,                           // channel count
 ///     NonZero::new(1000),          // total samples
 /// ).unwrap();
 ///
@@ -408,7 +408,7 @@ impl<W: std::io::Write + std::io::Seek> FlacSampleWriter<W> {
         options: EncodingOptions,
         sample_rate: u32,
         bits_per_sample: u32,
-        channels: NonZero<u8>,
+        channels: u8,
         total_samples: Option<NonZero<u64>>,
     ) -> Result<Self, Error> {
         let bits_per_sample: SignedBitCount<32> = bits_per_sample
@@ -417,11 +417,11 @@ impl<W: std::io::Write + std::io::Seek> FlacSampleWriter<W> {
 
         let bytes_per_sample = u32::from(bits_per_sample).div_ceil(8) as usize;
 
-        let pcm_frame_size = usize::from(channels.get());
+        let pcm_frame_size = usize::from(channels);
 
         Ok(Self {
             sample_buf: VecDeque::default(),
-            frame: Frame::empty(channels.get().into(), bits_per_sample.into()),
+            frame: Frame::empty(channels.into(), bits_per_sample.into()),
             bytes_per_sample,
             pcm_frame_size,
             frame_sample_size: pcm_frame_size * options.block_size as usize,
@@ -433,7 +433,7 @@ impl<W: std::io::Write + std::io::Seek> FlacSampleWriter<W> {
                 channels,
                 total_samples
                     .map(|bytes| {
-                        exact_div(bytes.get(), channels.get().into())
+                        exact_div(bytes.get(), channels.into())
                             .ok_or(Error::SamplesNotDivisibleByChannels)
                     })
                     .transpose()?
@@ -538,7 +538,7 @@ impl FlacSampleWriter<BufWriter<File>> {
         options: EncodingOptions,
         sample_rate: u32,
         bits_per_sample: u32,
-        channels: NonZero<u8>,
+        channels: u8,
         total_bytes: Option<NonZero<u64>>,
     ) -> Result<Self, Error> {
         FlacSampleWriter::new(
@@ -576,9 +576,9 @@ impl FlacSampleWriter<BufWriter<File>> {
 ///
 /// // write a single FLAC frame with some samples
 /// w.write(
-///     44100,                        // sample rate
-///     NonZero::new(1).unwrap(),     // channels
-///     16,                           // bits-per-sample
+///     44100,  // sample rate
+///     1,      // channels
+///     16,     // bits-per-sample
 ///     &samples,
 /// ).unwrap();
 ///
@@ -592,8 +592,8 @@ impl FlacSampleWriter<BufWriter<File>> {
 ///     FrameBuf {
 ///         samples: &samples,
 ///         sample_rate: 44100,
-///         channels: NonZero::new(1).unwrap(),
-///         bits_per_sample: SignedBitCount::new::<16>(),
+///         channels: 1,
+///         bits_per_sample: 16,
 ///     },
 /// );
 /// ```
@@ -632,7 +632,7 @@ impl<W: std::io::Write> FlacStreamWriter<W> {
     pub fn write(
         &mut self,
         sample_rate: u32,
-        channels: NonZero<u8>,
+        channels: u8,
         bits_per_sample: u32,
         samples: &[i32],
     ) -> Result<(), Error> {
@@ -644,12 +644,14 @@ impl<W: std::io::Write> FlacStreamWriter<W> {
             .map_err(|_| Error::NonSubsetBitsPerSample)?;
 
         // samples must divide evenly into channels
-        if samples.len() % usize::from(channels.get()) != 0 {
+        if samples.len() % usize::from(channels) != 0 {
             return Err(Error::SamplesNotDivisibleByChannels);
+        } else if !(1..=8).contains(&channels) {
+            return Err(Error::ExcessiveChannels);
         }
 
         self.frame
-            .resize(bits_per_sample.into(), channels.get().into(), 0);
+            .resize(bits_per_sample.into(), channels.into(), 0);
         self.frame.fill_from_samples(samples);
 
         // block size must be valid
@@ -663,10 +665,6 @@ impl<W: std::io::Write> FlacStreamWriter<W> {
             SampleRate::Streaminfo(_) => Err(Error::NonSubsetSampleRate),
             rate => Ok(rate),
         })?;
-
-        if !(1..=8).contains(&channels.get()) {
-            return Err(Error::ExcessiveChannels);
-        }
 
         // bits-per-sample must be valid for subset streams
         let header_bits_per_sample = match BitsPerSample::from(bits_per_sample) {
@@ -1240,7 +1238,7 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
         options: EncodingOptions,
         sample_rate: u32,
         bits_per_sample: impl TryInto<SignedBitCount<32>>,
-        channels: NonZero<u8>,
+        channels: u8,
         total_samples: Option<NonZero<u64>>,
     ) -> Result<Self, Error> {
         let mut blocks = options.metadata;
@@ -1257,9 +1255,10 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
             bits_per_sample: bits_per_sample
                 .try_into()
                 .map_err(|_| Error::InvalidBitsPerSample)?,
-            channels: (0..=8)
-                .contains(&channels.get())
+            channels: (1..=8)
+                .contains(&channels)
                 .then_some(channels)
+                .and_then(NonZero::new)
                 .ok_or(Error::ExcessiveChannels)?,
             total_samples: match total_samples {
                 None => None,

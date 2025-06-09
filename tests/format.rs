@@ -9,25 +9,25 @@ use std::num::NonZero;
 #[test]
 fn test_small_files() {
     struct Samples {
-        channels: NonZero<u8>,
+        channels: u8,
         data: &'static [u8],
     }
 
     for Samples { channels, data } in [
         Samples {
-            channels: NonZero::new(1).unwrap(),
+            channels: 1,
             data: b"\x00\x80",
         },
         Samples {
-            channels: NonZero::new(2).unwrap(),
+            channels: 2,
             data: b"\x00\x80\xff\x7f",
         },
         Samples {
-            channels: NonZero::new(1).unwrap(),
+            channels: 1,
             data: b"\xe7\xff\x00\x00\x19\x00\x32\x00\x64\x00",
         },
         Samples {
-            channels: NonZero::new(2).unwrap(),
+            channels: 2,
             data:
                 b"\xe7\xff\xf4\x01\x00\x00\x90\x01\x19\x00\x2c\x01\x32\x00\xc8\x00\x64\x00\x64\x00",
         },
@@ -99,7 +99,7 @@ fn test_blocksize_variations() {
                             .no_padding(),
                         44100,
                         8,
-                        NonZero::new(1).unwrap(),
+                        1,
                         u64::try_from(data.len()).ok().and_then(NonZero::new),
                     )
                     .unwrap(),
@@ -146,7 +146,7 @@ fn test_fractional() {
                         .no_padding(),
                     44100,
                     16,
-                    NonZero::new(2).unwrap(),
+                    2,
                     u64::try_from(samples * 2 * 2).ok().and_then(NonZero::new),
                 )
                 .unwrap(),
@@ -403,7 +403,7 @@ fn test_roundtrip() {
                 EncodingOptions::default().no_padding(),
                 44100,
                 bps as u32,
-                NonZero::new(channels as u8).unwrap(),
+                channels as u8,
                 u64::try_from(data.len()).ok().and_then(NonZero::new),
             )
             .unwrap()
@@ -590,7 +590,7 @@ fn test_full_scale_deflection() {
             EncodingOptions::default().no_padding(),
             44100,
             bps,
-            NonZero::new(1).unwrap(),
+            1,
             u64::try_from(bytes.len() * iters)
                 .ok()
                 .and_then(NonZero::new),
@@ -633,7 +633,7 @@ fn test_wasted_bits() {
             EncodingOptions::default().no_padding(),
             44100,
             16,
-            NonZero::new(1).unwrap(),
+            1,
             u64::try_from(data.len()).ok().and_then(NonZero::new),
         )
         .unwrap()
@@ -739,8 +739,8 @@ fn test_sine_wave_streams() {
             SAMPLE_RATE,
             u32::from(bits_per_sample),
             match STEREO {
-                true => NonZero::new(2).unwrap(),
-                false => NonZero::new(1).unwrap(),
+                true => 2,
+                false => 1,
             },
             sine.len().try_into().ok().and_then(NonZero::new),
         )
@@ -993,7 +993,7 @@ fn test_noise() {
                             },
                             44100,
                             bits_per_sample,
-                            NonZero::new(channels).unwrap(),
+                            channels,
                             u64::try_from(noise.len()).ok().and_then(NonZero::new),
                         )
                         .unwrap()
