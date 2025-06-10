@@ -225,6 +225,9 @@ impl ToBitStream for BlockType {
 pub struct BlockSize(u32);
 
 impl BlockSize {
+    /// A value of 0
+    pub const ZERO: BlockSize = BlockSize(0);
+
     const MAX: u32 = (1 << 24) - 1;
 
     /// Our current value as a u32
@@ -1239,7 +1242,7 @@ impl ToBitStream for Streaminfo {
 ///     },
 /// );
 /// ```
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Clone, Eq, PartialEq, Default)]
 pub struct Padding {
     /// The size of the padding, in bytes
     pub size: BlockSize,
@@ -2583,14 +2586,17 @@ impl BlockList {
         self.blocks.retain(|b| b.block_type() != B::TYPE)
     }
 
-    /// Updates Vorbis comment, creating a new block if necessary
-    pub fn update_comment(&mut self, f: impl FnOnce(&mut VorbisComment)) {
+    /// Updates first instance of the given block, creating it if necessary
+    pub fn update<B>(&mut self, f: impl FnOnce(&mut B))
+    where
+        B: OptionalMetadataBlock + Default,
+    {
         match self.get_mut() {
             Some(comment) => f(comment),
             None => {
-                let mut c = VorbisComment::default();
-                f(&mut c);
-                self.blocks.push(c.into());
+                let mut b = B::default();
+                f(&mut b);
+                self.blocks.push(b.into());
             }
         }
     }

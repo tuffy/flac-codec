@@ -1068,20 +1068,23 @@ impl EncodingOptions {
         Self { window, ..self }
     }
 
-    /// Adds new [`crate::metadata::Padding`] block to metadata
+    /// Updates size of padding block
     ///
-    /// Files may contain multiple [`crate::metadata::Padding`] blocks,
-    /// and this adds a new block each time it is used.
+    /// If `size` is set to 0, removes the block entirely.
     ///
     /// The default is to add a 4096 byte padding block.
     pub fn padding(mut self, size: impl TryInto<BlockSize>) -> Result<Self, OptionsError> {
         use crate::metadata::Padding;
 
-        self.metadata.insert(Padding {
-            size: size
-                .try_into()
-                .map_err(|_| OptionsError::ExcessivePadding)?,
-        });
+        match size
+            .try_into()
+            .map_err(|_| OptionsError::ExcessivePadding)?
+        {
+            BlockSize::ZERO => self.metadata.remove::<Padding>(),
+            size => self.metadata.update::<Padding>(|p| {
+                p.size = size;
+            }),
+        }
         Ok(self)
     }
 
@@ -1102,7 +1105,7 @@ impl EncodingOptions {
         S: std::fmt::Display,
     {
         self.metadata
-            .update_comment(|vc| vc.append_field(field, value));
+            .update::<VorbisComment>(|vc| vc.append_field(field, value));
         self
     }
 
