@@ -2513,6 +2513,35 @@ impl BlockList {
         }
     }
 
+    /// Reads `BlockList` from the given reader
+    ///
+    /// This assumes the reader is rewound to the
+    /// beginning of the file.
+    ///
+    /// Because this may perform many small reads,
+    /// using a buffered reader is preferred when
+    /// reading from a raw file.
+    ///
+    /// # Errors
+    ///
+    /// Returns any error reading or parsing metadata blocks
+    pub fn read<R: std::io::Read>(r: R) -> Result<Self, Error> {
+        // TODO - change this to flatten once that stabilizes
+        Ok(read_blocks(r).collect::<Result<Result<Self, _>, _>>()??)
+    }
+
+    /// Reads `BlockList` from the given file path
+    ///
+    /// # Errors
+    ///
+    /// Returns any error reading or parsing metadata blocks
+    pub fn open<P: AsRef<Path>>(p: P) -> Result<Self, Error> {
+        File::open(p.as_ref())
+            .map(BufReader::new)
+            .map_err(Error::Io)
+            .and_then(BlockList::read)
+    }
+
     /// Returns reference to our STREAMINFO metadata block
     pub fn streaminfo(&self) -> &Streaminfo {
         &self.streaminfo
