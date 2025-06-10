@@ -150,6 +150,15 @@ impl<E: crate::byteorder::Endianness> FlacReader<BufReader<File>, E> {
 }
 
 impl<R: std::io::Read, E: crate::byteorder::Endianness> std::io::Read for FlacReader<R, E> {
+    /// Reads samples to the given buffer as bytes in our stream's endianness
+    ///
+    /// Returned samples are interleaved by channel, like:
+    /// [left₀ , right₀ , left₁ , right₁ , left₂ , right₂ , …]
+    ///
+    /// # Errors
+    ///
+    /// Returns any error that occurs when reading the stream,
+    /// converted to an I/O error.
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         if self.buf.is_empty() {
             match self.decoder.read_frame()? {
@@ -167,6 +176,15 @@ impl<R: std::io::Read, E: crate::byteorder::Endianness> std::io::Read for FlacRe
 }
 
 impl<R: std::io::Read, E: crate::byteorder::Endianness> std::io::BufRead for FlacReader<R, E> {
+    /// Reads samples to the given buffer as bytes in our stream's endianness
+    ///
+    /// Returned samples are interleaved by channel, like:
+    /// [left₀ , right₀ , left₁ , right₁ , left₂ , right₂ , …]
+    ///
+    /// # Errors
+    ///
+    /// Returns any error that occurs when reading the stream,
+    /// converted to an I/O error.
     fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
         if self.buf.is_empty() {
             match self.decoder.read_frame()? {
@@ -388,6 +406,9 @@ impl<R: std::io::Read> FlacSampleReader<R> {
 
     /// Attempts to fill the buffer with samples and returns quantity read
     ///
+    /// Returned samples are interleaved by channel, like:
+    /// [left₀ , right₀ , left₁ , right₁ , left₂ , right₂ , …]
+    ///
     /// # Errors
     ///
     /// Returns error if some error occurs reading FLAC file
@@ -413,6 +434,9 @@ impl<R: std::io::Read> FlacSampleReader<R> {
     /// Analogous to [`std::io::BufRead::fill_buf`], this should
     /// be paired with [`FlacSampleReader::consume`] to
     /// consume samples in the filled buffer once used.
+    ///
+    /// Returned samples are interleaved by channel, like:
+    /// [left₀ , right₀ , left₁ , right₁ , left₂ , right₂ , …]
     ///
     /// # Errors
     ///
@@ -538,7 +562,12 @@ impl<R: std::io::BufRead> FlacStreamReader<R> {
         }
     }
 
-    /// Returns the next decoded FLAC frame
+    /// Returns the next decoded FLAC frame and its parameters
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error from the stream or if any
+    /// other error occurs when reading the file.
     pub fn read(&mut self) -> Result<FrameBuf<'_>, Error> {
         use crate::crc::{Checksum, Crc16, CrcReader};
         use crate::stream::FrameHeader;
@@ -618,7 +647,10 @@ impl<R: std::io::BufRead> FlacStreamReader<R> {
 /// all the metadata fields in the frame for decoding/playback.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct FrameBuf<'s> {
-    /// Decoded samples, interleaved by channel
+    /// Decoded samples
+    ///
+    /// Samples are interleaved by channel, like:
+    /// [left₀ , right₀ , left₁ , right₁ , left₂ , right₂ , …]
     pub samples: &'s [i32],
 
     /// The sample rate, in Hz
