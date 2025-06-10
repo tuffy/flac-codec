@@ -1560,22 +1560,28 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
                 SeektableStyle::None => { /* no seektable, so nothing to do */ }
             }
 
+            // verify or update final sample count
             match &mut self.blocks.streaminfo_mut().total_samples {
                 Some(expected) => {
+                    // ensure final sample count matches
                     if expected.get() != self.samples_written {
                         return Err(Error::SampleCountMismatch);
                     }
                 }
                 expected @ None => {
+                    // update final sample count if possible
                     if self.samples_written < Self::MAX_SAMPLES {
                         *expected =
                             Some(NonZero::new(self.samples_written).ok_or(Error::NoSamples)?);
                     } else {
+                        // TODO - should I just leave this blank
+                        // if too many samples are written?
                         return Err(Error::ExcessiveTotalSamples);
                     }
                 }
             }
 
+            // update STREAMINFO MD5 sum
             self.blocks.streaminfo_mut().md5 = Some(self.md5.clone().compute().0);
 
             let writer = self.writer.stream();

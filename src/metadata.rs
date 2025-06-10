@@ -54,7 +54,9 @@ pub struct BlockHeader {
 }
 
 /// A type of FLAC metadata block
-pub trait MetadataBlock: ToBitStream<Error: Into<Error>> + Into<Block> + TryFrom<Block> {
+pub trait MetadataBlock:
+    ToBitStream<Error: Into<Error>> + Into<Block> + TryFrom<Block> + Clone
+{
     /// The metadata block's type
     const TYPE: BlockType;
 
@@ -221,7 +223,7 @@ impl ToBitStream for BlockType {
 }
 
 /// A 24-bit block size value, with safeguards against overflow
-#[derive(Debug, Default, Copy, Clone, Eq, PartialEq)]
+#[derive(Debug, Default, Copy, Clone, Eq, PartialEq, Ord, PartialOrd)]
 pub struct BlockSize(u32);
 
 impl BlockSize {
@@ -670,6 +672,8 @@ where
 
 /// Given open file, attempts to update its metadata blocks
 ///
+/// The original file should be rewound to the start of the stream.
+///
 /// Applies closure `f` to the blocks and attempts to update
 /// them if `Save::Commit` is returned.
 ///
@@ -678,7 +682,7 @@ where
 /// completely overwritten with new contents.
 ///
 /// If the new blocks are too large (or small) to fit into
-/// the original file, the original file is dropped
+/// the original file, the original unmodified file is dropped
 /// and the `rebuilt` closure is called to build a new
 /// file.  The file's contents are then dumped into the new file.
 pub fn update<F, N, E>(
@@ -750,8 +754,7 @@ where
 
     let mut reader = Counter::new(BufReader::new(&mut original));
 
-    let mut blocks =
-        read_blocks(Read::by_ref(&mut reader)).collect::<Result<Result<BlockList, _>, _>>()??;
+    let mut blocks = BlockList::read(Read::by_ref(&mut reader))?;
 
     let Counter {
         stream: reader,
@@ -1387,7 +1390,7 @@ impl ToBitStream for Application {
 /// );
 ///
 /// ```
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Clone, Eq, PartialEq, Default)]
 pub struct SeekTable {
     /// The seek table's individual seek points
     pub points: Vec<SeekPoint>,
@@ -2621,7 +2624,7 @@ impl BlockList {
         B: OptionalMetadataBlock + Default,
     {
         match self.get_mut() {
-            Some(comment) => f(comment),
+            Some(block) => f(block),
             None => {
                 let mut b = B::default();
                 f(&mut b);
