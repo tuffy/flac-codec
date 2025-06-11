@@ -18,24 +18,11 @@ use bitstream_io::{
 use std::num::NonZero;
 
 /// A common trait for signed integers
-pub trait SignedInteger:
-    bitstream_io::SignedInteger
-    + std::ops::Shl<Output = Self>
-    + std::ops::Neg<Output = Self>
-    + std::ops::AddAssign
-    + Into<i64>
-{
-    /// Unconditionally converts a u32 to ourself
-    fn from_u32(u: u32) -> Self;
+pub trait SignedInteger: private::SignedInteger {}
 
-    /// Unconditionally converts ourself to u32
-    fn to_u32(self) -> u32;
+impl SignedInteger for i32 {}
 
-    /// Unconditionally converts i64 to ourself
-    fn from_i64(i: i64) -> Self;
-}
-
-impl SignedInteger for i32 {
+impl private::SignedInteger for i32 {
     #[inline]
     fn from_u32(u: u32) -> Self {
         u as i32
@@ -51,7 +38,9 @@ impl SignedInteger for i32 {
     }
 }
 
-impl SignedInteger for i64 {
+impl SignedInteger for i64 {}
+
+impl private::SignedInteger for i64 {
     #[inline]
     fn from_u32(u: u32) -> Self {
         u as i64
@@ -65,6 +54,26 @@ impl SignedInteger for i64 {
     #[inline]
     fn from_i64(i: i64) -> Self {
         i
+    }
+}
+
+mod private {
+    /// A common trait for signed integers
+    pub trait SignedInteger:
+        bitstream_io::SignedInteger
+        + std::ops::Shl<Output = Self>
+        + std::ops::Neg<Output = Self>
+        + std::ops::AddAssign
+        + Into<i64>
+    {
+        /// Unconditionally converts a u32 to ourself
+        fn from_u32(u: u32) -> Self;
+
+        /// Unconditionally converts ourself to u32
+        fn to_u32(self) -> u32;
+
+        /// Unconditionally converts i64 to ourself
+        fn from_i64(i: i64) -> Self;
     }
 }
 
