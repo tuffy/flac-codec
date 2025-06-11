@@ -814,11 +814,16 @@ impl<R: std::io::Seek> Decoder<R> {
             Some(SeekTable { points: seektable }) => {
                 match seektable
                     .iter()
-                    .filter(|point| point.sample_offset.unwrap_or(u64::MAX) <= sample)
+                    .filter(|point| {
+                        point
+                            .sample_offset()
+                            .map(|offset| offset <= sample)
+                            .unwrap_or(false)
+                    })
                     .next_back()
                 {
-                    Some(SeekPoint {
-                        sample_offset: Some(sample_offset),
+                    Some(SeekPoint::Defined {
+                        sample_offset,
                         byte_offset,
                         ..
                     }) => {

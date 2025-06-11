@@ -962,6 +962,32 @@ enum SeektableStyle {
     Seconds(NonZero<u8>),
 }
 
+impl SeektableStyle {
+    // decimates full set of seekpoints based on the requested
+    // seektable style, or returns None if no seektable is requested
+    fn filter<'s>(
+        self,
+        sample_rate: u32,
+        seekpoints: impl Iterator<Item = EncoderSeekPoint> + 's,
+    ) -> Option<Box<dyn Iterator<Item = EncoderSeekPoint> + 's>> {
+        match self {
+            Self::None => None,
+            Self::Seconds(seconds) => {
+                let nth_sample = u64::from(u32::from(seconds.get()) * sample_rate);
+                let mut offset = 0;
+                Some(Box::new(seekpoints.filter(move |point| {
+                    if point.range().contains(&offset) {
+                        offset += nth_sample;
+                        true
+                    } else {
+                        false
+                    }
+                })))
+            }
+        }
+    }
+}
+
 /// FLAC encoding options
 #[derive(Clone, Debug)]
 pub struct EncodingOptions {
@@ -1381,7 +1407,7 @@ struct Encoder<W: std::io::Write + std::io::Seek> {
     // the number of channel-independent samples written
     samples_written: u64,
     // all seekpoints
-    seekpoints: Vec<SeekPoint>,
+    seekpoints: Vec<EncoderSeekPoint>,
     // our running MD5 calculation
     md5: md5::Context,
     // whether the encoder has finalized the file
@@ -1429,31 +1455,15 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
         };
 
         // insert a dummy SeekTable to be populated later
-        match options.seektable_style {
-            SeektableStyle::Seconds(seconds) => {
-                if let Some(total_samples) = total_samples {
-                    use crate::metadata::SeekTable;
-
-                    let samples = u64::from(sample_rate * u32::from(seconds.get()));
-
-                    blocks.insert(SeekTable {
-                        points: vec![
-                            SeekPoint {
-                                sample_offset: None,
-                                byte_offset: 0,
-                                frame_samples: 0,
-                            };
-                            total_samples
-                                .get()
-                                .div_ceil(samples)
-                                .min(total_samples.get().div_ceil(options.block_size.into()))
-                                .try_into()
-                                .unwrap()
-                        ],
-                    });
-                }
+        if let Some(total_samples) = total_samples {
+            if let Some(placeholders) = options.seektable_style.filter(
+                sample_rate,
+                EncoderSeekPoint::placeholders(total_samples.get(), options.block_size),
+            ) {
+                blocks.insert(crate::metadata::SeekTable {
+                    points: placeholders.map(|p| p.into()).collect(),
+                });
             }
-            SeektableStyle::None => { /* do nothing */ }
         }
 
         write_blocks(blocks.blocks(), writer.by_ref())?;
@@ -1499,9 +1509,9 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
     /// for the encoder's.
     fn encode(&mut self, frame: &Frame) -> Result<(), Error> {
         // drop in a new seekpoint
-        self.seekpoints.push(SeekPoint {
-            sample_offset: Some(self.samples_written),
-            byte_offset: self.writer.count,
+        self.seekpoints.push(EncoderSeekPoint {
+            sample_offset: self.samples_written,
+            byte_offset: Some(self.writer.count),
             frame_samples: frame.pcm_frames() as u16,
         });
 
@@ -1531,33 +1541,40 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
             self.finalized = true;
 
             // update SEEKTABLE metadata block with final values
-            match self.options.seektable_style {
-                SeektableStyle::Seconds(seconds) => {
-                    // a placeholder SEEKTABLE should always be present
-                    // if we've specified a seektable style other than None
-                    if let Some(SeekTable { points }) = self.blocks.get_mut() {
-                        let samples =
-                            u64::from(u32::from(self.sample_rate) * u32::from(seconds.get()));
-
-                        // grab only the seekpoints that span
-                        // "samples" boundaries of PCM samples
-
-                        let mut all_points = self.seekpoints.iter();
+            if let Some(encoded_points) = self
+                .options
+                .seektable_style
+                .filter(self.sample_rate.into(), self.seekpoints.iter().cloned())
+            {
+                match self.blocks.get_pair_mut() {
+                    (Some(SeekTable { points }), _) => {
+                        // placeholder SEEKTABLE already in place,
+                        // so no need to adjust PADDING to fit
 
                         points
                             .iter_mut()
-                            .zip(0..)
-                            .for_each(|(seektable_point, frame)| {
-                                if let Some(point) = all_points.find(|point| {
-                                    point.sample_offset.unwrap() + u64::from(point.frame_samples)
-                                        > frame * samples
-                                }) {
-                                    *seektable_point = point.clone();
-                                }
-                            });
+                            .zip(encoded_points)
+                            .for_each(|(o, i)| *o = i.into());
                     }
+                    (None, Some(crate::metadata::Padding { size: padding_size })) => {
+                        // no SEEKTABLE, but there is a PADDING block,
+                        // so try to shrink PADDING to fit SEEKTABLE
+
+                        use crate::metadata::MetadataBlock;
+
+                        let seektable = SeekTable {
+                            points: encoded_points.map(|p| p.into()).collect(),
+                        };
+                        if let Some(new_padding_size) = seektable
+                            .total_size()
+                            .and_then(|seektable_size| padding_size.checked_sub(seektable_size))
+                        {
+                            *padding_size = new_padding_size;
+                            self.blocks.insert(seektable);
+                        }
+                    }
+                    (None, None) => { /* no seektable or padding, so nothing to do */ }
                 }
-                SeektableStyle::None => { /* no seektable, so nothing to do */ }
             }
 
             // verify or update final sample count
@@ -1598,6 +1615,49 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
 impl<W: std::io::Write + std::io::Seek> Drop for Encoder<W> {
     fn drop(&mut self) {
         let _ = self.finalize_inner();
+    }
+}
+
+// Unlike regular SeekPoints, which can have placeholder variants,
+// these are always defined to be something.  A byte offset
+// of None indicates a dummy encoder point
+#[derive(Debug, Clone)]
+struct EncoderSeekPoint {
+    sample_offset: u64,
+    byte_offset: Option<u64>,
+    frame_samples: u16,
+}
+
+impl EncoderSeekPoint {
+    // generates set of placeholder points
+    fn placeholders(total_samples: u64, block_size: u16) -> impl Iterator<Item = EncoderSeekPoint> {
+        (0..total_samples)
+            .step_by(usize::from(block_size))
+            .map(move |sample_offset| EncoderSeekPoint {
+                sample_offset,
+                byte_offset: None,
+                frame_samples: u16::try_from(total_samples - sample_offset)
+                    .map(|s| s.min(block_size))
+                    .unwrap_or(block_size),
+            })
+    }
+
+    // returns sample range of point
+    fn range(&self) -> std::ops::Range<u64> {
+        self.sample_offset..(self.sample_offset + u64::from(self.frame_samples))
+    }
+}
+
+impl From<EncoderSeekPoint> for SeekPoint {
+    fn from(p: EncoderSeekPoint) -> Self {
+        match p.byte_offset {
+            Some(byte_offset) => Self::Defined {
+                sample_offset: p.sample_offset,
+                byte_offset: byte_offset,
+                frame_samples: p.frame_samples,
+            },
+            None => Self::Placeholder,
+        }
     }
 }
 

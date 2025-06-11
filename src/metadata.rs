@@ -12,7 +12,7 @@ use crate::Error;
 use bitstream_io::{
     BigEndian, BitRead, BitReader, BitWrite, ByteRead, ByteReader, FromBitStream,
     FromBitStreamUsing, FromBitStreamWith, LittleEndian, SignedBitCount, ToBitStream,
-    ToBitStreamUsing,
+    ToBitStreamUsing, write::Overflowed,
 };
 use std::fs::File;
 use std::io::BufReader;
@@ -53,6 +53,10 @@ pub struct BlockHeader {
     pub size: BlockSize,
 }
 
+impl BlockHeader {
+    const SIZE: BlockSize = BlockSize((1 + 7 + 24) / 8);
+}
+
 /// A type of FLAC metadata block
 pub trait MetadataBlock:
     ToBitStream<Error: Into<Error>> + Into<Block> + TryFrom<Block> + Clone
@@ -62,74 +66,82 @@ pub trait MetadataBlock:
 
     /// Whether the block can occur multiple times in a file
     const MULTIPLE: bool;
+
+    /// Size of block, in bytes, not including header
+    fn bytes(&self) -> Option<BlockSize> {
+        self.bits::<BlockBits>().ok().map(|b| b.into())
+    }
+
+    /// Size of block, in bytes, including block header
+    fn total_size(&self) -> Option<BlockSize> {
+        self.bytes().and_then(|s| s.checked_add(BlockHeader::SIZE))
+    }
+}
+
+#[derive(Default)]
+struct BlockBits(u32);
+
+impl BlockBits {
+    const MAX: u32 = BlockSize::MAX * 8;
+}
+
+impl From<u8> for BlockBits {
+    fn from(u: u8) -> Self {
+        Self(u.into())
+    }
+}
+
+impl TryFrom<u32> for BlockBits {
+    type Error = (); // the error will be replaced later
+
+    fn try_from(u: u32) -> Result<Self, Self::Error> {
+        (u <= Self::MAX).then_some(Self(u)).ok_or(())
+    }
+}
+
+impl TryFrom<usize> for BlockBits {
+    type Error = (); // the error will be replaced later
+
+    fn try_from(u: usize) -> Result<Self, Self::Error> {
+        u32::try_from(u)
+            .map_err(|_| ())
+            .and_then(|u| (u <= Self::MAX).then_some(Self(u)).ok_or(()))
+    }
+}
+
+impl bitstream_io::write::Counter for BlockBits {
+    fn checked_add_assign(&mut self, Self(b): Self) -> Result<(), Overflowed> {
+        *self = self
+            .0
+            .checked_add(b)
+            .filter(|b| *b <= Self::MAX)
+            .map(Self)
+            .ok_or(Overflowed)?;
+        Ok(())
+    }
+
+    fn checked_mul(self, Self(b): Self) -> Result<Self, Overflowed> {
+        self.0
+            .checked_mul(b)
+            .filter(|b| *b <= Self::MAX)
+            .map(Self)
+            .ok_or(Overflowed)
+    }
+
+    fn byte_aligned(&self) -> bool {
+        self.0 % 8 == 0
+    }
+}
+
+impl From<BlockBits> for BlockSize {
+    fn from(BlockBits(u): BlockBits) -> Self {
+        assert!(u % 8 == 0);
+        Self(u / 8)
+    }
 }
 
 impl BlockHeader {
     fn new<M: MetadataBlock>(last: bool, block: &M) -> Result<Self, Error> {
-        use bitstream_io::write::Overflowed;
-
-        #[derive(Default)]
-        struct BlockBits(u32);
-
-        impl BlockBits {
-            const MAX: u32 = BlockSize::MAX * 8;
-        }
-
-        impl From<u8> for BlockBits {
-            fn from(u: u8) -> Self {
-                Self(u.into())
-            }
-        }
-
-        impl TryFrom<u32> for BlockBits {
-            type Error = (); // the error will be replaced later
-
-            fn try_from(u: u32) -> Result<Self, Self::Error> {
-                (u <= Self::MAX).then_some(Self(u)).ok_or(())
-            }
-        }
-
-        impl TryFrom<usize> for BlockBits {
-            type Error = (); // the error will be replaced later
-
-            fn try_from(u: usize) -> Result<Self, Self::Error> {
-                u32::try_from(u)
-                    .map_err(|_| ())
-                    .and_then(|u| (u <= Self::MAX).then_some(Self(u)).ok_or(()))
-            }
-        }
-
-        impl bitstream_io::write::Counter for BlockBits {
-            fn checked_add_assign(&mut self, Self(b): Self) -> Result<(), Overflowed> {
-                *self = self
-                    .0
-                    .checked_add(b)
-                    .filter(|b| *b <= Self::MAX)
-                    .map(Self)
-                    .ok_or(Overflowed)?;
-                Ok(())
-            }
-
-            fn checked_mul(self, Self(b): Self) -> Result<Self, Overflowed> {
-                self.0
-                    .checked_mul(b)
-                    .filter(|b| *b <= Self::MAX)
-                    .map(Self)
-                    .ok_or(Overflowed)
-            }
-
-            fn byte_aligned(&self) -> bool {
-                self.0 % 8 == 0
-            }
-        }
-
-        impl From<BlockBits> for BlockSize {
-            fn from(BlockBits(u): BlockBits) -> Self {
-                assert!(u % 8 == 0);
-                Self(u / 8)
-            }
-        }
-
         fn large_block<E: Into<Error>>(err: E) -> Error {
             match err.into() {
                 Error::Io(_) => Error::ExcessiveBlockSize,
@@ -239,14 +251,16 @@ impl BlockSize {
 }
 
 impl BlockSize {
-    fn checked_add(self, rhs: Self) -> Option<Self> {
+    /// Conditionally add `BlockSize` to ourself
+    pub fn checked_add(self, rhs: Self) -> Option<Self> {
         self.0
             .checked_add(rhs.0)
             .filter(|s| *s <= Self::MAX)
             .map(Self)
     }
 
-    fn checked_sub(self, rhs: Self) -> Option<Self> {
+    /// Conditionally subtract `BlockSize` from ourself
+    pub fn checked_sub(self, rhs: Self) -> Option<Self> {
         self.0.checked_sub(rhs.0).map(Self)
     }
 }
@@ -1369,23 +1383,23 @@ impl ToBitStream for Application {
 ///     r.parse_using::<SeekTable>(header.size).unwrap(),
 ///     SeekTable {
 ///         points: vec![
-///             SeekPoint {
-///                 sample_offset: Some(0x00),
+///             SeekPoint::Defined {
+///                 sample_offset: 0x00,
 ///                 byte_offset: 0x00,
 ///                 frame_samples: 0x14,
 ///             },
-///             SeekPoint {
-///                 sample_offset: Some(0x14),
+///             SeekPoint::Defined {
+///                 sample_offset: 0x14,
 ///                 byte_offset: 0x0c,
 ///                 frame_samples: 0x14,
 ///             },
-///             SeekPoint {
-///                 sample_offset: Some(0x28),
+///             SeekPoint::Defined {
+///                 sample_offset: 0x28,
 ///                 byte_offset: 0x22,
 ///                 frame_samples: 0x14,
 ///             },
-///             SeekPoint {
-///                 sample_offset: Some(0x3c),
+///             SeekPoint::Defined {
+///                 sample_offset: 0x3c,
 ///                 byte_offset: 0x3c,
 ///                 frame_samples: 0x14,
 ///             },
@@ -1414,11 +1428,14 @@ impl FromBitStreamUsing for SeekTable {
 
                 for _ in 0..p {
                     let point: SeekPoint = r.parse()?;
-                    match point.sample_offset {
-                        None => points.push(point),
-                        Some(our_offset) => match points.last() {
-                            Some(SeekPoint {
-                                sample_offset: Some(last_offset),
+                    match point {
+                        SeekPoint::Placeholder => points.push(point),
+                        SeekPoint::Defined {
+                            sample_offset: our_offset,
+                            ..
+                        } => match points.last() {
+                            Some(SeekPoint::Defined {
+                                sample_offset: last_offset,
                                 ..
                             }) if our_offset <= *last_offset => {
                                 return Err(Error::InvalidSeekTablePoint);
@@ -1446,16 +1463,13 @@ impl ToBitStream for SeekTable {
             .iter()
             .try_for_each(|point| match last_offset.as_mut() {
                 None => {
-                    last_offset = point.sample_offset;
+                    last_offset = point.sample_offset();
                     w.build(point).map_err(Error::Io)
                 }
-                Some(last_offset) => match point {
-                    SeekPoint {
-                        sample_offset: Some(our_offset),
-                        ..
-                    } => match our_offset > last_offset {
+                Some(last_offset) => match point.sample_offset() {
+                    Some(our_offset) => match our_offset > *last_offset {
                         true => {
-                            *last_offset = *our_offset;
+                            *last_offset = our_offset;
                             w.build(point).map_err(Error::Io)
                         }
                         false => Err(Error::InvalidSeekTablePoint),
@@ -1475,26 +1489,48 @@ impl ToBitStream for SeekTable {
 /// | 16   | `frame_samples` | number of samples in target frame
 ///
 #[derive(Debug, Clone, Eq, PartialEq)]
-pub struct SeekPoint {
-    /// The sample number of the first sample in the target frame,
-    /// or `None` for placeholder points
-    pub sample_offset: Option<u64>,
-    /// Offset, in bytes, from the first byte of the first frame header
-    /// to the first byte in the target frame's header
-    pub byte_offset: u64,
-    /// Number of samples in the target frame
-    pub frame_samples: u16,
+pub enum SeekPoint {
+    /// A defined, non-placeholder seek point
+    Defined {
+        /// The sample number of the first sample in the target frame
+        // TODO - make this a NonMax item, if possible
+        sample_offset: u64,
+        /// Offset, in bytes, from the first byte of the first frame header
+        /// to the first byte in the target frame's header
+        byte_offset: u64,
+        /// Number of samples in the target frame
+        frame_samples: u16,
+    },
+    /// A placeholder seek point
+    Placeholder,
+}
+
+impl SeekPoint {
+    /// Returns our sample offset, if not a placeholder point
+    pub fn sample_offset(&self) -> Option<u64> {
+        match self {
+            Self::Defined { sample_offset, .. } => Some(*sample_offset),
+            Self::Placeholder => None,
+        }
+    }
 }
 
 impl FromBitStream for SeekPoint {
     type Error = std::io::Error;
 
     fn from_reader<R: BitRead + ?Sized>(r: &mut R) -> Result<Self, Self::Error> {
-        Ok(Self {
-            sample_offset: r.read_to().map(|o| (o != u64::MAX).then_some(o))?,
-            byte_offset: r.read_to()?,
-            frame_samples: r.read_to()?,
-        })
+        match r.read_to()? {
+            u64::MAX => {
+                let _byte_offset = r.read_to::<u64>()?;
+                let _frame_samples = r.read_to::<u16>()?;
+                Ok(Self::Placeholder)
+            }
+            sample_offset => Ok(Self::Defined {
+                sample_offset,
+                byte_offset: r.read_to()?,
+                frame_samples: r.read_to()?,
+            }),
+        }
     }
 }
 
@@ -1502,9 +1538,22 @@ impl ToBitStream for SeekPoint {
     type Error = std::io::Error;
 
     fn to_writer<W: BitWrite + ?Sized>(&self, w: &mut W) -> Result<(), Self::Error> {
-        w.write_from(self.sample_offset.unwrap_or(u64::MAX))?;
-        w.write_from(self.byte_offset)?;
-        w.write_from(self.frame_samples)
+        match self {
+            Self::Defined {
+                sample_offset,
+                byte_offset,
+                frame_samples,
+            } => {
+                w.write_from(*sample_offset)?;
+                w.write_from(*byte_offset)?;
+                w.write_from(*frame_samples)
+            }
+            Self::Placeholder => {
+                w.write_from(u64::MAX)?;
+                w.write_from::<u64>(0)?;
+                w.write_from::<u16>(0)
+            }
+        }
     }
 }
 
