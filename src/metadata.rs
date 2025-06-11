@@ -1013,17 +1013,21 @@ macro_rules! optional_block {
         impl OptionalMetadataBlock for $t {}
 
         impl private::OptionalMetadataBlock for $t {
-            fn try_from_opt_block(block: &private::OptionalBlock) -> Option<&Self> {
+            fn try_from_opt_block(
+                block: &private::OptionalBlock,
+            ) -> Result<&Self, &private::OptionalBlock> {
                 match block {
-                    private::OptionalBlock::$v(comment) => Some(comment),
-                    _ => None,
+                    private::OptionalBlock::$v(block) => Ok(block),
+                    block => Err(block),
                 }
             }
 
-            fn try_from_opt_block_mut(block: &mut private::OptionalBlock) -> Option<&mut Self> {
+            fn try_from_opt_block_mut(
+                block: &mut private::OptionalBlock,
+            ) -> Result<&mut Self, &mut private::OptionalBlock> {
                 match block {
-                    private::OptionalBlock::$v(comment) => Some(comment),
-                    _ => None,
+                    private::OptionalBlock::$v(block) => Ok(block),
+                    block => Err(block),
                 }
             }
         }
@@ -2530,7 +2534,7 @@ impl BlockList {
     /// Returns any error reading or parsing metadata blocks
     pub fn read<R: std::io::Read>(r: R) -> Result<Self, Error> {
         // TODO - change this to flatten once that stabilizes
-        Ok(read_blocks(r).collect::<Result<Result<Self, _>, _>>()??)
+        read_blocks(r).collect::<Result<Result<Self, _>, _>>()?
     }
 
     /// Reads `BlockList` from the given file path
@@ -2590,7 +2594,9 @@ impl BlockList {
     /// If the block type occurs multiple times,
     /// this returns the first instance.
     pub fn get<B: OptionalMetadataBlock>(&self) -> Option<&B> {
-        self.blocks.iter().find_map(B::try_from_opt_block)
+        self.blocks
+            .iter()
+            .find_map(|b| B::try_from_opt_block(b).ok())
     }
 
     /// Gets mutable reference to metadata block, if present
@@ -2598,19 +2604,58 @@ impl BlockList {
     /// If the block type occurs multiple times,
     /// this returns the first instance.
     pub fn get_mut<B: OptionalMetadataBlock>(&mut self) -> Option<&mut B> {
-        self.blocks.iter_mut().find_map(B::try_from_opt_block_mut)
+        self.blocks
+            .iter_mut()
+            .find_map(|b| B::try_from_opt_block_mut(b).ok())
+    }
+
+    /// Gets mutable references to a pair of metadata blocks
+    ///
+    /// If either block type occurs multiple times,
+    /// this returns the first instance.
+    pub fn get_pair_mut<B, C>(&mut self) -> (Option<&mut B>, Option<&mut C>)
+    where
+        B: OptionalMetadataBlock,
+        C: OptionalMetadataBlock,
+    {
+        use std::ops::ControlFlow;
+
+        match self
+            .blocks
+            .iter_mut()
+            .try_fold((None, None), |acc, block| match acc {
+                (first @ None, second @ None) => {
+                    ControlFlow::Continue(match B::try_from_opt_block_mut(block) {
+                        Ok(first) => (Some(first), second),
+                        Err(block) => (first, C::try_from_opt_block_mut(block).ok()),
+                    })
+                }
+                (first @ Some(_), None) => {
+                    ControlFlow::Continue((first, C::try_from_opt_block_mut(block).ok()))
+                }
+                (None, second @ Some(_)) => {
+                    ControlFlow::Continue((B::try_from_opt_block_mut(block).ok(), second))
+                }
+                pair @ (Some(_), Some(_)) => ControlFlow::Break(pair),
+            }) {
+            ControlFlow::Break(p) | ControlFlow::Continue(p) => p,
+        }
     }
 
     /// Gets references to all metadata blocks of the given type
     pub fn get_all<'b, B: OptionalMetadataBlock + 'b>(&'b self) -> impl Iterator<Item = &'b B> {
-        self.blocks.iter().filter_map(B::try_from_opt_block)
+        self.blocks
+            .iter()
+            .filter_map(|b| B::try_from_opt_block(b).ok())
     }
 
     /// Gets exclusive references to all metadata blocks of the given type
     pub fn get_all_mut<'b, B: OptionalMetadataBlock + 'b>(
         &'b mut self,
     ) -> impl Iterator<Item = &'b mut B> {
-        self.blocks.iter_mut().filter_map(B::try_from_opt_block_mut)
+        self.blocks
+            .iter_mut()
+            .filter_map(|b| B::try_from_opt_block_mut(b).ok())
     }
 
     /// Removes all instances of the given metadata block type
@@ -2760,8 +2805,10 @@ mod private {
     }
 
     pub trait OptionalMetadataBlock: Into<OptionalBlock> + TryFrom<OptionalBlock> {
-        fn try_from_opt_block(block: &OptionalBlock) -> Option<&Self>;
+        fn try_from_opt_block(block: &OptionalBlock) -> Result<&Self, &OptionalBlock>;
 
-        fn try_from_opt_block_mut(block: &mut OptionalBlock) -> Option<&mut Self>;
+        fn try_from_opt_block_mut(
+            block: &mut OptionalBlock,
+        ) -> Result<&mut Self, &mut OptionalBlock>;
     }
 }
