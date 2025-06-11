@@ -7,10 +7,10 @@ fn test_seeking() {
     let mut flac: FlacReader<_, LittleEndian> =
         FlacReader::new(Cursor::new(include_bytes!("data/sine.flac"))).unwrap();
 
-    let flac_len = flac.total_samples().unwrap().get();
+    let flac_len = flac.total_samples().unwrap();
 
     let bytes_per_pcm_frame =
-        u64::from(flac.channel_count().get()) * u64::from(u32::from(flac.bits_per_sample()) / 8);
+        u64::from(flac.channel_count()) * u64::from(u32::from(flac.bits_per_sample()) / 8);
 
     let mut all_data = Vec::new();
 

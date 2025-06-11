@@ -10,7 +10,7 @@
 
 use crate::Error;
 use crate::audio::Frame;
-use crate::metadata::{BlockList, BlockRef, SeekTable};
+use crate::metadata::{BlockList, SeekTable};
 use bitstream_io::{BitRead, SignedBitCount};
 use std::collections::VecDeque;
 use std::fs::File;
@@ -110,7 +110,9 @@ impl<R: std::io::Read, E: crate::byteorder::Endianness> FlacReader<R, E> {
     /// Opens new FLAC reader which wraps the given reader
     ///
     /// The reader must be positioned at the start of the
-    /// first FLAC frame.
+    /// FLAC stream.  If the file has non-FLAC data
+    /// at the beginning (such as ID3v2 tags), one
+    /// should skip such data before initializing a `FlacReader`.
     #[inline]
     pub fn new(reader: R) -> Result<Self, Error> {
         Ok(Self {
@@ -123,7 +125,9 @@ impl<R: std::io::Read, E: crate::byteorder::Endianness> FlacReader<R, E> {
     /// Opens new FLAC reader in the given endianness
     ///
     /// The reader must be positioned at the start of the
-    /// first FLAC frame.
+    /// FLAC stream.  If the file has non-FLAC data
+    /// at the beginning (such as ID3v2 tags), one
+    /// should skip such data before initializing a `FlacReader`.
     #[inline]
     pub fn endian(reader: R, _endian: E) -> Result<Self, Error> {
         Self::new(reader)
@@ -133,8 +137,8 @@ impl<R: std::io::Read, E: crate::byteorder::Endianness> FlacReader<R, E> {
     ///
     /// From 1 to 8
     #[inline]
-    pub fn channel_count(&self) -> NonZero<u8> {
-        self.decoder.channel_count()
+    pub fn channel_count(&self) -> u8 {
+        self.decoder.channel_count().get()
     }
 
     /// Returns sample rate, in Hz
@@ -153,8 +157,8 @@ impl<R: std::io::Read, E: crate::byteorder::Endianness> FlacReader<R, E> {
 
     /// Returns total number of channel-independent samples, if known
     #[inline]
-    pub fn total_samples(&self) -> Option<NonZero<u64>> {
-        self.decoder.total_samples()
+    pub fn total_samples(&self) -> Option<u64> {
+        self.decoder.total_samples().map(|s| s.get())
     }
 
     /// Returns MD5 of entire stream, if known
@@ -166,9 +170,9 @@ impl<R: std::io::Read, E: crate::byteorder::Endianness> FlacReader<R, E> {
         self.decoder.md5()
     }
 
-    /// Returns iterator over all metadata blocks
+    /// Returns FLAC metadata
     #[inline]
-    pub fn metadata(&self) -> impl Iterator<Item = BlockRef<'_>> {
+    pub fn metadata(&self) -> &BlockList {
         self.decoder.metadata()
     }
 }
@@ -385,6 +389,11 @@ pub struct FlacSampleReader<R> {
 
 impl<R: std::io::Read> FlacSampleReader<R> {
     /// Opens new FLAC reader which wraps the given reader
+    ///
+    /// The reader must be positioned at the start of the
+    /// FLAC stream.  If the file has non-FLAC data
+    /// at the beginning (such as ID3v2 tags), one
+    /// should skip such data before initializing a `FlacReader`.
     #[inline]
     pub fn new(reader: R) -> Result<Self, Error> {
         Ok(Self {
@@ -397,8 +406,8 @@ impl<R: std::io::Read> FlacSampleReader<R> {
     ///
     /// From 1 to 8
     #[inline]
-    pub fn channel_count(&self) -> NonZero<u8> {
-        self.decoder.channel_count()
+    pub fn channel_count(&self) -> u8 {
+        self.decoder.channel_count().get()
     }
 
     /// Returns sample rate, in Hz
@@ -417,8 +426,8 @@ impl<R: std::io::Read> FlacSampleReader<R> {
 
     /// Returns total number of channel-independent samples, if known
     #[inline]
-    pub fn total_samples(&self) -> Option<NonZero<u64>> {
-        self.decoder.total_samples()
+    pub fn total_samples(&self) -> Option<u64> {
+        self.decoder.total_samples().map(|s| s.get())
     }
 
     /// Returns MD5 of entire stream, if known
@@ -430,9 +439,9 @@ impl<R: std::io::Read> FlacSampleReader<R> {
         self.decoder.md5()
     }
 
-    /// Returns iterator over all metadata blocks
+    /// Returns FLAC metadata
     #[inline]
-    pub fn metadata(&self) -> impl Iterator<Item = BlockRef<'_>> {
+    pub fn metadata(&self) -> &BlockList {
         self.decoder.metadata()
     }
 
@@ -766,9 +775,9 @@ impl<R: std::io::Read> Decoder<R> {
         self.blocks.streaminfo().md5.as_ref()
     }
 
-    /// Returns iterator over all metadata blocks
-    fn metadata(&self) -> impl Iterator<Item = BlockRef<'_>> {
-        self.blocks.blocks()
+    /// Returns FLAC metadata
+    fn metadata(&self) -> &BlockList {
+        &self.blocks
     }
 
     /// Returns decoded frame, if any.
