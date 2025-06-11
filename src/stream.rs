@@ -17,6 +17,57 @@ use bitstream_io::{
 };
 use std::num::NonZero;
 
+/// A common trait for signed integers
+pub trait SignedInteger:
+    bitstream_io::SignedInteger
+    + std::ops::Shl<Output = Self>
+    + std::ops::Neg<Output = Self>
+    + std::ops::AddAssign
+    + Into<i64>
+{
+    /// Unconditionally converts a u32 to ourself
+    fn from_u32(u: u32) -> Self;
+
+    /// Unconditionally converts ourself to u32
+    fn to_u32(self) -> u32;
+
+    /// Unconditionally converts i64 to ourself
+    fn from_i64(i: i64) -> Self;
+}
+
+impl SignedInteger for i32 {
+    #[inline]
+    fn from_u32(u: u32) -> Self {
+        u as i32
+    }
+
+    #[inline]
+    fn to_u32(self) -> u32 {
+        self as u32
+    }
+
+    fn from_i64(i: i64) -> Self {
+        i as i32
+    }
+}
+
+impl SignedInteger for i64 {
+    #[inline]
+    fn from_u32(u: u32) -> Self {
+        u as i64
+    }
+
+    #[inline]
+    fn to_u32(self) -> u32 {
+        self as u32
+    }
+
+    #[inline]
+    fn from_i64(i: i64) -> Self {
+        i
+    }
+}
+
 /// A FLAC frame header
 ///
 /// | Bits      | Field |
@@ -1525,7 +1576,7 @@ impl<const RICE_MAX: u32> ToBitStream for ResidualPartitionHeader<RICE_MAX> {
 /// ```
 /// use flac_codec::stream::{
 ///     Frame, FrameHeader, BlockSize, SampleRate, ChannelAssignment,
-///     Independent, BitsPerSample, FrameNumber, Subframe,
+///     Independent, BitsPerSample, FrameNumber, SubframeWidth, Subframe,
 /// };
 ///
 /// let mut data: &[u8] = &[
@@ -1551,11 +1602,13 @@ impl<const RICE_MAX: u32> ToBitStream for ResidualPartitionHeader<RICE_MAX> {
 ///             frame_number: FrameNumber(0),
 ///         },
 ///         subframes: vec![
-///             Subframe::Constant {
-///                 block_size: 20,
-///                 sample: 0x00_00,
-///                 wasted_bps: 0,
-///             },
+///             SubframeWidth::Common(
+///                 Subframe::Constant {
+///                     block_size: 20,
+///                     sample: 0x00_00,
+///                     wasted_bps: 0,
+///                 },
+///             )
 ///         ],
 ///     },
 /// );
@@ -1565,7 +1618,7 @@ pub struct Frame {
     /// The FLAC frame's header
     pub header: FrameHeader,
     /// A FLAC frame's sub-frames
-    pub subframes: Vec<Subframe>,
+    pub subframes: Vec<SubframeWidth>,
 }
 
 impl Frame {
@@ -1586,41 +1639,67 @@ impl Frame {
         let subframes = match header.channel_assignment {
             ChannelAssignment::Independent(total_channels) => (0..total_channels as u8)
                 .map(|_| {
-                    reader.parse_using::<Subframe>((
-                        header.block_size.into(),
-                        header.bits_per_sample.into(),
-                    ))
+                    reader
+                        .parse_using::<Subframe<i32>>((
+                            header.block_size.into(),
+                            header.bits_per_sample.into(),
+                        ))
+                        .map(SubframeWidth::Common)
                 })
                 .collect::<Result<Vec<_>, _>>()?,
             ChannelAssignment::LeftSide => vec![
-                reader.parse_using((header.block_size.into(), header.bits_per_sample.into()))?,
-                reader.parse_using((
-                    header.block_size.into(),
-                    header
-                        .bits_per_sample
-                        .checked_add(1)
-                        .ok_or(Error::ExcessiveBps)?,
-                ))?,
+                reader
+                    .parse_using((header.block_size.into(), header.bits_per_sample.into()))
+                    .map(SubframeWidth::Common)?,
+                match header.bits_per_sample.checked_add(1) {
+                    Some(side_bps) => reader
+                        .parse_using((header.block_size.into(), side_bps))
+                        .map(SubframeWidth::Common)?,
+                    None => reader
+                        .parse_using((
+                            header.block_size.into(),
+                            SignedBitCount::from(header.bits_per_sample)
+                                .checked_add(1)
+                                .unwrap(),
+                        ))
+                        .map(SubframeWidth::Wide)?,
+                },
             ],
             ChannelAssignment::SideRight => vec![
-                reader.parse_using((
-                    header.block_size.into(),
-                    header
-                        .bits_per_sample
-                        .checked_add(1)
-                        .ok_or(Error::ExcessiveBps)?,
-                ))?,
-                reader.parse_using((header.block_size.into(), header.bits_per_sample.into()))?,
+                match header.bits_per_sample.checked_add(1) {
+                    Some(side_bps) => reader
+                        .parse_using((header.block_size.into(), side_bps))
+                        .map(SubframeWidth::Common)?,
+                    None => reader
+                        .parse_using((
+                            header.block_size.into(),
+                            SignedBitCount::from(header.bits_per_sample)
+                                .checked_add(1)
+                                .unwrap(),
+                        ))
+                        .map(SubframeWidth::Wide)?,
+                },
+                reader
+                    .parse_using((header.block_size.into(), header.bits_per_sample.into()))
+                    .map(SubframeWidth::Common)?,
             ],
             ChannelAssignment::MidSide => vec![
-                reader.parse_using((header.block_size.into(), header.bits_per_sample.into()))?,
-                reader.parse_using((
-                    header.block_size.into(),
-                    header
-                        .bits_per_sample
-                        .checked_add(1)
-                        .ok_or(Error::ExcessiveBps)?,
-                ))?,
+                reader
+                    .parse_using((header.block_size.into(), header.bits_per_sample.into()))
+                    .map(SubframeWidth::Common)?,
+                match header.bits_per_sample.checked_add(1) {
+                    Some(side_bps) => reader
+                        .parse_using((header.block_size.into(), side_bps))
+                        .map(SubframeWidth::Common)?,
+                    None => reader
+                        .parse_using((
+                            header.block_size.into(),
+                            SignedBitCount::from(header.bits_per_sample)
+                                .checked_add(1)
+                                .unwrap(),
+                        ))
+                        .map(SubframeWidth::Wide)?,
+                },
             ],
         };
 
@@ -1668,48 +1747,93 @@ impl Frame {
                 assert_eq!(total_channels as usize, self.subframes.len());
 
                 for subframe in &self.subframes {
-                    writer.build_using(subframe, self.header.bits_per_sample.into())?;
+                    // independent subframes should always be standard width
+                    if let SubframeWidth::Common(subframe) = subframe {
+                        writer.build_using(subframe, self.header.bits_per_sample.into())?;
+                    }
                 }
             }
             ChannelAssignment::LeftSide => match self.subframes.as_slice() {
                 [left, side] => {
-                    writer.build_using(left, self.header.bits_per_sample.into())?;
+                    if let SubframeWidth::Common(left) = left {
+                        writer.build_using(left, self.header.bits_per_sample.into())?;
+                    }
 
-                    writer.build_using(
-                        side,
-                        self.header
-                            .bits_per_sample
-                            .checked_add(1)
-                            .ok_or(Error::ExcessiveBps)?,
-                    )?;
+                    match side {
+                        SubframeWidth::Common(side) => {
+                            writer.build_using(
+                                side,
+                                self.header
+                                    .bits_per_sample
+                                    .checked_add(1)
+                                    .ok_or(Error::ExcessiveBps)?,
+                            )?;
+                        }
+                        SubframeWidth::Wide(side) => {
+                            writer.build_using(
+                                side,
+                                SignedBitCount::from(self.header.bits_per_sample)
+                                    .checked_add(1)
+                                    .ok_or(Error::ExcessiveBps)?,
+                            )?;
+                        }
+                    }
                 }
                 _ => panic!("incorrect subframe count for left-side"),
             },
             ChannelAssignment::SideRight => match self.subframes.as_slice() {
                 [side, right] => {
-                    writer.build_using(
-                        side,
-                        self.header
-                            .bits_per_sample
-                            .checked_add(1)
-                            .ok_or(Error::ExcessiveBps)?,
-                    )?;
+                    match side {
+                        SubframeWidth::Common(side) => {
+                            writer.build_using(
+                                side,
+                                self.header
+                                    .bits_per_sample
+                                    .checked_add(1)
+                                    .ok_or(Error::ExcessiveBps)?,
+                            )?;
+                        }
+                        SubframeWidth::Wide(side) => {
+                            writer.build_using(
+                                side,
+                                SignedBitCount::from(self.header.bits_per_sample)
+                                    .checked_add(1)
+                                    .ok_or(Error::ExcessiveBps)?,
+                            )?;
+                        }
+                    }
 
-                    writer.build_using(right, self.header.bits_per_sample.into())?;
+                    if let SubframeWidth::Common(right) = right {
+                        writer.build_using(right, self.header.bits_per_sample.into())?;
+                    }
                 }
                 _ => panic!("incorrect subframe count for left-side"),
             },
             ChannelAssignment::MidSide => match self.subframes.as_slice() {
                 [mid, side] => {
-                    writer.build_using(mid, self.header.bits_per_sample.into())?;
+                    if let SubframeWidth::Common(mid) = mid {
+                        writer.build_using(mid, self.header.bits_per_sample.into())?;
+                    }
 
-                    writer.build_using(
-                        side,
-                        self.header
-                            .bits_per_sample
-                            .checked_add(1)
-                            .ok_or(Error::ExcessiveBps)?,
-                    )?;
+                    match side {
+                        SubframeWidth::Common(side) => {
+                            writer.build_using(
+                                side,
+                                self.header
+                                    .bits_per_sample
+                                    .checked_add(1)
+                                    .ok_or(Error::ExcessiveBps)?,
+                            )?;
+                        }
+                        SubframeWidth::Wide(side) => {
+                            writer.build_using(
+                                side,
+                                SignedBitCount::from(self.header.bits_per_sample)
+                                    .checked_add(1)
+                                    .ok_or(Error::ExcessiveBps)?,
+                            )?;
+                        }
+                    }
                 }
                 _ => panic!("incorrect subframe count for left-side"),
             },
@@ -1740,9 +1864,18 @@ impl Frame {
     }
 }
 
+/// A 32 or 64-bit FLAC file subframe
+#[derive(Debug, Eq, PartialEq)]
+pub enum SubframeWidth {
+    /// A common 32-bit subframe
+    Common(Subframe<i32>),
+    /// A rare 64-bit subframe
+    Wide(Subframe<i64>),
+}
+
 /// A FLAC's frame's subframe, one per channel
 #[derive(Debug, Eq, PartialEq)]
-pub enum Subframe {
+pub enum Subframe<I> {
     /// A CONSTANT subframe, in which all samples are identical
     ///
     /// This is typically for long stretches of silence,
@@ -1762,7 +1895,7 @@ pub enum Subframe {
     /// let mut r = BitReader::endian(data, BigEndian);
     ///
     /// assert_eq!(
-    ///     r.parse_using::<Subframe>((20, SignedBitCount::new::<16>())).unwrap(),
+    ///     r.parse_using::<Subframe<i32>>((20, SignedBitCount::new::<16>())).unwrap(),
     ///     Subframe::Constant {
     ///         // taken from context
     ///         block_size: 20,
@@ -1779,7 +1912,7 @@ pub enum Subframe {
         /// the subframe's block size in samples
         block_size: u16,
         /// The subframe's sample
-        sample: i32,
+        sample: I,
         /// Any wasted bits-per-sample
         wasted_bps: u32,
     },
@@ -1806,7 +1939,7 @@ pub enum Subframe {
     /// let mut r = BitReader::endian(data, BigEndian);
     ///
     /// assert_eq!(
-    ///     r.parse_using::<Subframe>((20, SignedBitCount::new::<16>())).unwrap(),
+    ///     r.parse_using::<Subframe<i32>>((20, SignedBitCount::new::<16>())).unwrap(),
     ///     Subframe::Verbatim {
     ///         // the total number of samples equals the block size
     ///         // (20 in this case)
@@ -1825,7 +1958,7 @@ pub enum Subframe {
     /// ```
     Verbatim {
         /// The subframe's samples
-        samples: Vec<i32>,
+        samples: Vec<I>,
         /// Any wasted bits-per-sample
         wasted_bps: u32,
     },
@@ -1848,7 +1981,7 @@ pub enum Subframe {
     /// let mut r = BitReader::endian(data, BigEndian);
     ///
     /// assert_eq!(
-    ///     r.parse_using::<Subframe>((20, SignedBitCount::new::<16>())).unwrap(),
+    ///     r.parse_using::<Subframe<i32>>((20, SignedBitCount::new::<16>())).unwrap(),
     ///     Subframe::Fixed {
     ///         // predictor order is determined from subframe header
     ///         order: 4,
@@ -1876,9 +2009,9 @@ pub enum Subframe {
         /// The subframe's predictor order from 0 to 4 (inclusive)
         order: u8,
         /// The subframe's warm-up samples (one per order)
-        warm_up: Vec<i32>,
+        warm_up: Vec<I>,
         /// The subframe's residuals
-        residuals: Residuals,
+        residuals: Residuals<I>,
         /// Any wasted bits-per-sample
         wasted_bps: u32,
     },
@@ -1904,7 +2037,7 @@ pub enum Subframe {
     /// let mut r = BitReader::endian(data, BigEndian);
     ///
     /// assert_eq!(
-    ///     r.parse_using::<Subframe>((20, SignedBitCount::new::<16>())).unwrap(),
+    ///     r.parse_using::<Subframe<i32>>((20, SignedBitCount::new::<16>())).unwrap(),
     ///     Subframe::Lpc {
     ///         // predictor order is determined from the subframe header
     ///         order: NonZero::new(1).unwrap(),
@@ -1942,7 +2075,7 @@ pub enum Subframe {
         /// The subframe's predictor order
         order: NonZero<u8>,
         /// The subframe's warm-up samples (one per order)
-        warm_up: Vec<i32>,
+        warm_up: Vec<I>,
         /// The subframe's QLP precision
         precision: SignedBitCount<15>,
         /// The subframe's QLP shift
@@ -1950,13 +2083,13 @@ pub enum Subframe {
         /// The subframe's QLP coefficients (one per order)
         coefficients: Vec<i32>,
         /// The subframe's residuals
-        residuals: Residuals,
+        residuals: Residuals<I>,
         /// Any wasted bits-per-sample
         wasted_bps: u32,
     },
 }
 
-impl Subframe {
+impl<I> Subframe<I> {
     /// Our subframe type
     pub fn subframe_type(&self) -> SubframeType {
         match self {
@@ -1966,25 +2099,29 @@ impl Subframe {
             Self::Lpc { .. } => SubframeType::Lpc,
         }
     }
+}
 
+impl<I: SignedInteger> Subframe<I> {
     /// Decodes subframe to samples
     ///
     /// Note that decoding subframes to samples using this method
     /// is intended for analysis purposes.  The [`crate::decode`]
     /// module's decoders are preferred for general-purpose
     /// decoding as they perform fewer temporary allocations.
-    pub fn decode(&self) -> Box<dyn Iterator<Item = i32> + '_> {
-        fn predict(coefficients: &[i64], qlp_shift: u32, channel: &mut [i32]) {
+    pub fn decode(&self) -> Box<dyn Iterator<Item = I> + '_> {
+        fn predict<I: SignedInteger>(coefficients: &[i64], qlp_shift: u32, channel: &mut [I]) {
             for split in coefficients.len()..channel.len() {
                 let (predicted, residuals) = channel.split_at_mut(split);
 
-                residuals[0] += (predicted
-                    .iter()
-                    .rev()
-                    .zip(coefficients)
-                    .map(|(x, y)| *x as i64 * y)
-                    .sum::<i64>()
-                    >> qlp_shift) as i32;
+                residuals[0] += I::from_i64(
+                    predicted
+                        .iter()
+                        .rev()
+                        .zip(coefficients)
+                        .map(|(x, y)| (*x).into() * y)
+                        .sum::<i64>()
+                        >> qlp_shift,
+                );
             }
         }
 
@@ -1993,11 +2130,11 @@ impl Subframe {
                 sample,
                 block_size,
                 wasted_bps,
-            } => Box::new((0..*block_size).map(move |_| sample << wasted_bps)),
+            } => Box::new((0..*block_size).map(move |_| *sample << *wasted_bps)),
             Self::Verbatim {
                 samples,
                 wasted_bps,
-            } => Box::new(samples.iter().map(move |sample| sample << wasted_bps)),
+            } => Box::new(samples.iter().map(move |sample| *sample << *wasted_bps)),
             Self::Fixed {
                 order,
                 warm_up,
@@ -2011,7 +2148,7 @@ impl Subframe {
                     0,
                     &mut samples,
                 );
-                Box::new(samples.into_iter().map(move |sample| sample << wasted_bps))
+                Box::new(samples.into_iter().map(move |sample| sample << *wasted_bps))
             }
             Self::Lpc {
                 warm_up,
@@ -2032,13 +2169,107 @@ impl Subframe {
                     *shift,
                     &mut samples,
                 );
-                Box::new(samples.into_iter().map(move |sample| sample << wasted_bps))
+                Box::new(samples.into_iter().map(move |sample| sample << *wasted_bps))
             }
         }
     }
 }
 
-impl FromBitStreamUsing for Subframe {
+fn read_subframe<const MAX: u32, R, I>(
+    r: &mut R,
+    block_size: u16,
+    bits_per_sample: SignedBitCount<MAX>,
+) -> Result<Subframe<I>, Error>
+where
+    R: BitRead + ?Sized,
+    I: SignedInteger,
+{
+    match r.parse()? {
+        SubframeHeader {
+            type_: SubframeHeaderType::Constant,
+            wasted_bps,
+        } => Ok(Subframe::Constant {
+            block_size,
+            sample: r.read_signed_counted(
+                bits_per_sample
+                    .checked_sub::<MAX>(wasted_bps)
+                    .ok_or(Error::ExcessiveWastedBits)?,
+            )?,
+            wasted_bps,
+        }),
+        SubframeHeader {
+            type_: SubframeHeaderType::Verbatim,
+            wasted_bps,
+        } => {
+            let effective_bps = bits_per_sample
+                .checked_sub::<MAX>(wasted_bps)
+                .ok_or(Error::ExcessiveWastedBits)?;
+
+            Ok(Subframe::Verbatim {
+                samples: (0..block_size)
+                    .map(|_| r.read_signed_counted::<MAX, I>(effective_bps))
+                    .collect::<Result<Vec<_>, _>>()?,
+                wasted_bps,
+            })
+        }
+        SubframeHeader {
+            type_: SubframeHeaderType::Fixed { order },
+            wasted_bps,
+        } => {
+            let effective_bps = bits_per_sample
+                .checked_sub::<MAX>(wasted_bps)
+                .ok_or(Error::ExcessiveWastedBits)?;
+
+            Ok(Subframe::Fixed {
+                order,
+                warm_up: (0..order)
+                    .map(|_| r.read_signed_counted::<MAX, I>(effective_bps))
+                    .collect::<Result<Vec<_>, _>>()?,
+                residuals: r.parse_using((block_size.into(), order.into()))?,
+                wasted_bps,
+            })
+        }
+        SubframeHeader {
+            type_: SubframeHeaderType::Lpc { order },
+            wasted_bps,
+        } => {
+            let effective_bps = bits_per_sample
+                .checked_sub::<MAX>(wasted_bps)
+                .ok_or(Error::ExcessiveWastedBits)?;
+
+            let warm_up = (0..order.get())
+                .map(|_| r.read_signed_counted::<MAX, I>(effective_bps))
+                .collect::<Result<Vec<_>, _>>()?;
+
+            let precision: SignedBitCount<15> = r
+                .read_count::<0b1111>()?
+                .checked_add(1)
+                .and_then(|c| c.signed_count())
+                .ok_or(Error::InvalidQlpPrecision)?;
+
+            let shift: u32 = r
+                .read::<5, i32>()?
+                .try_into()
+                .map_err(|_| Error::NegativeLpcShift)?;
+
+            let coefficients = (0..order.get())
+                .map(|_| r.read_signed_counted(precision))
+                .collect::<Result<Vec<_>, _>>()?;
+
+            Ok(Subframe::Lpc {
+                order,
+                warm_up,
+                precision,
+                shift,
+                coefficients,
+                residuals: r.parse_using((block_size.into(), order.get().into()))?,
+                wasted_bps,
+            })
+        }
+    }
+}
+
+impl FromBitStreamUsing for Subframe<i32> {
     type Context = (u16, SignedBitCount<32>);
     type Error = Error;
 
@@ -2046,93 +2277,139 @@ impl FromBitStreamUsing for Subframe {
         r: &mut R,
         (block_size, bits_per_sample): (u16, SignedBitCount<32>),
     ) -> Result<Self, Error> {
-        match r.parse()? {
-            SubframeHeader {
+        read_subframe(r, block_size, bits_per_sample)
+    }
+}
+
+impl FromBitStreamUsing for Subframe<i64> {
+    type Context = (u16, SignedBitCount<33>);
+    type Error = Error;
+
+    fn from_reader<R: BitRead + ?Sized>(
+        r: &mut R,
+        (block_size, bits_per_sample): (u16, SignedBitCount<33>),
+    ) -> Result<Self, Error> {
+        read_subframe(r, block_size, bits_per_sample)
+    }
+}
+
+fn write_subframe<const MAX: u32, W, I>(
+    w: &mut W,
+    bits_per_sample: SignedBitCount<MAX>,
+    subframe: &Subframe<I>,
+) -> Result<(), Error>
+where
+    W: BitWrite + ?Sized,
+    I: SignedInteger,
+{
+    match subframe {
+        Subframe::Constant {
+            sample, wasted_bps, ..
+        } => {
+            w.build(&SubframeHeader {
                 type_: SubframeHeaderType::Constant,
-                wasted_bps,
-            } => Ok(Self::Constant {
-                block_size,
-                sample: r.read_signed_counted(
-                    bits_per_sample
-                        .checked_sub::<32>(wasted_bps)
-                        .ok_or(Error::ExcessiveWastedBits)?,
-                )?,
-                wasted_bps,
-            }),
-            SubframeHeader {
+                wasted_bps: *wasted_bps,
+            })?;
+
+            w.write_signed_counted(
+                bits_per_sample
+                    .checked_sub::<MAX>(*wasted_bps)
+                    .ok_or(Error::ExcessiveWastedBits)?,
+                *sample,
+            )?;
+
+            Ok(())
+        }
+        Subframe::Verbatim {
+            samples,
+            wasted_bps,
+        } => {
+            let effective_bps = bits_per_sample
+                .checked_sub::<MAX>(*wasted_bps)
+                .ok_or(Error::ExcessiveWastedBits)?;
+
+            w.build(&SubframeHeader {
                 type_: SubframeHeaderType::Verbatim,
-                wasted_bps,
-            } => {
-                let effective_bps = bits_per_sample
-                    .checked_sub::<32>(wasted_bps)
-                    .ok_or(Error::ExcessiveWastedBits)?;
+                wasted_bps: *wasted_bps,
+            })?;
 
-                Ok(Self::Verbatim {
-                    samples: (0..block_size)
-                        .map(|_| r.read_signed_counted::<32, i32>(effective_bps))
-                        .collect::<Result<Vec<_>, _>>()?,
-                    wasted_bps,
-                })
+            for sample in samples {
+                w.write_signed_counted(effective_bps, *sample)?;
             }
-            SubframeHeader {
-                type_: SubframeHeaderType::Fixed { order },
-                wasted_bps,
-            } => {
-                let effective_bps = bits_per_sample
-                    .checked_sub::<32>(wasted_bps)
-                    .ok_or(Error::ExcessiveWastedBits)?;
 
-                Ok(Self::Fixed {
-                    order,
-                    warm_up: (0..order)
-                        .map(|_| r.read_signed_counted::<32, i32>(effective_bps))
-                        .collect::<Result<Vec<_>, _>>()?,
-                    residuals: r.parse_using((block_size.into(), order.into()))?,
-                    wasted_bps,
-                })
+            Ok(())
+        }
+        Subframe::Fixed {
+            order,
+            warm_up,
+            residuals,
+            wasted_bps,
+        } => {
+            assert_eq!(*order as usize, warm_up.len());
+
+            let effective_bps = bits_per_sample
+                .checked_sub::<MAX>(*wasted_bps)
+                .ok_or(Error::ExcessiveWastedBits)?;
+
+            w.build(&SubframeHeader {
+                type_: SubframeHeaderType::Fixed { order: *order },
+                wasted_bps: *wasted_bps,
+            })?;
+
+            for sample in warm_up {
+                w.write_signed_counted(effective_bps, *sample)?;
             }
-            SubframeHeader {
-                type_: SubframeHeaderType::Lpc { order },
-                wasted_bps,
-            } => {
-                let effective_bps = bits_per_sample
-                    .checked_sub::<32>(wasted_bps)
-                    .ok_or(Error::ExcessiveWastedBits)?;
 
-                let warm_up = (0..order.get())
-                    .map(|_| r.read_signed_counted::<32, i32>(effective_bps))
-                    .collect::<Result<Vec<_>, _>>()?;
+            w.build(residuals)?;
 
-                let precision: SignedBitCount<15> = r
-                    .read_count::<0b1111>()?
-                    .checked_add(1)
-                    .and_then(|c| c.signed_count())
-                    .ok_or(Error::InvalidQlpPrecision)?;
+            Ok(())
+        }
+        Subframe::Lpc {
+            order,
+            warm_up,
+            precision,
+            shift,
+            coefficients,
+            residuals,
+            wasted_bps,
+        } => {
+            assert_eq!(order.get() as usize, warm_up.len());
+            assert_eq!(order.get() as usize, coefficients.len());
 
-                let shift: u32 = r
-                    .read::<5, i32>()?
-                    .try_into()
-                    .map_err(|_| Error::NegativeLpcShift)?;
+            let effective_bps = bits_per_sample
+                .checked_sub::<MAX>(*wasted_bps)
+                .ok_or(Error::ExcessiveWastedBits)?;
 
-                let coefficients = (0..order.get())
-                    .map(|_| r.read_signed_counted(precision))
-                    .collect::<Result<Vec<_>, _>>()?;
+            w.build(&SubframeHeader {
+                type_: SubframeHeaderType::Lpc { order: *order },
+                wasted_bps: *wasted_bps,
+            })?;
 
-                Ok(Self::Lpc {
-                    order,
-                    warm_up,
-                    precision,
-                    shift,
-                    coefficients,
-                    residuals: r.parse_using((block_size.into(), order.get().into()))?,
-                    wasted_bps,
-                })
+            for sample in warm_up {
+                w.write_signed_counted(effective_bps, *sample)?;
             }
+
+            w.write_count(
+                precision
+                    .checked_sub::<0b1111>(1)
+                    .ok_or(Error::InvalidQlpPrecision)?
+                    .count(),
+            )?;
+
+            w.write::<5, i32>(i32::try_from(*shift).unwrap())?;
+
+            for coeff in coefficients {
+                w.write_signed_counted(*precision, *coeff)?;
+            }
+
+            w.build(residuals)?;
+
+            Ok(())
         }
     }
 }
 
-impl ToBitStreamUsing for Subframe {
+impl ToBitStreamUsing for Subframe<i32> {
     type Context = SignedBitCount<32>;
     type Error = Error;
 
@@ -2141,111 +2418,20 @@ impl ToBitStreamUsing for Subframe {
         w: &mut W,
         bits_per_sample: SignedBitCount<32>,
     ) -> Result<(), Error> {
-        match self {
-            Self::Constant {
-                sample, wasted_bps, ..
-            } => {
-                w.build(&SubframeHeader {
-                    type_: SubframeHeaderType::Constant,
-                    wasted_bps: *wasted_bps,
-                })?;
+        write_subframe(w, bits_per_sample, self)
+    }
+}
 
-                w.write_signed_counted(
-                    bits_per_sample
-                        .checked_sub::<32>(*wasted_bps)
-                        .ok_or(Error::ExcessiveWastedBits)?,
-                    *sample,
-                )?;
+impl ToBitStreamUsing for Subframe<i64> {
+    type Context = SignedBitCount<33>;
+    type Error = Error;
 
-                Ok(())
-            }
-            Self::Verbatim {
-                samples,
-                wasted_bps,
-            } => {
-                let effective_bps = bits_per_sample
-                    .checked_sub::<32>(*wasted_bps)
-                    .ok_or(Error::ExcessiveWastedBits)?;
-
-                w.build(&SubframeHeader {
-                    type_: SubframeHeaderType::Verbatim,
-                    wasted_bps: *wasted_bps,
-                })?;
-
-                for sample in samples {
-                    w.write_signed_counted(effective_bps, *sample)?;
-                }
-
-                Ok(())
-            }
-            Self::Fixed {
-                order,
-                warm_up,
-                residuals,
-                wasted_bps,
-            } => {
-                assert_eq!(*order as usize, warm_up.len());
-
-                let effective_bps = bits_per_sample
-                    .checked_sub::<32>(*wasted_bps)
-                    .ok_or(Error::ExcessiveWastedBits)?;
-
-                w.build(&SubframeHeader {
-                    type_: SubframeHeaderType::Fixed { order: *order },
-                    wasted_bps: *wasted_bps,
-                })?;
-
-                for sample in warm_up {
-                    w.write_signed_counted(effective_bps, *sample)?;
-                }
-
-                w.build(residuals)?;
-
-                Ok(())
-            }
-            Self::Lpc {
-                order,
-                warm_up,
-                precision,
-                shift,
-                coefficients,
-                residuals,
-                wasted_bps,
-            } => {
-                assert_eq!(order.get() as usize, warm_up.len());
-                assert_eq!(order.get() as usize, coefficients.len());
-
-                let effective_bps = bits_per_sample
-                    .checked_sub::<32>(*wasted_bps)
-                    .ok_or(Error::ExcessiveWastedBits)?;
-
-                w.build(&SubframeHeader {
-                    type_: SubframeHeaderType::Lpc { order: *order },
-                    wasted_bps: *wasted_bps,
-                })?;
-
-                for sample in warm_up {
-                    w.write_signed_counted(effective_bps, *sample)?;
-                }
-
-                w.write_count(
-                    precision
-                        .checked_sub::<0b1111>(1)
-                        .ok_or(Error::InvalidQlpPrecision)?
-                        .count(),
-                )?;
-
-                w.write::<5, i32>(i32::try_from(*shift).unwrap())?;
-
-                for coeff in coefficients {
-                    w.write_signed_counted(*precision, *coeff)?;
-                }
-
-                w.build(residuals)?;
-
-                Ok(())
-            }
-        }
+    fn to_writer<W: BitWrite + ?Sized>(
+        &self,
+        w: &mut W,
+        bits_per_sample: SignedBitCount<33>,
+    ) -> Result<(), Error> {
+        write_subframe(w, bits_per_sample, self)
     }
 }
 
@@ -2292,7 +2478,7 @@ impl ToBitStreamUsing for Subframe {
 /// let mut r = BitReader::endian(data, BigEndian);
 ///
 /// assert_eq!(
-///     r.parse_using::<Residuals>((20, 1)).unwrap(),
+///     r.parse_using::<Residuals<i32>>((20, 1)).unwrap(),
 ///     // coding method = 0b00
 ///     // partition order = 0b0000, or 1 partition
 ///     Residuals::Method0 {
@@ -2309,22 +2495,22 @@ impl ToBitStreamUsing for Subframe {
 /// );
 /// ```
 #[derive(Debug, Eq, PartialEq)]
-pub enum Residuals {
+pub enum Residuals<I> {
     /// Coding method 0
     Method0 {
         /// The residual partitions
-        partitions: Vec<ResidualPartition<0b1111>>,
+        partitions: Vec<ResidualPartition<0b1111, I>>,
     },
     /// Coding method 1
     Method1 {
         /// The residual partitions
-        partitions: Vec<ResidualPartition<0b11111>>,
+        partitions: Vec<ResidualPartition<0b11111, I>>,
     },
 }
 
-impl Residuals {
+impl<I: SignedInteger> Residuals<I> {
     /// Iterates over all individual residual values
-    fn residuals(&self) -> Box<dyn Iterator<Item = i32> + '_> {
+    fn residuals(&self) -> Box<dyn Iterator<Item = I> + '_> {
         match self {
             Self::Method0 { partitions } => Box::new(partitions.iter().flat_map(|p| p.residuals())),
             Self::Method1 { partitions } => Box::new(partitions.iter().flat_map(|p| p.residuals())),
@@ -2332,7 +2518,7 @@ impl Residuals {
     }
 }
 
-impl FromBitStreamUsing for Residuals {
+impl<I: SignedInteger> FromBitStreamUsing for Residuals<I> {
     type Context = (usize, usize);
     type Error = Error;
 
@@ -2340,10 +2526,10 @@ impl FromBitStreamUsing for Residuals {
         r: &mut R,
         (block_size, predictor_order): (usize, usize),
     ) -> Result<Self, Error> {
-        fn read_partitions<const RICE_MAX: u32, R: BitRead + ?Sized>(
+        fn read_partitions<const RICE_MAX: u32, R: BitRead + ?Sized, I: SignedInteger>(
             reader: &mut R,
             (block_size, predictor_order): (usize, usize),
-        ) -> Result<Vec<ResidualPartition<RICE_MAX>>, Error> {
+        ) -> Result<Vec<ResidualPartition<RICE_MAX, I>>, Error> {
             let partition_order = reader.read::<4, u32>()?;
             let partition_count = 1 << partition_order;
 
@@ -2360,23 +2546,23 @@ impl FromBitStreamUsing for Residuals {
 
         match r.read::<2, u8>()? {
             0 => Ok(Self::Method0 {
-                partitions: read_partitions::<0b1111, R>(r, (block_size, predictor_order))?,
+                partitions: read_partitions::<0b1111, R, I>(r, (block_size, predictor_order))?,
             }),
             1 => Ok(Self::Method1 {
-                partitions: read_partitions::<0b11111, R>(r, (block_size, predictor_order))?,
+                partitions: read_partitions::<0b11111, R, I>(r, (block_size, predictor_order))?,
             }),
             _ => Err(Error::InvalidCodingMethod),
         }
     }
 }
 
-impl ToBitStream for Residuals {
+impl<I: SignedInteger> ToBitStream for Residuals<I> {
     type Error = Error;
 
     fn to_writer<W: BitWrite + ?Sized>(&self, w: &mut W) -> Result<(), Error> {
-        fn write_partitions<const RICE_MAX: u32, W: BitWrite + ?Sized>(
+        fn write_partitions<const RICE_MAX: u32, W: BitWrite + ?Sized, I: SignedInteger>(
             writer: &mut W,
-            partitions: &[ResidualPartition<RICE_MAX>],
+            partitions: &[ResidualPartition<RICE_MAX, I>],
         ) -> Result<(), Error> {
             assert!(!partitions.is_empty());
             assert!(partitions.len().is_power_of_two());
@@ -2453,7 +2639,7 @@ impl ToBitStream for Residuals {
 ///
 /// let mut r = BitReader::endian(data, BigEndian);
 /// assert_eq!(
-///     r.parse_using::<ResidualPartition<0b1111>>(19).unwrap(),
+///     r.parse_using::<ResidualPartition<0b1111, i32>>(19).unwrap(),
 ///     ResidualPartition::Standard {
 ///         rice: BitCount::new::<0b0001>(),
 ///         residuals: vec![
@@ -2510,20 +2696,20 @@ impl ToBitStream for Residuals {
 /// values - which means smaller residuals - which means
 /// better compression.
 #[derive(Debug, Eq, PartialEq)]
-pub enum ResidualPartition<const RICE_MAX: u32> {
+pub enum ResidualPartition<const RICE_MAX: u32, I> {
     /// A standard residual partition
     Standard {
         /// The partition's Rice parameter
         rice: BitCount<RICE_MAX>,
         /// The partition's residuals
-        residuals: Vec<i32>,
+        residuals: Vec<I>,
     },
     /// An escaped residual partition
     Escaped {
         /// The size of each residual in bits
         escape_size: SignedBitCount<0b11111>,
         /// The partition's residuals
-        residuals: Vec<i32>,
+        residuals: Vec<I>,
     },
     /// A partition in which all residuals are 0
     Constant {
@@ -2532,18 +2718,20 @@ pub enum ResidualPartition<const RICE_MAX: u32> {
     },
 }
 
-impl<const RICE_MAX: u32> ResidualPartition<RICE_MAX> {
-    fn residuals(&self) -> Box<dyn Iterator<Item = i32> + '_> {
+impl<const RICE_MAX: u32, I: SignedInteger> ResidualPartition<RICE_MAX, I> {
+    fn residuals(&self) -> Box<dyn Iterator<Item = I> + '_> {
         match self {
             Self::Standard { residuals, .. } | Self::Escaped { residuals, .. } => {
                 Box::new(residuals.iter().copied())
             }
-            Self::Constant { partition_len } => Box::new(std::iter::repeat_n(0, *partition_len)),
+            Self::Constant { partition_len } => {
+                Box::new(std::iter::repeat_n(I::default(), *partition_len))
+            }
         }
     }
 }
 
-impl<const RICE_MAX: u32> FromBitStreamUsing for ResidualPartition<RICE_MAX> {
+impl<const RICE_MAX: u32, I: SignedInteger> FromBitStreamUsing for ResidualPartition<RICE_MAX, I> {
     type Context = usize;
     type Error = Error;
 
@@ -2556,9 +2744,9 @@ impl<const RICE_MAX: u32> FromBitStreamUsing for ResidualPartition<RICE_MAX> {
                         let lsb = r.read_counted::<RICE_MAX, u32>(rice)?;
                         let unsigned = (msb << u32::from(rice)) | lsb;
                         Ok::<_, Error>(if (unsigned & 1) == 1 {
-                            -((unsigned >> 1) as i32) - 1
+                            -(I::from_u32(unsigned >> 1)) - I::ONE
                         } else {
-                            (unsigned >> 1) as i32
+                            I::from_u32(unsigned >> 1)
                         })
                     })
                     .collect::<Result<Vec<_>, _>>()?,
@@ -2575,7 +2763,7 @@ impl<const RICE_MAX: u32> FromBitStreamUsing for ResidualPartition<RICE_MAX> {
     }
 }
 
-impl<const RICE_MAX: u32> ToBitStream for ResidualPartition<RICE_MAX> {
+impl<const RICE_MAX: u32, I: SignedInteger> ToBitStream for ResidualPartition<RICE_MAX, I> {
     type Error = Error;
 
     fn to_writer<W: BitWrite + ?Sized>(&self, w: &mut W) -> Result<(), Error> {
@@ -2587,9 +2775,9 @@ impl<const RICE_MAX: u32> ToBitStream for ResidualPartition<RICE_MAX> {
 
                 for residual in residuals {
                     let (msb, lsb) = mask(if residual.is_negative() {
-                        ((-*residual as u32 - 1) << 1) + 1
+                        (((-*residual).to_u32() - 1) << 1) + 1
                     } else {
-                        (*residual as u32) << 1
+                        (*residual).to_u32() << 1
                     });
                     w.write_unary::<1>(msb)?;
                     w.write_checked(lsb)?;

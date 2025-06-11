@@ -321,6 +321,13 @@ impl TryFrom<u64> for BlockSize {
     }
 }
 
+impl From<BlockSize> for u32 {
+    #[inline]
+    fn from(size: BlockSize) -> u32 {
+        size.0
+    }
+}
+
 /// An error that occurs when trying to build an overly large `BlockSize`
 #[derive(Copy, Clone, Debug)]
 pub struct BlockSizeOverflow;
@@ -2554,6 +2561,14 @@ impl PictureMetrics {
 }
 
 /// A collection of metadata blocks
+///
+/// This collection enforces the restruction that FLAC files
+/// must always contain a STREAMINFO metadata block
+/// and that block must always be first in the file.
+///
+/// Because it is required, that block may be retrieved
+/// unconditionally from this collection, while all others
+/// are optional and may appear in any order.
 #[derive(Clone, Debug)]
 pub struct BlockList {
     streaminfo: Streaminfo,
