@@ -1653,7 +1653,7 @@ impl From<EncoderSeekPoint> for SeekPoint {
         match p.byte_offset {
             Some(byte_offset) => Self::Defined {
                 sample_offset: p.sample_offset,
-                byte_offset: byte_offset,
+                byte_offset,
                 frame_samples: p.frame_samples,
             },
             None => Self::Placeholder,

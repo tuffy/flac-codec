@@ -18,6 +18,38 @@ use std::io::BufReader;
 use std::num::NonZero;
 use std::path::Path;
 
+trait SignedInteger:
+    bitstream_io::SignedInteger + Into<i64> + std::ops::AddAssign + std::ops::Neg<Output = Self>
+{
+    fn from_i64(i: i64) -> Self;
+
+    fn from_u32(u: u32) -> Self;
+}
+
+impl SignedInteger for i32 {
+    #[inline(always)]
+    fn from_i64(i: i64) -> i32 {
+        i as i32
+    }
+
+    #[inline(always)]
+    fn from_u32(u: u32) -> i32 {
+        u as i32
+    }
+}
+
+impl SignedInteger for i64 {
+    #[inline(always)]
+    fn from_i64(i: i64) -> i64 {
+        i
+    }
+
+    #[inline(always)]
+    fn from_u32(u: u32) -> i64 {
+        u as i64
+    }
+}
+
 /// A FLAC reader which outputs PCM samples as bytes
 ///
 /// # Example
@@ -878,18 +910,34 @@ fn read_subframes<R: BitRead>(
 
             read_subframe(&mut reader, header.bits_per_sample.into(), left)?;
 
-            read_subframe(
-                &mut reader,
-                header
-                    .bits_per_sample
-                    .checked_add(1)
-                    .ok_or(Error::ExcessiveBps)?,
-                side,
-            )?;
+            match header.bits_per_sample.checked_add(1) {
+                Some(side_bps) => {
+                    read_subframe(&mut reader, side_bps, side)?;
 
-            left.iter().zip(side.iter_mut()).for_each(|(left, side)| {
-                *side = *left - *side;
-            });
+                    left.iter().zip(side.iter_mut()).for_each(|(left, side)| {
+                        *side = *left - *side;
+                    });
+                }
+                None => {
+                    // the very rare case of 32-bps streams
+                    // accompanied by side channels
+                    let mut side_i64 = vec![0; side.len()];
+
+                    read_subframe::<33, R, i64>(
+                        &mut reader,
+                        SignedBitCount::from(header.bits_per_sample)
+                            .checked_add(1)
+                            .expect("excessive bps for substream"),
+                        &mut side_i64,
+                    )?;
+
+                    left.iter().zip(side_i64).zip(side.iter_mut()).for_each(
+                        |((left, side_i64), side)| {
+                            *side = (*left as i64 - side_i64) as i32;
+                        },
+                    );
+                }
+            }
         }
         ChannelAssignment::SideRight => {
             let (side, right) = buf.resized_stereo(
@@ -897,20 +945,36 @@ fn read_subframes<R: BitRead>(
                 u16::from(header.block_size).into(),
             );
 
-            read_subframe(
-                &mut reader,
-                header
-                    .bits_per_sample
-                    .checked_add(1)
-                    .ok_or(Error::ExcessiveBps)?,
-                side,
-            )?;
+            match header.bits_per_sample.checked_add(1) {
+                Some(side_bps) => {
+                    read_subframe(&mut reader, side_bps, side)?;
+                    read_subframe(&mut reader, header.bits_per_sample.into(), right)?;
 
-            read_subframe(&mut reader, header.bits_per_sample.into(), right)?;
+                    side.iter_mut().zip(right.iter()).for_each(|(side, right)| {
+                        *side += *right;
+                    });
+                }
+                None => {
+                    // the very rare case of 32-bps streams
+                    // accompanied by side channels
+                    let mut side_i64 = vec![0; side.len()];
 
-            side.iter_mut().zip(right.iter()).for_each(|(side, right)| {
-                *side += *right;
-            });
+                    read_subframe::<33, R, i64>(
+                        &mut reader,
+                        SignedBitCount::from(header.bits_per_sample)
+                            .checked_add(1)
+                            .expect("excessive bps for substream"),
+                        &mut side_i64,
+                    )?;
+                    read_subframe(&mut reader, header.bits_per_sample.into(), right)?;
+
+                    side.iter_mut().zip(side_i64).zip(right.iter()).for_each(
+                        |((side, side_64), right)| {
+                            *side = (side_64 + *right as i64) as i32;
+                        },
+                    );
+                }
+            }
         }
         ChannelAssignment::MidSide => {
             let (mid, side) = buf.resized_stereo(
@@ -920,20 +984,38 @@ fn read_subframes<R: BitRead>(
 
             read_subframe(&mut reader, header.bits_per_sample.into(), mid)?;
 
-            read_subframe(
-                &mut reader,
-                header
-                    .bits_per_sample
-                    .checked_add(1)
-                    .ok_or(Error::ExcessiveBps)?,
-                side,
-            )?;
+            match header.bits_per_sample.checked_add(1) {
+                Some(side_bps) => {
+                    read_subframe(&mut reader, side_bps, side)?;
 
-            mid.iter_mut().zip(side.iter_mut()).for_each(|(mid, side)| {
-                let sum = *mid * 2 + side.abs() % 2;
-                *mid = (sum + *side) >> 1;
-                *side = (sum - *side) >> 1;
-            });
+                    mid.iter_mut().zip(side.iter_mut()).for_each(|(mid, side)| {
+                        let sum = *mid * 2 + side.abs() % 2;
+                        *mid = (sum + *side) >> 1;
+                        *side = (sum - *side) >> 1;
+                    });
+                }
+                None => {
+                    // the very rare case of 32-bps streams
+                    // accompanied by side channels
+                    let mut side_i64 = vec![0; side.len()];
+
+                    read_subframe::<33, R, i64>(
+                        &mut reader,
+                        SignedBitCount::from(header.bits_per_sample)
+                            .checked_add(1)
+                            .expect("excessive bps for substream"),
+                        &mut side_i64,
+                    )?;
+
+                    mid.iter_mut().zip(side.iter_mut()).zip(side_i64).for_each(
+                        |((mid, side), side_i64)| {
+                            let sum = *mid as i64 * 2 + (side_i64.abs() % 2);
+                            *mid = ((sum + side_i64) >> 1) as i32;
+                            *side = ((sum - side_i64) >> 1) as i32;
+                        },
+                    );
+                }
+            }
         }
     }
 
@@ -943,17 +1025,17 @@ fn read_subframes<R: BitRead>(
     Ok(())
 }
 
-fn read_subframe<R: BitRead>(
+fn read_subframe<const MAX: u32, R: BitRead, I: SignedInteger>(
     reader: &mut R,
-    bits_per_sample: SignedBitCount<32>,
-    channel: &mut [i32],
+    bits_per_sample: SignedBitCount<MAX>,
+    channel: &mut [I],
 ) -> Result<(), Error> {
     use crate::stream::{SubframeHeader, SubframeHeaderType};
 
     let header = reader.parse::<SubframeHeader>()?;
 
     let effective_bps = bits_per_sample
-        .checked_sub::<32>(header.wasted_bps)
+        .checked_sub::<MAX>(header.wasted_bps)
         .ok_or(Error::ExcessiveWastedBits)?;
 
     match header.type_ {
@@ -986,11 +1068,11 @@ fn read_subframe<R: BitRead>(
     Ok(())
 }
 
-fn read_fixed_subframe<R: BitRead>(
+fn read_fixed_subframe<const MAX: u32, R: BitRead, I: SignedInteger>(
     reader: &mut R,
-    bits_per_sample: SignedBitCount<32>,
+    bits_per_sample: SignedBitCount<MAX>,
     coefficients: &[i64],
-    channel: &mut [i32],
+    channel: &mut [I],
 ) -> Result<(), Error> {
     let (warm_up, residuals) = channel
         .split_at_mut_checked(coefficients.len())
@@ -1006,11 +1088,11 @@ fn read_fixed_subframe<R: BitRead>(
     Ok(())
 }
 
-fn read_lpc_subframe<R: BitRead>(
+fn read_lpc_subframe<const MAX: u32, R: BitRead, I: SignedInteger>(
     reader: &mut R,
-    bits_per_sample: SignedBitCount<32>,
+    bits_per_sample: SignedBitCount<MAX>,
     predictor_order: NonZero<u8>,
-    channel: &mut [i32],
+    channel: &mut [I],
 ) -> Result<(), Error> {
     let mut coefficients: [i64; 32] = [0; 32];
 
@@ -1046,17 +1128,19 @@ fn read_lpc_subframe<R: BitRead>(
     Ok(())
 }
 
-fn predict(coefficients: &[i64], qlp_shift: u32, channel: &mut [i32]) {
+fn predict<I: SignedInteger>(coefficients: &[i64], qlp_shift: u32, channel: &mut [I]) {
     for split in coefficients.len()..channel.len() {
         let (predicted, residuals) = channel.split_at_mut(split);
 
-        residuals[0] += (predicted
-            .iter()
-            .rev()
-            .zip(coefficients)
-            .map(|(x, y)| *x as i64 * y)
-            .sum::<i64>()
-            >> qlp_shift) as i32;
+        residuals[0] += I::from_i64(
+            predicted
+                .iter()
+                .rev()
+                .zip(coefficients)
+                .map(|(x, y)| (*x).into() * y)
+                .sum::<i64>()
+                >> qlp_shift,
+        );
     }
 }
 
@@ -1106,15 +1190,15 @@ fn verify_prediction() {
     );
 }
 
-fn read_residuals<R: BitRead>(
+fn read_residuals<R: BitRead, I: SignedInteger>(
     reader: &mut R,
     predictor_order: usize,
-    residuals: &mut [i32],
+    residuals: &mut [I],
 ) -> Result<(), Error> {
-    fn read_block<const RICE_MAX: u32, R: BitRead>(
+    fn read_block<const RICE_MAX: u32, R: BitRead, I: SignedInteger>(
         reader: &mut R,
         predictor_order: usize,
-        mut residuals: &mut [i32],
+        mut residuals: &mut [I],
     ) -> Result<(), Error> {
         use crate::stream::ResidualPartitionHeader;
 
@@ -1138,9 +1222,9 @@ fn read_residuals<R: BitRead>(
                         let lsb = reader.read_counted::<RICE_MAX, u32>(rice)?;
                         let unsigned = (msb << u32::from(rice)) | lsb;
                         *s = if (unsigned & 1) == 1 {
-                            -((unsigned >> 1) as i32) - 1
+                            -(I::from_u32(unsigned >> 1)) - I::ONE
                         } else {
-                            (unsigned >> 1) as i32
+                            I::from_u32(unsigned >> 1)
                         };
                         Ok::<(), std::io::Error>(())
                     })?;
@@ -1152,7 +1236,7 @@ fn read_residuals<R: BitRead>(
                     })?;
                 }
                 ResidualPartitionHeader::Constant => {
-                    partition.fill(0);
+                    partition.fill(I::ZERO);
                 }
             }
 
@@ -1163,8 +1247,8 @@ fn read_residuals<R: BitRead>(
     }
 
     match reader.read::<2, u8>()? {
-        0 => read_block::<0b1111, R>(reader, predictor_order, residuals),
-        1 => read_block::<0b11111, R>(reader, predictor_order, residuals),
+        0 => read_block::<0b1111, R, I>(reader, predictor_order, residuals),
+        1 => read_block::<0b11111, R, I>(reader, predictor_order, residuals),
         _ => Err(Error::InvalidCodingMethod),
     }
 }
