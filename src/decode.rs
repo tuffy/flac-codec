@@ -461,6 +461,12 @@ impl<R: std::io::Read + std::io::Seek, E: crate::byteorder::Endianness> Seekable
     pub fn endian(reader: R, _endian: E) -> Result<Self, Error> {
         Self::new(reader)
     }
+
+    /// Returns FLAC metadata blocks
+    #[inline]
+    pub fn metadata(&self) -> &BlockList {
+        self.reader.decoder.metadata()
+    }
 }
 
 impl<E: crate::byteorder::Endianness> SeekableFlacReader<BufReader<File>, E> {
@@ -640,6 +646,12 @@ impl<R: std::io::Read + std::io::Seek> SeekableFlacSampleReader<R> {
                 buf: VecDeque::default(),
             },
         })
+    }
+
+    /// Returns FLAC metadata blocks
+    #[inline]
+    pub fn metadata(&self) -> &BlockList {
+        self.reader.decoder.metadata()
     }
 }
 
