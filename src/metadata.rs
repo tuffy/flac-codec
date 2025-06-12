@@ -653,14 +653,6 @@ pub fn write_blocks<B: AsBlockRef>(
     })
 }
 
-/// Whether to perform or rollback metadata changes
-pub enum Save {
-    /// Commit changes to disk, if possible
-    Commit,
-    /// Abort changes
-    Rollback,
-}
-
 /// Given a Path, attempts to update FLAC metadata blocks
 ///
 /// # Errors
@@ -668,10 +660,7 @@ pub enum Save {
 /// Returns error if unable to read metadata blocks,
 /// unable to write blocks, or if the existing or updated
 /// blocks do not conform to the FLAC file specification.
-pub fn update_file<P, E>(
-    path: P,
-    f: impl FnOnce(&mut BlockList) -> Result<Save, E>,
-) -> Result<(), E>
+pub fn update_file<P, E>(path: P, f: impl FnOnce(&mut BlockList) -> Result<(), E>) -> Result<(), E>
 where
     P: AsRef<Path>,
     E: From<Error>,
@@ -709,7 +698,7 @@ where
 pub fn update<F, N, E>(
     mut original: F,
     rebuilt: impl FnOnce() -> std::io::Result<N>,
-    f: impl FnOnce(&mut BlockList) -> Result<Save, E>,
+    f: impl FnOnce(&mut BlockList) -> Result<(), E>,
 ) -> Result<(), E>
 where
     F: std::io::Read + std::io::Seek + std::io::Write,
@@ -782,9 +771,7 @@ where
         count: old_size,
     } = reader;
 
-    if matches!(f(&mut blocks)?, Save::Rollback) {
-        return Ok(());
-    }
+    f(&mut blocks)?;
 
     let new_size = {
         let mut new_size = Counter::new(sink());
