@@ -27,7 +27,7 @@ pub enum Error {
     /// A general I/O error from the underlying stream
     Io(std::io::Error),
     /// A UTF-8 formatting error
-    Utf8(std::string::FromUtf8Error),
+    Utf8(Box<std::string::FromUtf8Error>),
     /// A FLAC file missing its initial "fLaC" file tag
     MissingFlacTag,
     /// A FLAC file missing its initial STREAMINFO block
@@ -165,7 +165,7 @@ impl From<std::io::Error> for Error {
 
 impl From<std::string::FromUtf8Error> for Error {
     fn from(error: std::string::FromUtf8Error) -> Self {
-        Self::Utf8(error)
+        Self::Utf8(Box::new(error))
     }
 }
 
