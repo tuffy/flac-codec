@@ -9,7 +9,7 @@
 //! Byte order for PCM samples
 
 /// Sample byte order
-pub trait Endianness {
+pub trait Endianness: Clone {
     /// Converts 8-bit sample to bytes in this byte order
     fn i8_to_bytes(sample: i8) -> [u8; 1];
 
@@ -42,6 +42,7 @@ pub trait Endianness {
 }
 
 /// Little-endian byte order
+#[derive(Copy, Clone)]
 pub struct LittleEndian;
 
 impl Endianness for LittleEndian {
@@ -113,6 +114,7 @@ impl Endianness for LittleEndian {
 }
 
 /// Big-endian byte order
+#[derive(Copy, Clone)]
 pub struct BigEndian;
 
 impl Endianness for BigEndian {
