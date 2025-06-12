@@ -1397,6 +1397,8 @@ struct LpcCache {
 struct Encoder<W: std::io::Write + std::io::Seek> {
     // the writer we're outputting to
     writer: Counter<W>,
+    // the stream's starting offset in the writer, in bytes
+    start: u64,
     // various encoding options
     options: Options,
     // various encoder caches
@@ -1469,9 +1471,11 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
             }
         }
 
+        let start = writer.stream_position()?;
         write_blocks(blocks.blocks(), writer.by_ref())?;
 
         Ok(Self {
+            start,
             writer: Counter::new(writer),
             options: Options {
                 max_partition_order: options.max_partition_order,
@@ -1604,10 +1608,10 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
             // update STREAMINFO MD5 sum
             self.blocks.streaminfo_mut().md5 = Some(self.md5.clone().compute().0);
 
+            // rewrite metadata blocks, relative to the beginning
+            // of the stream
             let writer = self.writer.stream();
-
-            writer.rewind()?;
-
+            writer.seek(std::io::SeekFrom::Start(self.start))?;
             write_blocks(self.blocks.blocks(), writer.by_ref())
         } else {
             Ok(())
