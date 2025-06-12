@@ -1,7 +1,7 @@
 use flac_codec::{
     byteorder::LittleEndian,
     decode::{FlacReader, FlacSampleRead, FlacSampleReader},
-    encode::{Options, FlacSampleWriter, FlacWriter},
+    encode::{FlacSampleWriter, FlacWriter, Options},
 };
 use std::io::{Cursor, Read, Seek, Write};
 use std::num::NonZero;

@@ -963,6 +963,14 @@ enum SeektableStyle {
     None,
     // Generate seekpoint every nth seconds
     Seconds(NonZero<u8>),
+    // Generate seekpoint every nth frames
+    Frames(NonZero<usize>),
+}
+
+impl Default for SeektableStyle {
+    fn default() -> Self {
+        Self::Seconds(NonZero::new(10).unwrap())
+    }
 }
 
 impl SeektableStyle {
@@ -987,6 +995,7 @@ impl SeektableStyle {
                     }
                 })))
             }
+            Self::Frames(frames) => Some(Box::new(seekpoints.step_by(frames.get()))),
         }
     }
 }
@@ -1028,7 +1037,7 @@ impl Default for Options {
             mid_side: true,
             max_partition_order: 5,
             metadata,
-            seektable_style: SeektableStyle::Seconds(NonZero::new(10).unwrap()),
+            seektable_style: SeektableStyle::default(),
             max_lpc_order: NonZero::new(8),
             window: Window::default(),
         }
@@ -1055,10 +1064,7 @@ impl Options {
     /// If indicated, the maximum value must be ≤ 32
     ///
     /// A value of `None` means that no LPC subframes will be encoded.
-    pub fn max_lpc_order(
-        self,
-        max_lpc_order: Option<impl TryInto<NonZero<u8>>>,
-    ) -> Result<Self, OptionsError> {
+    pub fn max_lpc_order(self, max_lpc_order: Option<u8>) -> Result<Self, OptionsError> {
         Ok(Self {
             max_lpc_order: max_lpc_order
                 .map(|o| {
@@ -1099,10 +1105,12 @@ impl Options {
 
     /// Updates size of padding block
     ///
+    /// `size` must be < 2²⁴
+    ///
     /// If `size` is set to 0, removes the block entirely.
     ///
     /// The default is to add a 4096 byte padding block.
-    pub fn padding(mut self, size: impl TryInto<BlockSize>) -> Result<Self, OptionsError> {
+    pub fn padding(mut self, size: u32) -> Result<Self, OptionsError> {
         use crate::metadata::Padding;
 
         match size
@@ -1178,13 +1186,29 @@ impl Options {
 
     /// Generate [`crate::metadata::SeekTable`] with the given number of seconds between seek points
     ///
+    /// The default is to generate a SEEKTABLE with 10 seconds between seek points.
+    ///
+    /// If `seconds` is 0, removes the SEEKTABLE block.
+    ///
     /// The interval between seek points may be larger than requested
     /// if the encoder's block size is larger than the seekpoint interval.
-    pub fn seektable_seconds(mut self, seconds: NonZero<u8>) -> Self {
+    pub fn seektable_seconds(mut self, seconds: u8) -> Self {
         // note that we can't drop a placeholder seektable
         // into the metadata blocks until we know
         // the sample rate and total samples of our stream
-        self.seektable_style = SeektableStyle::Seconds(seconds);
+        self.seektable_style = NonZero::new(seconds)
+            .map(SeektableStyle::Seconds)
+            .unwrap_or(SeektableStyle::None);
+        self
+    }
+
+    /// Generate [`crate::metadata::SeekTable`] with the given number of FLAC frames between seek points
+    ///
+    /// If `frames` is 0, removes the SEEKTABLE block
+    pub fn seektable_frames(mut self, frames: usize) -> Self {
+        self.seektable_style = NonZero::new(frames)
+            .map(SeektableStyle::Frames)
+            .unwrap_or(SeektableStyle::None);
         self
     }
 
