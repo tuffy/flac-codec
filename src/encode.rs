@@ -118,7 +118,7 @@ impl<W: std::io::Write + std::io::Seek, E: crate::byteorder::Endianness> FlacWri
         sample_rate: u32,
         bits_per_sample: u32,
         channels: u8,
-        total_bytes: Option<impl TryInto<NonZero<u64>>>,
+        total_bytes: Option<u64>,
     ) -> Result<Self, Error> {
         let bits_per_sample: SignedBitCount<32> = bits_per_sample
             .try_into()
@@ -142,18 +142,12 @@ impl<W: std::io::Write + std::io::Seek, E: crate::byteorder::Endianness> FlacWri
                 channels,
                 total_bytes
                     .map(|bytes| {
-                        exact_div(
-                            bytes
-                                .try_into()
-                                .map_err(|_| Error::InvalidTotalBytes)?
-                                .get(),
-                            channels.into(),
-                        )
-                        .and_then(|s| exact_div(s, bytes_per_sample as u64))
-                        .ok_or(Error::SamplesNotDivisibleByChannels)
+                        exact_div(bytes, channels.into())
+                            .and_then(|s| exact_div(s, bytes_per_sample as u64))
+                            .ok_or(Error::SamplesNotDivisibleByChannels)
+                            .and_then(|b| NonZero::new(b).ok_or(Error::InvalidTotalBytes))
                     })
-                    .transpose()?
-                    .and_then(NonZero::new),
+                    .transpose()?,
             )?,
             finalized: false,
             endianness: std::marker::PhantomData,
@@ -177,11 +171,7 @@ impl<W: std::io::Write + std::io::Seek, E: crate::byteorder::Endianness> FlacWri
     /// Returns I/O error if unable to write initial
     /// metadata blocks.
     /// Returns error if any of the encoding parameters are invalid.
-    pub fn new_cdda(
-        writer: W,
-        options: Options,
-        total_bytes: Option<impl TryInto<NonZero<u64>>>,
-    ) -> Result<Self, Error> {
+    pub fn new_cdda(writer: W, options: Options, total_bytes: Option<u64>) -> Result<Self, Error> {
         Self::new(writer, options, 44100, 16, 2, total_bytes)
     }
 
@@ -212,7 +202,7 @@ impl<W: std::io::Write + std::io::Seek, E: crate::byteorder::Endianness> FlacWri
         sample_rate: u32,
         bits_per_sample: u32,
         channels: u8,
-        total_bytes: Option<impl TryInto<NonZero<u64>>>,
+        total_bytes: Option<u64>,
     ) -> Result<Self, Error> {
         Self::new(
             writer,
@@ -293,7 +283,7 @@ impl<E: crate::byteorder::Endianness> FlacWriter<BufWriter<File>, E> {
         sample_rate: u32,
         bits_per_sample: u32,
         channels: u8,
-        total_bytes: Option<impl TryInto<NonZero<u64>>>,
+        total_bytes: Option<u64>,
     ) -> Result<Self, Error> {
         FlacWriter::new(
             BufWriter::new(File::create(path.as_ref())?),
@@ -322,7 +312,7 @@ impl<E: crate::byteorder::Endianness> FlacWriter<BufWriter<File>, E> {
     pub fn create_cdda<P: AsRef<Path>>(
         path: P,
         options: Options,
-        total_bytes: Option<impl TryInto<NonZero<u64>>>,
+        total_bytes: Option<u64>,
     ) -> Result<Self, Error> {
         Self::create(path, options, 44100, 16, 2, total_bytes)
     }
@@ -398,12 +388,12 @@ impl<W: std::io::Write + std::io::Seek, E: crate::byteorder::Endianness> Drop fo
 /// let mut flac = Cursor::new(vec![]);  // a FLAC file in memory
 ///
 /// let mut writer = FlacSampleWriter::new(
-///     &mut flac,                   // our wrapped writer
+///     &mut flac,           // our wrapped writer
 ///     Options::default(),  // default encoding options
-///     44100,                       // sample rate
-///     16,                          // bits-per-sample
-///     1,                           // channel count
-///     NonZero::new(1000),          // total samples
+///     44100,               // sample rate
+///     16,                  // bits-per-sample
+///     1,                   // channel count
+///     Some(1000),          // total samples
 /// ).unwrap();
 ///
 /// // write 1000 samples
@@ -470,7 +460,7 @@ impl<W: std::io::Write + std::io::Seek> FlacSampleWriter<W> {
         sample_rate: u32,
         bits_per_sample: u32,
         channels: u8,
-        total_samples: Option<impl TryInto<NonZero<u64>>>,
+        total_samples: Option<u64>,
     ) -> Result<Self, Error> {
         let bits_per_sample: SignedBitCount<32> = bits_per_sample
             .try_into()
@@ -493,18 +483,12 @@ impl<W: std::io::Write + std::io::Seek> FlacSampleWriter<W> {
                 bits_per_sample,
                 channels,
                 total_samples
-                    .map(|bytes| {
-                        exact_div(
-                            bytes
-                                .try_into()
-                                .map_err(|_| Error::InvalidTotalSamples)?
-                                .get(),
-                            channels.into(),
-                        )
-                        .ok_or(Error::SamplesNotDivisibleByChannels)
+                    .map(|samples| {
+                        exact_div(samples, channels.into())
+                            .ok_or(Error::SamplesNotDivisibleByChannels)
+                            .and_then(|s| NonZero::new(s).ok_or(Error::InvalidTotalSamples))
                     })
-                    .transpose()?
-                    .and_then(NonZero::new),
+                    .transpose()?,
             )?,
             finalized: false,
         })
@@ -528,7 +512,7 @@ impl<W: std::io::Write + std::io::Seek> FlacSampleWriter<W> {
     pub fn new_cdda(
         writer: W,
         options: Options,
-        total_samples: Option<impl TryInto<NonZero<u64>>>,
+        total_samples: Option<u64>,
     ) -> Result<Self, Error> {
         Self::new(writer, options, 44100, 16, 2, total_samples)
     }
@@ -632,7 +616,7 @@ impl FlacSampleWriter<BufWriter<File>> {
         sample_rate: u32,
         bits_per_sample: u32,
         channels: u8,
-        total_samples: Option<impl TryInto<NonZero<u64>>>,
+        total_samples: Option<u64>,
     ) -> Result<Self, Error> {
         FlacSampleWriter::new(
             BufWriter::new(File::create(path.as_ref())?),
@@ -662,7 +646,7 @@ impl FlacSampleWriter<BufWriter<File>> {
     pub fn create_cdda<P: AsRef<Path>>(
         path: P,
         options: Options,
-        total_samples: Option<impl TryInto<NonZero<u64>>>,
+        total_samples: Option<u64>,
     ) -> Result<Self, Error> {
         Self::create(path, options, 44100, 16, 2, total_samples)
     }
@@ -1061,7 +1045,7 @@ impl Options {
 
     /// Sets new maximum LPC order
     ///
-    /// If indicated, the maximum value must be ≤ 32
+    /// The valid range is: 0 < `max_lpc_order` ≤ 32
     ///
     /// A value of `None` means that no LPC subframes will be encoded.
     pub fn max_lpc_order(self, max_lpc_order: Option<u8>) -> Result<Self, OptionsError> {
@@ -1080,7 +1064,7 @@ impl Options {
 
     /// Sets maximum residual partion order.
     ///
-    /// Must be between 0 and 15, inclusive.
+    /// The valid range is: 0 ≤ `max_partition_order` ≤ 15
     pub fn max_partition_order(self, max_partition_order: u32) -> Result<Self, OptionsError> {
         match max_partition_order {
             0..=15 => Ok(Self {

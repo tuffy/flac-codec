@@ -4,7 +4,6 @@ use flac_codec::{
     encode::{FlacSampleWriter, FlacWriter, Options},
 };
 use std::io::{Cursor, Read, Seek, Write};
-use std::num::NonZero;
 
 #[test]
 fn test_small_files() {
@@ -42,14 +41,14 @@ fn test_small_files() {
                     &mut flac,
                     LittleEndian,
                     Options::fast()
-                        .max_lpc_order(NonZero::new(16))
+                        .max_lpc_order(Some(16))
                         .unwrap()
                         .mid_side(true)
                         .no_padding(),
                     44100,
                     16,
                     channels,
-                    u64::try_from(data.len()).ok().and_then(NonZero::new),
+                    u64::try_from(data.len()).ok(),
                 )
                 .unwrap(),
             )
@@ -92,7 +91,7 @@ fn test_blocksize_variations() {
                         &mut flac,
                         LittleEndian,
                         Options::best()
-                            .max_lpc_order(NonZero::new(*lpc_order))
+                            .max_lpc_order((*lpc_order > 0).then_some(*lpc_order))
                             .unwrap()
                             .block_size(blocksize)
                             .unwrap()
@@ -100,7 +99,7 @@ fn test_blocksize_variations() {
                         44100,
                         8,
                         1,
-                        u64::try_from(data.len()).ok().and_then(NonZero::new),
+                        u64::try_from(data.len()).ok(),
                     )
                     .unwrap(),
                 )
@@ -147,7 +146,7 @@ fn test_fractional() {
                     44100,
                     16,
                     2,
-                    u64::try_from(samples * 2 * 2).ok().and_then(NonZero::new),
+                    u64::try_from(samples * 2 * 2).ok(),
                 )
                 .unwrap(),
             )
@@ -404,7 +403,7 @@ fn test_roundtrip() {
                 44100,
                 bps as u32,
                 channels as u8,
-                u64::try_from(data.len()).ok().and_then(NonZero::new),
+                u64::try_from(data.len()).ok(),
             )
             .unwrap()
             .write_all(data)
@@ -591,9 +590,7 @@ fn test_full_scale_deflection() {
             44100,
             bps,
             1,
-            u64::try_from(bytes.len() * iters)
-                .ok()
-                .and_then(NonZero::new),
+            u64::try_from(bytes.len() * iters).ok(),
         )
         .unwrap();
 
@@ -634,7 +631,7 @@ fn test_wasted_bits() {
             44100,
             16,
             1,
-            u64::try_from(data.len()).ok().and_then(NonZero::new),
+            u64::try_from(data.len()).ok(),
         )
         .unwrap()
         .write_all(data)
@@ -750,7 +747,7 @@ fn test_sine_wave_streams() {
                 true => 2,
                 false => 1,
             },
-            sine.len().try_into().ok().and_then(NonZero::<u64>::new),
+            sine.len().try_into().ok(),
         )
         .unwrap();
 
@@ -1002,7 +999,7 @@ fn test_noise() {
                             44100,
                             bits_per_sample,
                             channels,
-                            u64::try_from(noise.len()).ok().and_then(NonZero::new),
+                            u64::try_from(noise.len()).ok(),
                         )
                         .unwrap()
                         .write_all(&noise)

@@ -288,12 +288,12 @@ impl<R: std::io::Read, E: crate::byteorder::Endianness> std::io::BufRead for Fla
 /// let mut flac = Cursor::new(vec![]);  // a FLAC file in memory
 ///
 /// let mut writer = FlacSampleWriter::new(
-///     &mut flac,                   // our wrapped writer
+///     &mut flac,           // our wrapped writer
 ///     Options::default(),  // default encoding options
-///     44100,                       // sample rate
-///     16,                          // bits-per-sample
-///     1,                           // channel count
-///     NonZero::new(1000),          // total samples
+///     44100,               // sample rate
+///     16,                  // bits-per-sample
+///     1,                   // channel count
+///     Some(1000),          // total samples
 /// ).unwrap();
 ///
 /// // write 1000 samples
