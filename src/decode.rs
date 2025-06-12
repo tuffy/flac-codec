@@ -878,6 +878,47 @@ pub struct FrameBuf<'s> {
     pub bits_per_sample: u32,
 }
 
+/// The results of FLAC file verification
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd)]
+pub enum Verified {
+    /// FLAC file has MD5 hash and decoded contents match that hash
+    MD5Match,
+    /// FLAC file has MD5 hash, but decoded contents to not match
+    MD5Mismatch,
+    /// FLAC file has no MD5 hash, but decodes successfully
+    NoMD5,
+}
+
+/// Verifies FLAC file for correctness
+pub fn verify<P: AsRef<Path>>(p: P) -> Result<Verified, Error> {
+    File::open(p.as_ref())
+        .map_err(Error::Io)
+        .and_then(|r| verify_reader(BufReader::new(r)))
+}
+
+/// Verifies FLAC stream for correctness
+///
+/// The stream must be set to the start of the FLAC data
+pub fn verify_reader<R: std::io::Read>(r: R) -> Result<Verified, Error> {
+    use crate::byteorder::LittleEndian;
+
+    let mut r = FlacReader::endian(r, LittleEndian)?;
+    match r.md5().cloned() {
+        Some(flac_md5) => {
+            let mut output_md5 = md5::Context::new();
+            std::io::copy(&mut r, &mut output_md5)?;
+            Ok(if flac_md5 == output_md5.compute().0 {
+                Verified::MD5Match
+            } else {
+                Verified::MD5Mismatch
+            })
+        }
+        None => std::io::copy(&mut r, &mut std::io::sink())
+            .map(|_| Verified::NoMD5)
+            .map_err(Error::Io),
+    }
+}
+
 /// A FLAC decoder
 #[derive(Clone)]
 struct Decoder<R> {
