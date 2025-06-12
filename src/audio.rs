@@ -10,7 +10,7 @@
 
 use arrayvec::ArrayVec;
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Frame {
     // all samples, stacked by channel
     samples: Vec<i32>,

@@ -162,6 +162,7 @@ pub trait FlacSampleRead {
 /// // ensure input and output matches
 /// assert_eq!(read_bytes, written_bytes);
 /// ```
+#[derive(Clone)]
 pub struct FlacReader<R, E> {
     // the wrapped decoder
     decoder: Decoder<R>,
@@ -338,6 +339,7 @@ impl<R: std::io::Read, E: crate::byteorder::Endianness> std::io::BufRead for Fla
 /// // ensure they match
 /// assert_eq!(read_samples, written_samples);
 /// ```
+#[derive(Clone)]
 pub struct FlacSampleReader<R> {
     // the wrapped decoder
     decoder: Decoder<R>,
@@ -443,6 +445,7 @@ impl<R: std::io::Read> FlacSampleRead for FlacSampleReader<R> {
 ///
 /// This has an additional [`std::io::Seek`] bound over
 /// the wrapped reader in order to enable seeking.
+#[derive(Clone)]
 pub struct SeekableFlacReader<R, E> {
     // our wrapped FLAC reader
     reader: FlacReader<R, E>,
@@ -644,6 +647,7 @@ impl<R: std::io::Read + std::io::Seek, E: crate::byteorder::Endianness> std::io:
 }
 
 /// A seekable FLAC reader which outputs PCM samples as signed integers
+#[derive(Clone)]
 pub struct SeekableFlacSampleReader<R> {
     // the wrapped sample reader
     reader: FlacSampleReader<R>,
@@ -907,6 +911,7 @@ pub struct FrameBuf<'s> {
 }
 
 /// A FLAC decoder
+#[derive(Clone)]
 struct Decoder<R> {
     reader: R,
     // all metadata blocks
