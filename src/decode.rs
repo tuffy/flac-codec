@@ -50,6 +50,71 @@ impl SignedInteger for i64 {
     }
 }
 
+/// A trait for indicating various pieces of FLAC stream metadata
+pub trait FlacMetadata {
+    /// Returns channel count
+    ///
+    /// From 1 to 8
+    fn channel_count(&self) -> u8;
+
+    /// Returns sample rate, in Hz
+    fn sample_rate(&self) -> u32;
+
+    /// Returns decoder's bits-per-sample
+    ///
+    /// From 1 to 32
+    fn bits_per_sample(&self) -> u32;
+
+    /// Returns total number of channel-independent samples, if known
+    fn total_samples(&self) -> Option<u64>;
+
+    /// Returns MD5 of entire stream, if known
+    ///
+    /// MD5 is always calculated in terms of little-endian,
+    /// signed, byte-aligned values.
+    fn md5(&self) -> Option<&[u8; 16]>;
+
+    /// Returns FLAC metadata
+    fn metadata(&self) -> &BlockList;
+}
+
+/// A `Read`-like trait for signed integer samples
+pub trait FlacSampleRead {
+    /// Attempts to fill the buffer with samples and returns quantity read
+    ///
+    /// Returned samples are interleaved by channel, like:
+    /// [left₀ , right₀ , left₁ , right₁ , left₂ , right₂ , …]
+    ///
+    /// # Errors
+    ///
+    /// Returns error if some error occurs reading FLAC file
+    fn read(&mut self, samples: &mut [i32]) -> Result<usize, Error>;
+
+    /// Returns complete buffer of all read samples
+    ///
+    /// Analogous to [`std::io::BufRead::fill_buf`], this should
+    /// be paired with [`FlacSampleReader::consume`] to
+    /// consume samples in the filled buffer once used.
+    ///
+    /// Returned samples are interleaved by channel, like:
+    /// [left₀ , right₀ , left₁ , right₁ , left₂ , right₂ , …]
+    ///
+    /// # Errors
+    ///
+    /// Returns error if some error occurs reading FLAC file
+    /// to fill buffer.
+    fn fill_buf(&mut self) -> Result<&[i32], Error>;
+
+    /// Informs the reader that `amt` samples have been consumed.
+    ///
+    /// Analagous to [`std::io::BufRead::consume`], which marks
+    /// samples as having been read.
+    ///
+    /// May panic if attempting to consume more bytes
+    /// than are available in the buffer.
+    fn consume(&mut self, amt: usize);
+}
+
 /// A FLAC reader which outputs PCM samples as bytes
 ///
 /// # Example
@@ -58,7 +123,7 @@ impl SignedInteger for i64 {
 /// use flac_codec::{
 ///     byteorder::LittleEndian,
 ///     encode::{FlacWriter, EncodingOptions},
-///     decode::FlacReader
+///     decode::{FlacReader, FlacMetadata},
 /// };
 /// use std::io::{Cursor, Read, Seek, Write};
 ///
@@ -132,47 +197,36 @@ impl<R: std::io::Read, E: crate::byteorder::Endianness> FlacReader<R, E> {
     pub fn endian(reader: R, _endian: E) -> Result<Self, Error> {
         Self::new(reader)
     }
+}
 
-    /// Returns channel count
-    ///
-    /// From 1 to 8
+impl<R: std::io::Read, E: crate::byteorder::Endianness> FlacMetadata for FlacReader<R, E> {
     #[inline]
-    pub fn channel_count(&self) -> u8 {
+    fn channel_count(&self) -> u8 {
         self.decoder.channel_count().get()
     }
 
-    /// Returns sample rate, in Hz
     #[inline]
-    pub fn sample_rate(&self) -> u32 {
+    fn sample_rate(&self) -> u32 {
         self.decoder.sample_rate()
     }
 
-    /// Returns decoder's bits-per-sample
-    ///
-    /// From 1 to 32
     #[inline]
-    pub fn bits_per_sample(&self) -> u32 {
+    fn bits_per_sample(&self) -> u32 {
         self.decoder.bits_per_sample()
     }
 
-    /// Returns total number of channel-independent samples, if known
     #[inline]
-    pub fn total_samples(&self) -> Option<u64> {
+    fn total_samples(&self) -> Option<u64> {
         self.decoder.total_samples().map(|s| s.get())
     }
 
-    /// Returns MD5 of entire stream, if known
-    ///
-    /// MD5 is always calculated in terms of little-endian,
-    /// signed, byte-aligned values.
     #[inline]
-    pub fn md5(&self) -> Option<&[u8; 16]> {
+    fn md5(&self) -> Option<&[u8; 16]> {
         self.decoder.md5()
     }
 
-    /// Returns FLAC metadata
     #[inline]
-    pub fn metadata(&self) -> &BlockList {
+    fn metadata(&self) -> &BlockList {
         self.decoder.metadata()
     }
 }
@@ -347,7 +401,10 @@ impl<R: std::io::Read + std::io::Seek, E: crate::byteorder::Endianness> std::io:
 /// # Example
 ///
 /// ```
-/// use flac_codec::{encode::{FlacSampleWriter, EncodingOptions}, decode::FlacSampleReader};
+/// use flac_codec::{
+///     encode::{FlacSampleWriter, EncodingOptions},
+///     decode::{FlacSampleReader, FlacSampleRead},
+/// };
 /// use std::io::{Cursor, Seek};
 /// use std::num::NonZero;
 ///
@@ -401,59 +458,50 @@ impl<R: std::io::Read> FlacSampleReader<R> {
             buf: VecDeque::default(),
         })
     }
+}
 
-    /// Returns channel count
-    ///
-    /// From 1 to 8
+impl FlacSampleReader<BufReader<File>> {
+    /// Opens FLAC file from the given path
     #[inline]
-    pub fn channel_count(&self) -> u8 {
+    pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
+        FlacSampleReader::new(BufReader::new(File::open(path.as_ref())?))
+    }
+}
+
+impl<R: std::io::Read> FlacMetadata for FlacSampleReader<R> {
+    #[inline]
+    fn channel_count(&self) -> u8 {
         self.decoder.channel_count().get()
     }
 
-    /// Returns sample rate, in Hz
     #[inline]
-    pub fn sample_rate(&self) -> u32 {
+    fn sample_rate(&self) -> u32 {
         self.decoder.sample_rate()
     }
 
-    /// Returns decoder's bits-per-sample
-    ///
-    /// From 1 to 32
     #[inline]
-    pub fn bits_per_sample(&self) -> u32 {
+    fn bits_per_sample(&self) -> u32 {
         self.decoder.bits_per_sample()
     }
 
-    /// Returns total number of channel-independent samples, if known
     #[inline]
-    pub fn total_samples(&self) -> Option<u64> {
+    fn total_samples(&self) -> Option<u64> {
         self.decoder.total_samples().map(|s| s.get())
     }
 
-    /// Returns MD5 of entire stream, if known
-    ///
-    /// MD5 is always calculated in terms of little-endian,
-    /// signed, byte-aligned values.
     #[inline]
-    pub fn md5(&self) -> Option<&[u8; 16]> {
+    fn md5(&self) -> Option<&[u8; 16]> {
         self.decoder.md5()
     }
 
-    /// Returns FLAC metadata
     #[inline]
-    pub fn metadata(&self) -> &BlockList {
+    fn metadata(&self) -> &BlockList {
         self.decoder.metadata()
     }
+}
 
-    /// Attempts to fill the buffer with samples and returns quantity read
-    ///
-    /// Returned samples are interleaved by channel, like:
-    /// [left₀ , right₀ , left₁ , right₁ , left₂ , right₂ , …]
-    ///
-    /// # Errors
-    ///
-    /// Returns error if some error occurs reading FLAC file
-    pub fn read(&mut self, samples: &mut [i32]) -> Result<usize, Error> {
+impl<R: std::io::Read> FlacSampleRead for FlacSampleReader<R> {
+    fn read(&mut self, samples: &mut [i32]) -> Result<usize, Error> {
         if self.buf.is_empty() {
             match self.decoder.read_frame()? {
                 Some(frame) => {
@@ -470,20 +518,7 @@ impl<R: std::io::Read> FlacSampleReader<R> {
         Ok(to_consume)
     }
 
-    /// Returns complete buffer of all read samples
-    ///
-    /// Analogous to [`std::io::BufRead::fill_buf`], this should
-    /// be paired with [`FlacSampleReader::consume`] to
-    /// consume samples in the filled buffer once used.
-    ///
-    /// Returned samples are interleaved by channel, like:
-    /// [left₀ , right₀ , left₁ , right₁ , left₂ , right₂ , …]
-    ///
-    /// # Errors
-    ///
-    /// Returns error if some error occurs reading FLAC file
-    /// to fill buffer.
-    pub fn fill_buf(&mut self) -> Result<&[i32], Error> {
+    fn fill_buf(&mut self) -> Result<&[i32], Error> {
         if self.buf.is_empty() {
             match self.decoder.read_frame()? {
                 Some(frame) => {
@@ -496,23 +531,8 @@ impl<R: std::io::Read> FlacSampleReader<R> {
         Ok(self.buf.make_contiguous())
     }
 
-    /// Informs the reader that `amt` samples have been consumed.
-    ///
-    /// Analagous to [`std::io::BufRead::consume`], which marks
-    /// samples as having been read.
-    ///
-    /// May panic if attempting to consume more bytes
-    /// than are available in the buffer.
-    pub fn consume(&mut self, amt: usize) {
+    fn consume(&mut self, amt: usize) {
         self.buf.drain(0..amt);
-    }
-}
-
-impl FlacSampleReader<BufReader<File>> {
-    /// Opens FLAC file from the given path
-    #[inline]
-    pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
-        FlacSampleReader::new(BufReader::new(File::open(path.as_ref())?))
     }
 }
 

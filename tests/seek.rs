@@ -1,7 +1,7 @@
 #[test]
 fn test_seeking() {
     use flac_codec::byteorder::LittleEndian;
-    use flac_codec::decode::FlacReader;
+    use flac_codec::decode::{FlacMetadata, FlacReader};
     use std::io::{Cursor, Read, Seek, SeekFrom};
 
     let mut flac: FlacReader<_, LittleEndian> =

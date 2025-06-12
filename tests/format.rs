@@ -1,6 +1,6 @@
 use flac_codec::{
     byteorder::LittleEndian,
-    decode::{FlacReader, FlacSampleReader},
+    decode::{FlacReader, FlacSampleRead, FlacSampleReader},
     encode::{EncodingOptions, FlacSampleWriter, FlacWriter},
 };
 use std::io::{Cursor, Read, Seek, Write};
@@ -619,7 +619,7 @@ fn test_full_scale_deflection() {
 fn test_wasted_bits() {
     use flac_codec::{
         metadata::read_blocks,
-        stream::{Frame, Subframe},
+        stream::{Frame, Subframe, SubframeWidth},
     };
 
     let data = include_bytes!("data/wasted-bits.raw");
@@ -663,10 +663,18 @@ fn test_wasted_bits() {
     let frame1 = Frame::read_subset(&mut flac).unwrap();
     assert!(
         match frame1.subframes[0] {
-            Subframe::Constant { wasted_bps, .. }
-            | Subframe::Verbatim { wasted_bps, .. }
-            | Subframe::Fixed { wasted_bps, .. }
-            | Subframe::Lpc { wasted_bps, .. } => wasted_bps,
+            SubframeWidth::Common(
+                Subframe::Constant { wasted_bps, .. }
+                | Subframe::Verbatim { wasted_bps, .. }
+                | Subframe::Fixed { wasted_bps, .. }
+                | Subframe::Lpc { wasted_bps, .. },
+            )
+            | SubframeWidth::Wide(
+                Subframe::Constant { wasted_bps, .. }
+                | Subframe::Verbatim { wasted_bps, .. }
+                | Subframe::Fixed { wasted_bps, .. }
+                | Subframe::Lpc { wasted_bps, .. },
+            ) => wasted_bps,
         } > 0
     );
 }
