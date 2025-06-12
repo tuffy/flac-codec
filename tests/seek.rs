@@ -1,11 +1,11 @@
 #[test]
 fn test_seeking() {
     use flac_codec::byteorder::LittleEndian;
-    use flac_codec::decode::{FlacMetadata, FlacReader};
+    use flac_codec::decode::{FlacMetadata, SeekableFlacReader};
     use std::io::{Cursor, Read, Seek, SeekFrom};
 
-    let mut flac: FlacReader<_, LittleEndian> =
-        FlacReader::new(Cursor::new(include_bytes!("data/sine.flac"))).unwrap();
+    let mut flac: SeekableFlacReader<_, LittleEndian> =
+        SeekableFlacReader::new(Cursor::new(include_bytes!("data/sine.flac"))).unwrap();
 
     let flac_len = flac.total_samples().unwrap();
 

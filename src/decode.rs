@@ -179,9 +179,11 @@ impl<R: std::io::Read, E: crate::byteorder::Endianness> FlacReader<R, E> {
     /// at the beginning (such as ID3v2 tags), one
     /// should skip such data before initializing a `FlacReader`.
     #[inline]
-    pub fn new(reader: R) -> Result<Self, Error> {
+    pub fn new(mut reader: R) -> Result<Self, Error> {
+        let blocklist = BlockList::read(reader.by_ref())?;
+
         Ok(Self {
-            decoder: Decoder::new(reader)?,
+            decoder: Decoder::new(reader, blocklist),
             buf: VecDeque::default(),
             endianness: std::marker::PhantomData,
         })
@@ -295,107 +297,6 @@ impl<R: std::io::Read, E: crate::byteorder::Endianness> std::io::BufRead for Fla
     }
 }
 
-impl<R: std::io::Read + std::io::Seek, E: crate::byteorder::Endianness> std::io::Seek
-    for FlacReader<R, E>
-{
-    fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
-        use std::cmp::Ordering;
-
-        let streaminfo = self.decoder.blocks.streaminfo();
-
-        let bytes_per_pcm_frame: u64 = (u32::from(streaminfo.bits_per_sample).div_ceil(8)
-            * u32::from(streaminfo.channels.get()))
-        .into();
-
-        // the desired absolute position in the stream, in bytes
-        let desired_pos: u64 =
-            match pos {
-                std::io::SeekFrom::Start(pos) => pos,
-                std::io::SeekFrom::Current(pos) => {
-                    // current position in bytes is current position in samples
-                    // converted to bytes *minus* the un-consumed space in the buffer
-                    // since the sample position is running ahead of the byte position
-                    let original_pos: u64 = (self.decoder.current_sample * bytes_per_pcm_frame)
-                        - (self.buf.len() as u64);
-
-                    match pos.cmp(&0) {
-                        Ordering::Less => original_pos.checked_sub(pos.unsigned_abs()).ok_or(
-                            std::io::Error::new(
-                                std::io::ErrorKind::InvalidInput,
-                                "cannot seek below byte 0",
-                            ),
-                        )?,
-                        Ordering::Equal => return Ok(original_pos),
-                        Ordering::Greater => original_pos.checked_add(pos.unsigned_abs()).ok_or(
-                            std::io::Error::new(
-                                std::io::ErrorKind::InvalidInput,
-                                "seek offset too large",
-                            ),
-                        )?,
-                    }
-                }
-                std::io::SeekFrom::End(pos) => {
-                    // if the total samples is unknown in streaminfo,
-                    // we have no way to know where the file's end is
-                    // (this is a very unusual case)
-                    let max_pos: u64 = self.decoder.total_samples().map(|s| s.get()).ok_or(
-                        std::io::Error::new(
-                            std::io::ErrorKind::NotSeekable,
-                            "total samples not known",
-                        ),
-                    )?;
-
-                    match pos.cmp(&0) {
-                        Ordering::Less => {
-                            max_pos
-                                .checked_sub(pos.unsigned_abs())
-                                .ok_or(std::io::Error::new(
-                                    std::io::ErrorKind::InvalidInput,
-                                    "cannot seek below byte 0",
-                                ))?
-                        }
-                        Ordering::Equal => max_pos,
-                        Ordering::Greater => {
-                            return Err(std::io::Error::new(
-                                std::io::ErrorKind::InvalidInput,
-                                "cannot seek beyond end of file",
-                            ));
-                        }
-                    }
-                }
-            };
-
-        // perform seek in stream to the desired sample
-        // (this will usually be some position prior to the desired sample)
-        let mut new_pos =
-            self.decoder.seek(desired_pos / bytes_per_pcm_frame)? * bytes_per_pcm_frame;
-
-        // seeking invalidates current buffer
-        self.buf.clear();
-
-        // skip bytes to reach desired sample
-        while new_pos < desired_pos {
-            use std::io::BufRead;
-
-            let buf = self.fill_buf()?;
-
-            if !buf.is_empty() {
-                let to_skip = (usize::try_from(desired_pos - new_pos).unwrap()).min(buf.len());
-                self.consume(to_skip);
-                new_pos += to_skip as u64;
-            } else {
-                // attempting to seek beyond the end of the FLAC file
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::UnexpectedEof,
-                    "stream exhausted before sample reached",
-                ));
-            }
-        }
-
-        Ok(desired_pos)
-    }
-}
-
 /// A FLAC reader which outputs PCM samples as signed integers
 ///
 /// # Example
@@ -452,9 +353,11 @@ impl<R: std::io::Read> FlacSampleReader<R> {
     /// at the beginning (such as ID3v2 tags), one
     /// should skip such data before initializing a `FlacReader`.
     #[inline]
-    pub fn new(reader: R) -> Result<Self, Error> {
+    pub fn new(mut reader: R) -> Result<Self, Error> {
+        let blocklist = BlockList::read(reader.by_ref())?;
+
         Ok(Self {
-            decoder: Decoder::new(reader)?,
+            decoder: Decoder::new(reader, blocklist),
             buf: VecDeque::default(),
         })
     }
@@ -536,21 +439,300 @@ impl<R: std::io::Read> FlacSampleRead for FlacSampleReader<R> {
     }
 }
 
-impl<R: std::io::Read + std::io::Seek> FlacSampleReader<R> {
+/// A seekable FLAC reader which outputs PCM samples as bytes
+///
+/// This has an additional [`std::io::Seek`] bound over
+/// the wrapped reader in order to enable seeking.
+pub struct SeekableFlacReader<R, E> {
+    // our wrapped FLAC reader
+    reader: FlacReader<R, E>,
+    // start of first frame from known start of stream
+    frames_start: u64,
+}
+
+impl<R: std::io::Read + std::io::Seek, E: crate::byteorder::Endianness> SeekableFlacReader<R, E> {
+    /// Opens new seekable FLAC reader which wraps the given reader
+    ///
+    /// The reader must be positioned at the start of the
+    /// FLAC stream.  If the file has non-FLAC data
+    /// at the beginning (such as ID3v2 tags), one
+    /// should skip such data before initializing a `FlacReader`.
+    #[inline]
+    pub fn new(mut reader: R) -> Result<Self, Error> {
+        let blocklist = BlockList::read(reader.by_ref())?;
+        let frames_start = reader.stream_position()?;
+
+        Ok(Self {
+            frames_start,
+            reader: FlacReader {
+                decoder: Decoder::new(reader, blocklist),
+                buf: VecDeque::default(),
+                endianness: std::marker::PhantomData,
+            },
+        })
+    }
+
+    /// Opens new seekable FLAC reader in the given endianness
+    ///
+    /// The reader must be positioned at the start of the
+    /// FLAC stream.  If the file has non-FLAC data
+    /// at the beginning (such as ID3v2 tags), one
+    /// should skip such data before initializing a `FlacReader`.
+    #[inline]
+    pub fn endian(reader: R, _endian: E) -> Result<Self, Error> {
+        Self::new(reader)
+    }
+}
+
+impl<E: crate::byteorder::Endianness> SeekableFlacReader<BufReader<File>, E> {
+    /// Opens seekable FLAC file from the given path
+    #[inline]
+    pub fn open<P: AsRef<Path>>(path: P, _endianness: E) -> Result<Self, Error> {
+        SeekableFlacReader::new(BufReader::new(File::open(path.as_ref())?))
+    }
+}
+
+impl<R: std::io::Read, E: crate::byteorder::Endianness> std::io::Read for SeekableFlacReader<R, E> {
+    #[inline]
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.reader.read(buf)
+    }
+}
+
+impl<R: std::io::Read, E: crate::byteorder::Endianness> std::io::BufRead
+    for SeekableFlacReader<R, E>
+{
+    #[inline]
+    fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
+        self.reader.fill_buf()
+    }
+
+    fn consume(&mut self, amt: usize) {
+        self.reader.consume(amt);
+    }
+}
+
+impl<R: std::io::Read, E: crate::byteorder::Endianness> FlacMetadata for SeekableFlacReader<R, E> {
+    fn channel_count(&self) -> u8 {
+        self.reader.channel_count()
+    }
+
+    fn sample_rate(&self) -> u32 {
+        self.reader.sample_rate()
+    }
+
+    fn bits_per_sample(&self) -> u32 {
+        self.reader.bits_per_sample()
+    }
+
+    fn total_samples(&self) -> Option<u64> {
+        self.reader.total_samples()
+    }
+
+    fn md5(&self) -> Option<&[u8; 16]> {
+        self.reader.md5()
+    }
+
+    fn metadata(&self) -> &BlockList {
+        self.reader.metadata()
+    }
+}
+
+impl<R: std::io::Read + std::io::Seek, E: crate::byteorder::Endianness> std::io::Seek
+    for SeekableFlacReader<R, E>
+{
+    fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
+        use std::cmp::Ordering;
+
+        let FlacReader { decoder, buf, .. } = &mut self.reader;
+
+        let streaminfo = decoder.blocks.streaminfo();
+
+        let bytes_per_pcm_frame: u64 = (u32::from(streaminfo.bits_per_sample).div_ceil(8)
+            * u32::from(streaminfo.channels.get()))
+        .into();
+
+        // the desired absolute position in the stream, in bytes
+        let desired_pos: u64 =
+            match pos {
+                std::io::SeekFrom::Start(pos) => pos,
+                std::io::SeekFrom::Current(pos) => {
+                    // current position in bytes is current position in samples
+                    // converted to bytes *minus* the un-consumed space in the buffer
+                    // since the sample position is running ahead of the byte position
+                    let original_pos: u64 =
+                        (decoder.current_sample * bytes_per_pcm_frame) - (buf.len() as u64);
+
+                    match pos.cmp(&0) {
+                        Ordering::Less => original_pos.checked_sub(pos.unsigned_abs()).ok_or(
+                            std::io::Error::new(
+                                std::io::ErrorKind::InvalidInput,
+                                "cannot seek below byte 0",
+                            ),
+                        )?,
+                        Ordering::Equal => return Ok(original_pos),
+                        Ordering::Greater => original_pos.checked_add(pos.unsigned_abs()).ok_or(
+                            std::io::Error::new(
+                                std::io::ErrorKind::InvalidInput,
+                                "seek offset too large",
+                            ),
+                        )?,
+                    }
+                }
+                std::io::SeekFrom::End(pos) => {
+                    // if the total samples is unknown in streaminfo,
+                    // we have no way to know where the file's end is
+                    // (this is a very unusual case)
+                    let max_pos: u64 =
+                        decoder
+                            .total_samples()
+                            .map(|s| s.get())
+                            .ok_or(std::io::Error::new(
+                                std::io::ErrorKind::NotSeekable,
+                                "total samples not known",
+                            ))?;
+
+                    match pos.cmp(&0) {
+                        Ordering::Less => {
+                            max_pos
+                                .checked_sub(pos.unsigned_abs())
+                                .ok_or(std::io::Error::new(
+                                    std::io::ErrorKind::InvalidInput,
+                                    "cannot seek below byte 0",
+                                ))?
+                        }
+                        Ordering::Equal => max_pos,
+                        Ordering::Greater => {
+                            return Err(std::io::Error::new(
+                                std::io::ErrorKind::InvalidInput,
+                                "cannot seek beyond end of file",
+                            ));
+                        }
+                    }
+                }
+            };
+
+        // perform seek in stream to the desired sample
+        // (this will usually be some position prior to the desired sample)
+        let mut new_pos = decoder.seek(self.frames_start, desired_pos / bytes_per_pcm_frame)?
+            * bytes_per_pcm_frame;
+
+        // seeking invalidates current buffer
+        buf.clear();
+
+        // skip bytes to reach desired sample
+        while new_pos < desired_pos {
+            use std::io::BufRead;
+
+            let buf = self.reader.fill_buf()?;
+
+            if !buf.is_empty() {
+                let to_skip = (usize::try_from(desired_pos - new_pos).unwrap()).min(buf.len());
+                self.reader.consume(to_skip);
+                new_pos += to_skip as u64;
+            } else {
+                // attempting to seek beyond the end of the FLAC file
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "stream exhausted before sample reached",
+                ));
+            }
+        }
+
+        Ok(desired_pos)
+    }
+}
+
+/// A seekable FLAC reader which outputs PCM samples as signed integers
+pub struct SeekableFlacSampleReader<R> {
+    // the wrapped sample reader
+    reader: FlacSampleReader<R>,
+    // the start of the FLAC frames, in bytes
+    frames_start: u64,
+}
+
+impl<R: std::io::Read + std::io::Seek> SeekableFlacSampleReader<R> {
+    /// Opens new seekable FLAC reader which wraps the given reader
+    pub fn new(mut reader: R) -> Result<Self, Error> {
+        let blocklist = BlockList::read(reader.by_ref())?;
+        let frames_start = reader.stream_position()?;
+
+        Ok(Self {
+            frames_start,
+            reader: FlacSampleReader {
+                decoder: Decoder::new(reader, blocklist),
+                buf: VecDeque::default(),
+            },
+        })
+    }
+}
+
+impl SeekableFlacSampleReader<BufReader<File>> {
+    /// Opens seekable FLAC file from the given path
+    #[inline]
+    pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
+        SeekableFlacSampleReader::new(BufReader::new(File::open(path.as_ref())?))
+    }
+}
+
+impl<R: std::io::Read> FlacMetadata for SeekableFlacSampleReader<R> {
+    fn channel_count(&self) -> u8 {
+        self.reader.channel_count()
+    }
+
+    fn sample_rate(&self) -> u32 {
+        self.reader.sample_rate()
+    }
+
+    fn bits_per_sample(&self) -> u32 {
+        self.reader.bits_per_sample()
+    }
+
+    fn total_samples(&self) -> Option<u64> {
+        self.reader.total_samples()
+    }
+
+    fn md5(&self) -> Option<&[u8; 16]> {
+        self.reader.md5()
+    }
+
+    fn metadata(&self) -> &BlockList {
+        self.reader.metadata()
+    }
+}
+
+impl<R: std::io::Read> FlacSampleRead for SeekableFlacSampleReader<R> {
+    #[inline]
+    fn read(&mut self, samples: &mut [i32]) -> Result<usize, Error> {
+        self.reader.read(samples)
+    }
+
+    #[inline]
+    fn fill_buf(&mut self) -> Result<&[i32], Error> {
+        self.reader.fill_buf()
+    }
+
+    #[inline]
+    fn consume(&mut self, amt: usize) {
+        self.reader.consume(amt)
+    }
+}
+
+impl<R: std::io::Read + std::io::Seek> SeekableFlacSampleReader<R> {
     /// Seeks to the given channel-independent sample
     ///
     /// The sample is relative to the beginning of the stream
     pub fn seek(&mut self, sample: u64) -> Result<(), Error> {
-        let mut pos = self.decoder.seek(sample)?;
+        let mut pos = self.reader.decoder.seek(self.frames_start, sample)?;
 
         // seeking invalidates the current buffer
-        self.buf.clear();
+        self.reader.buf.clear();
 
         while pos < sample {
-            let buf = self.fill_buf()?;
+            let buf = self.reader.fill_buf()?;
             let to_consume = buf.len().min((sample - pos) as usize);
             pos += to_consume as u64;
-            self.consume(to_consume);
+            self.reader.consume(to_consume);
         }
 
         Ok(())
@@ -729,8 +911,8 @@ struct Decoder<R> {
     reader: R,
     // all metadata blocks
     blocks: BlockList,
-    // the size of everything before the first frame, in bytes
-    frames_start: u64,
+    // // the size of everything before the first frame, in bytes
+    // frames_start: u64,
     // the current sample, in channel-independent samples
     current_sample: u64,
     // raw decoded frame samples
@@ -748,22 +930,13 @@ impl<R: std::io::Read> Decoder<R> {
     /// Returns an error of the initial FLAC metadata
     /// is invalid or an I/O error occurs reading
     /// the initial metadata.
-    fn new(mut reader: R) -> Result<Self, Error> {
-        use crate::Counter;
-        use crate::metadata::read_blocks;
-        use std::io::Read;
-
-        let mut counter = Counter::new(reader.by_ref());
-
-        let blocks = read_blocks(counter.by_ref()).collect::<Result<Result<_, _>, _>>()??;
-
-        Ok(Self {
-            frames_start: counter.count,
+    fn new(reader: R, blocks: BlockList) -> Self {
+        Self {
             reader,
-            current_sample: 0,
             blocks,
+            current_sample: 0,
             buf: Frame::default(),
-        })
+        }
     }
 
     /// Returns channel count
@@ -867,7 +1040,7 @@ impl<R: std::io::Seek> Decoder<R> {
     ///
     /// Passes along an I/O error that occurs when seeking
     /// within the file.
-    fn seek(&mut self, sample: u64) -> Result<u64, Error> {
+    fn seek(&mut self, frames_start: u64, sample: u64) -> Result<u64, Error> {
         use crate::metadata::SeekPoint;
         use std::io::SeekFrom;
 
@@ -890,13 +1063,13 @@ impl<R: std::io::Seek> Decoder<R> {
                     }) => {
                         assert!(*sample_offset <= sample);
                         self.reader
-                            .seek(SeekFrom::Start(self.frames_start + byte_offset))?;
+                            .seek(SeekFrom::Start(frames_start + byte_offset))?;
                         self.current_sample = *sample_offset;
                         Ok(*sample_offset)
                     }
                     _ => {
                         // empty seektable so rewind to start of stream
-                        self.reader.seek(SeekFrom::Start(self.frames_start))?;
+                        self.reader.seek(SeekFrom::Start(frames_start))?;
                         self.current_sample = 0;
                         Ok(0)
                     }
@@ -905,7 +1078,7 @@ impl<R: std::io::Seek> Decoder<R> {
             None => {
                 // no seektable
                 // all we can do is rewind data to start of stream
-                self.reader.seek(SeekFrom::Start(self.frames_start))?;
+                self.reader.seek(SeekFrom::Start(frames_start))?;
                 self.current_sample = 0;
                 Ok(0)
             }
