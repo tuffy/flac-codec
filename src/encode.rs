@@ -33,7 +33,7 @@ const MAX_CHANNELS: usize = 8;
 /// use flac_codec::{
 ///     byteorder::LittleEndian,
 ///     encode::{FlacWriter, EncodingOptions},
-///     decode::{FlacReader, FlacMetadata},
+///     decode::{FlacReader, Metadata},
 /// };
 /// use std::io::{Cursor, Read, Seek, Write};
 ///

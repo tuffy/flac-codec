@@ -18,6 +18,8 @@ use std::io::BufReader;
 use std::num::NonZero;
 use std::path::Path;
 
+pub use crate::metadata::Metadata;
+
 trait SignedInteger:
     bitstream_io::SignedInteger + Into<i64> + std::ops::AddAssign + std::ops::Neg<Output = Self>
 {
@@ -48,34 +50,6 @@ impl SignedInteger for i64 {
     fn from_u32(u: u32) -> i64 {
         u as i64
     }
-}
-
-/// A trait for indicating various pieces of FLAC stream metadata
-pub trait FlacMetadata {
-    /// Returns channel count
-    ///
-    /// From 1 to 8
-    fn channel_count(&self) -> u8;
-
-    /// Returns sample rate, in Hz
-    fn sample_rate(&self) -> u32;
-
-    /// Returns decoder's bits-per-sample
-    ///
-    /// From 1 to 32
-    fn bits_per_sample(&self) -> u32;
-
-    /// Returns total number of channel-independent samples, if known
-    fn total_samples(&self) -> Option<u64>;
-
-    /// Returns MD5 of entire stream, if known
-    ///
-    /// MD5 is always calculated in terms of little-endian,
-    /// signed, byte-aligned values.
-    fn md5(&self) -> Option<&[u8; 16]>;
-
-    /// Returns FLAC metadata
-    fn metadata(&self) -> &BlockList;
 }
 
 /// A `Read`-like trait for signed integer samples
@@ -123,7 +97,7 @@ pub trait FlacSampleRead {
 /// use flac_codec::{
 ///     byteorder::LittleEndian,
 ///     encode::{FlacWriter, EncodingOptions},
-///     decode::{FlacReader, FlacMetadata},
+///     decode::{FlacReader, Metadata},
 /// };
 /// use std::io::{Cursor, Read, Seek, Write};
 ///
@@ -200,9 +174,15 @@ impl<R: std::io::Read, E: crate::byteorder::Endianness> FlacReader<R, E> {
     pub fn endian(reader: R, _endian: E) -> Result<Self, Error> {
         Self::new(reader)
     }
+
+    /// Returns FLAC metadata blocks
+    #[inline]
+    pub fn metadata(&self) -> &BlockList {
+        self.decoder.metadata()
+    }
 }
 
-impl<R: std::io::Read, E: crate::byteorder::Endianness> FlacMetadata for FlacReader<R, E> {
+impl<R: std::io::Read, E: crate::byteorder::Endianness> Metadata for FlacReader<R, E> {
     #[inline]
     fn channel_count(&self) -> u8 {
         self.decoder.channel_count().get()
@@ -226,11 +206,6 @@ impl<R: std::io::Read, E: crate::byteorder::Endianness> FlacMetadata for FlacRea
     #[inline]
     fn md5(&self) -> Option<&[u8; 16]> {
         self.decoder.md5()
-    }
-
-    #[inline]
-    fn metadata(&self) -> &BlockList {
-        self.decoder.metadata()
     }
 }
 
@@ -363,6 +338,12 @@ impl<R: std::io::Read> FlacSampleReader<R> {
             buf: VecDeque::default(),
         })
     }
+
+    /// Returns FLAC metadata blocks
+    #[inline]
+    pub fn metadata(&self) -> &BlockList {
+        self.decoder.metadata()
+    }
 }
 
 impl FlacSampleReader<BufReader<File>> {
@@ -373,7 +354,7 @@ impl FlacSampleReader<BufReader<File>> {
     }
 }
 
-impl<R: std::io::Read> FlacMetadata for FlacSampleReader<R> {
+impl<R: std::io::Read> Metadata for FlacSampleReader<R> {
     #[inline]
     fn channel_count(&self) -> u8 {
         self.decoder.channel_count().get()
@@ -397,11 +378,6 @@ impl<R: std::io::Read> FlacMetadata for FlacSampleReader<R> {
     #[inline]
     fn md5(&self) -> Option<&[u8; 16]> {
         self.decoder.md5()
-    }
-
-    #[inline]
-    fn metadata(&self) -> &BlockList {
-        self.decoder.metadata()
     }
 }
 
@@ -515,7 +491,7 @@ impl<R: std::io::Read, E: crate::byteorder::Endianness> std::io::BufRead
     }
 }
 
-impl<R: std::io::Read, E: crate::byteorder::Endianness> FlacMetadata for SeekableFlacReader<R, E> {
+impl<R: std::io::Read, E: crate::byteorder::Endianness> Metadata for SeekableFlacReader<R, E> {
     fn channel_count(&self) -> u8 {
         self.reader.channel_count()
     }
@@ -534,10 +510,6 @@ impl<R: std::io::Read, E: crate::byteorder::Endianness> FlacMetadata for Seekabl
 
     fn md5(&self) -> Option<&[u8; 16]> {
         self.reader.md5()
-    }
-
-    fn metadata(&self) -> &BlockList {
-        self.reader.metadata()
     }
 }
 
@@ -679,7 +651,7 @@ impl SeekableFlacSampleReader<BufReader<File>> {
     }
 }
 
-impl<R: std::io::Read> FlacMetadata for SeekableFlacSampleReader<R> {
+impl<R: std::io::Read> Metadata for SeekableFlacSampleReader<R> {
     fn channel_count(&self) -> u8 {
         self.reader.channel_count()
     }
@@ -698,10 +670,6 @@ impl<R: std::io::Read> FlacMetadata for SeekableFlacSampleReader<R> {
 
     fn md5(&self) -> Option<&[u8; 16]> {
         self.reader.md5()
-    }
-
-    fn metadata(&self) -> &BlockList {
-        self.reader.metadata()
     }
 }
 

@@ -19,6 +19,60 @@ use std::io::BufReader;
 use std::num::NonZero;
 use std::path::Path;
 
+/// A trait for indicating various pieces of FLAC stream metadata
+///
+/// This metadata may be necessary for decoding a FLAC file
+/// to some other container or an output stream.
+pub trait Metadata {
+    /// Returns channel count
+    ///
+    /// From 1 to 8
+    fn channel_count(&self) -> u8;
+
+    /// Returns sample rate, in Hz
+    fn sample_rate(&self) -> u32;
+
+    /// Returns decoder's bits-per-sample
+    ///
+    /// From 1 to 32
+    fn bits_per_sample(&self) -> u32;
+
+    /// Returns total number of channel-independent samples, if known
+    fn total_samples(&self) -> Option<u64> {
+        None
+    }
+
+    /// Returns MD5 of entire stream, if known
+    ///
+    /// MD5 is always calculated in terms of little-endian,
+    /// signed, byte-aligned values.
+    fn md5(&self) -> Option<&[u8; 16]> {
+        None
+    }
+
+    /// Returns total length of decoded file, in bytes
+    fn decoded_len(&self) -> Option<u64> {
+        self.total_samples().map(|s| {
+            s * u64::from(self.channel_count()) * u64::from(self.bits_per_sample().div_ceil(8))
+        })
+    }
+
+    /// Returns duration of file
+    fn duration(&self) -> Option<std::time::Duration> {
+        const NANOS_PER_SEC: u64 = 1_000_000_000;
+
+        let sample_rate = u64::from(self.sample_rate());
+
+        self.total_samples().map(|s| {
+            std::time::Duration::new(
+                s / sample_rate,
+                u32::try_from(((s % sample_rate) * NANOS_PER_SEC) / sample_rate)
+                    .unwrap_or_default(),
+            )
+        })
+    }
+}
+
 /// A FLAC metadata block header
 ///
 /// | Bits | Field | Meaning |
@@ -1174,6 +1228,28 @@ impl Streaminfo {
 }
 
 block!(Streaminfo, Streaminfo, false);
+
+impl Metadata for Streaminfo {
+    fn channel_count(&self) -> u8 {
+        self.channels.get()
+    }
+
+    fn sample_rate(&self) -> u32 {
+        self.sample_rate
+    }
+
+    fn bits_per_sample(&self) -> u32 {
+        self.bits_per_sample.into()
+    }
+
+    fn total_samples(&self) -> Option<u64> {
+        self.total_samples.map(|s| s.get())
+    }
+
+    fn md5(&self) -> Option<&[u8; 16]> {
+        self.md5.as_ref()
+    }
+}
 
 impl FromBitStream for Streaminfo {
     type Error = std::io::Error;
@@ -2727,6 +2803,28 @@ impl BlockList {
                 self.blocks.push(b.into());
             }
         }
+    }
+}
+
+impl Metadata for BlockList {
+    fn channel_count(&self) -> u8 {
+        self.streaminfo.channels.get()
+    }
+
+    fn sample_rate(&self) -> u32 {
+        self.streaminfo.sample_rate
+    }
+
+    fn bits_per_sample(&self) -> u32 {
+        self.streaminfo.bits_per_sample.into()
+    }
+
+    fn total_samples(&self) -> Option<u64> {
+        self.streaminfo.total_samples.map(|s| s.get())
+    }
+
+    fn md5(&self) -> Option<&[u8; 16]> {
+        self.streaminfo.md5.as_ref()
     }
 }
 
