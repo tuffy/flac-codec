@@ -1,7 +1,7 @@
 use flac_codec::{
     byteorder::LittleEndian,
     decode::{FlacReader, FlacSampleRead, FlacSampleReader},
-    encode::{EncodingOptions, FlacSampleWriter, FlacWriter},
+    encode::{Options, FlacSampleWriter, FlacWriter},
 };
 use std::io::{Cursor, Read, Seek, Write};
 use std::num::NonZero;
@@ -41,7 +41,7 @@ fn test_small_files() {
                 &mut FlacWriter::endian(
                     &mut flac,
                     LittleEndian,
-                    EncodingOptions::fast()
+                    Options::fast()
                         .max_lpc_order(NonZero::new(16))
                         .unwrap()
                         .mid_side(true)
@@ -91,7 +91,7 @@ fn test_blocksize_variations() {
                     &mut FlacWriter::endian(
                         &mut flac,
                         LittleEndian,
-                        EncodingOptions::best()
+                        Options::best()
                             .max_lpc_order(NonZero::new(*lpc_order))
                             .unwrap()
                             .block_size(blocksize)
@@ -140,7 +140,7 @@ fn test_fractional() {
                 &mut FlacWriter::endian(
                     &mut flac,
                     LittleEndian,
-                    EncodingOptions::default()
+                    Options::default()
                         .block_size(blocksize)
                         .unwrap()
                         .no_padding(),
@@ -400,7 +400,7 @@ fn test_roundtrip() {
             FlacWriter::endian(
                 &mut flac,
                 LittleEndian,
-                EncodingOptions::default().no_padding(),
+                Options::default().no_padding(),
                 44100,
                 bps as u32,
                 channels as u8,
@@ -587,7 +587,7 @@ fn test_full_scale_deflection() {
         let mut w = FlacWriter::endian(
             &mut flac,
             LittleEndian,
-            EncodingOptions::default().no_padding(),
+            Options::default().no_padding(),
             44100,
             bps,
             1,
@@ -630,7 +630,7 @@ fn test_wasted_bits() {
         FlacWriter::endian(
             &mut flac,
             LittleEndian,
-            EncodingOptions::default().no_padding(),
+            Options::default().no_padding(),
             44100,
             16,
             1,
@@ -743,7 +743,7 @@ fn test_sine_wave_streams() {
 
         let mut w = FlacSampleWriter::new(
             &mut flac,
-            EncodingOptions::default(),
+            Options::default(),
             SAMPLE_RATE,
             u32::from(bits_per_sample),
             match STEREO {
@@ -989,9 +989,9 @@ fn test_noise() {
                             LittleEndian,
                             {
                                 let mut opt = match option {
-                                    None => EncodingOptions::default(),
-                                    Some(Opt::Fast) => EncodingOptions::fast(),
-                                    Some(Opt::Best) => EncodingOptions::best(),
+                                    None => Options::default(),
+                                    Some(Opt::Fast) => Options::fast(),
+                                    Some(Opt::Best) => Options::best(),
                                 };
                                 opt = match block_size {
                                     None => opt,

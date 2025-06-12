@@ -96,7 +96,7 @@ pub trait FlacSampleRead {
 /// ```
 /// use flac_codec::{
 ///     byteorder::LittleEndian,
-///     encode::{FlacWriter, EncodingOptions},
+///     encode::{FlacWriter, Options},
 ///     decode::{FlacReader, Metadata},
 /// };
 /// use std::io::{Cursor, Read, Seek, Write};
@@ -104,13 +104,13 @@ pub trait FlacSampleRead {
 /// let mut flac = Cursor::new(vec![]);  // a FLAC file in memory
 ///
 /// let mut writer = FlacWriter::endian(
-///     &mut flac,                   // our wrapped writer
-///     LittleEndian,                // .wav-style byte order
-///     EncodingOptions::default(),  // default encoding options
-///     44100,                       // sample rate
-///     16,                          // bits-per-sample
-///     1,                           // channel count
-///     Some(2000),                  // total bytes
+///     &mut flac,           // our wrapped writer
+///     LittleEndian,        // .wav-style byte order
+///     Options::default(),  // default encoding options
+///     44100,               // sample rate
+///     16,                  // bits-per-sample
+///     1,                   // channel count
+///     Some(2000),          // total bytes
 /// ).unwrap();
 ///
 /// // write 1000 samples as signed, little-endian bytes
@@ -279,7 +279,7 @@ impl<R: std::io::Read, E: crate::byteorder::Endianness> std::io::BufRead for Fla
 ///
 /// ```
 /// use flac_codec::{
-///     encode::{FlacSampleWriter, EncodingOptions},
+///     encode::{FlacSampleWriter, Options},
 ///     decode::{FlacSampleReader, FlacSampleRead},
 /// };
 /// use std::io::{Cursor, Seek};
@@ -289,7 +289,7 @@ impl<R: std::io::Read, E: crate::byteorder::Endianness> std::io::BufRead for Fla
 ///
 /// let mut writer = FlacSampleWriter::new(
 ///     &mut flac,                   // our wrapped writer
-///     EncodingOptions::default(),  // default encoding options
+///     Options::default(),  // default encoding options
 ///     44100,                       // sample rate
 ///     16,                          // bits-per-sample
 ///     1,                           // channel count
@@ -722,7 +722,7 @@ impl<R: std::io::Read + std::io::Seek> SeekableFlacSampleReader<R> {
 /// ```
 /// use flac_codec::{
 ///     decode::{FlacStreamReader, FrameBuf},
-///     encode::{FlacStreamWriter, EncodingOptions},
+///     encode::{FlacStreamWriter, Options},
 /// };
 /// use std::io::{Cursor, Seek};
 /// use std::num::NonZero;
@@ -732,7 +732,7 @@ impl<R: std::io::Read + std::io::Seek> SeekableFlacSampleReader<R> {
 ///
 /// let samples = (0..100).collect::<Vec<i32>>();
 ///
-/// let mut w = FlacStreamWriter::new(&mut flac, EncodingOptions::default());
+/// let mut w = FlacStreamWriter::new(&mut flac, Options::default());
 ///
 /// // write a single FLAC frame with some samples
 /// w.write(

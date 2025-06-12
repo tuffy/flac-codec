@@ -32,7 +32,7 @@ const MAX_CHANNELS: usize = 8;
 /// ```
 /// use flac_codec::{
 ///     byteorder::LittleEndian,
-///     encode::{FlacWriter, EncodingOptions},
+///     encode::{FlacWriter, Options},
 ///     decode::{FlacReader, Metadata},
 /// };
 /// use std::io::{Cursor, Read, Seek, Write};
@@ -40,13 +40,13 @@ const MAX_CHANNELS: usize = 8;
 /// let mut flac = Cursor::new(vec![]);  // a FLAC file in memory
 ///
 /// let mut writer = FlacWriter::endian(
-///     &mut flac,                   // our wrapped writer
-///     LittleEndian,                // .wav-style byte order
-///     EncodingOptions::default(),  // default encoding options
-///     44100,                       // sample rate
-///     16,                          // bits-per-sample
-///     1,                           // channel count
-///     Some(2000),                  // total bytes
+///     &mut flac,           // our wrapped writer
+///     LittleEndian,        // .wav-style byte order
+///     Options::default(),  // default encoding options
+///     44100,               // sample rate
+///     16,                  // bits-per-sample
+///     1,                   // channel count
+///     Some(2000),          // total bytes
 /// ).unwrap();
 ///
 /// // write 1000 samples as signed, little-endian bytes
@@ -114,7 +114,7 @@ impl<W: std::io::Write + std::io::Seek, E: crate::byteorder::Endianness> FlacWri
     /// Returns error if any of the encoding parameters are invalid.
     pub fn new(
         writer: W,
-        options: EncodingOptions,
+        options: Options,
         sample_rate: u32,
         bits_per_sample: u32,
         channels: u8,
@@ -179,7 +179,7 @@ impl<W: std::io::Write + std::io::Seek, E: crate::byteorder::Endianness> FlacWri
     /// Returns error if any of the encoding parameters are invalid.
     pub fn new_cdda(
         writer: W,
-        options: EncodingOptions,
+        options: Options,
         total_bytes: Option<impl TryInto<NonZero<u64>>>,
     ) -> Result<Self, Error> {
         Self::new(writer, options, 44100, 16, 2, total_bytes)
@@ -208,7 +208,7 @@ impl<W: std::io::Write + std::io::Seek, E: crate::byteorder::Endianness> FlacWri
     pub fn endian(
         writer: W,
         _endianness: E,
-        options: EncodingOptions,
+        options: Options,
         sample_rate: u32,
         bits_per_sample: u32,
         channels: u8,
@@ -289,7 +289,7 @@ impl<E: crate::byteorder::Endianness> FlacWriter<BufWriter<File>, E> {
     #[inline]
     pub fn create<P: AsRef<Path>>(
         path: P,
-        options: EncodingOptions,
+        options: Options,
         sample_rate: u32,
         bits_per_sample: u32,
         channels: u8,
@@ -321,7 +321,7 @@ impl<E: crate::byteorder::Endianness> FlacWriter<BufWriter<File>, E> {
     /// metadata blocks.
     pub fn create_cdda<P: AsRef<Path>>(
         path: P,
-        options: EncodingOptions,
+        options: Options,
         total_bytes: Option<impl TryInto<NonZero<u64>>>,
     ) -> Result<Self, Error> {
         Self::create(path, options, 44100, 16, 2, total_bytes)
@@ -389,7 +389,7 @@ impl<W: std::io::Write + std::io::Seek, E: crate::byteorder::Endianness> Drop fo
 ///
 /// ```
 /// use flac_codec::{
-///     encode::{FlacSampleWriter, EncodingOptions},
+///     encode::{FlacSampleWriter, Options},
 ///     decode::{FlacSampleReader, FlacSampleRead},
 /// };
 /// use std::io::{Cursor, Seek};
@@ -399,7 +399,7 @@ impl<W: std::io::Write + std::io::Seek, E: crate::byteorder::Endianness> Drop fo
 ///
 /// let mut writer = FlacSampleWriter::new(
 ///     &mut flac,                   // our wrapped writer
-///     EncodingOptions::default(),  // default encoding options
+///     Options::default(),  // default encoding options
 ///     44100,                       // sample rate
 ///     16,                          // bits-per-sample
 ///     1,                           // channel count
@@ -466,7 +466,7 @@ impl<W: std::io::Write + std::io::Seek> FlacSampleWriter<W> {
     /// Returns error if any of the encoding parameters are invalid.
     pub fn new(
         writer: W,
-        options: EncodingOptions,
+        options: Options,
         sample_rate: u32,
         bits_per_sample: u32,
         channels: u8,
@@ -527,7 +527,7 @@ impl<W: std::io::Write + std::io::Seek> FlacSampleWriter<W> {
     /// Returns error if any of the encoding parameters are invalid.
     pub fn new_cdda(
         writer: W,
-        options: EncodingOptions,
+        options: Options,
         total_samples: Option<impl TryInto<NonZero<u64>>>,
     ) -> Result<Self, Error> {
         Self::new(writer, options, 44100, 16, 2, total_samples)
@@ -628,7 +628,7 @@ impl FlacSampleWriter<BufWriter<File>> {
     #[inline]
     pub fn create<P: AsRef<Path>>(
         path: P,
-        options: EncodingOptions,
+        options: Options,
         sample_rate: u32,
         bits_per_sample: u32,
         channels: u8,
@@ -661,7 +661,7 @@ impl FlacSampleWriter<BufWriter<File>> {
     #[inline]
     pub fn create_cdda<P: AsRef<Path>>(
         path: P,
-        options: EncodingOptions,
+        options: Options,
         total_samples: Option<impl TryInto<NonZero<u64>>>,
     ) -> Result<Self, Error> {
         Self::create(path, options, 44100, 16, 2, total_samples)
@@ -678,7 +678,7 @@ impl FlacSampleWriter<BufWriter<File>> {
 /// ```
 /// use flac_codec::{
 ///     decode::{FlacStreamReader, FrameBuf},
-///     encode::{FlacStreamWriter, EncodingOptions},
+///     encode::{FlacStreamWriter, Options},
 /// };
 /// use std::io::{Cursor, Seek};
 /// use std::num::NonZero;
@@ -688,7 +688,7 @@ impl FlacSampleWriter<BufWriter<File>> {
 ///
 /// let samples = (0..100).collect::<Vec<i32>>();
 ///
-/// let mut w = FlacStreamWriter::new(&mut flac, EncodingOptions::default());
+/// let mut w = FlacStreamWriter::new(&mut flac, Options::default());
 ///
 /// // write a single FLAC frame with some samples
 /// w.write(
@@ -717,7 +717,7 @@ pub struct FlacStreamWriter<W> {
     // the writer we're outputting to
     writer: W,
     // various encoding optins
-    options: Options,
+    options: EncoderOptions,
     // various encoder caches
     caches: EncodingCaches,
     // a whole set of samples for a FLAC frame
@@ -728,10 +728,10 @@ pub struct FlacStreamWriter<W> {
 
 impl<W: std::io::Write> FlacStreamWriter<W> {
     /// Creates new stream writer
-    pub fn new(writer: W, options: EncodingOptions) -> Self {
+    pub fn new(writer: W, options: Options) -> Self {
         Self {
             writer,
-            options: Options {
+            options: EncoderOptions {
                 max_partition_order: options.max_partition_order,
                 mid_side: options.mid_side,
                 seektable_style: options.seektable_style,
@@ -993,7 +993,7 @@ impl SeektableStyle {
 
 /// FLAC encoding options
 #[derive(Clone, Debug)]
-pub struct EncodingOptions {
+pub struct Options {
     block_size: u16,
     max_partition_order: u32,
     mid_side: bool,
@@ -1003,7 +1003,7 @@ pub struct EncodingOptions {
     window: Window,
 }
 
-impl Default for EncodingOptions {
+impl Default for Options {
     fn default() -> Self {
         // a dummy placeholder value
         // since we can't know the stream parameters yet
@@ -1035,7 +1035,7 @@ impl Default for EncodingOptions {
     }
 }
 
-impl EncodingOptions {
+impl Options {
     /// Sets new block size
     ///
     /// Block size must be ≥ 16
@@ -1249,8 +1249,8 @@ impl std::fmt::Display for OptionsError {
     }
 }
 
-/// A cut-down version of EncodingOptions without the metadata blocks
-struct Options {
+/// A cut-down version of Options without the metadata blocks
+struct EncoderOptions {
     max_partition_order: u32,
     mid_side: bool,
     seektable_style: SeektableStyle,
@@ -1400,7 +1400,7 @@ struct Encoder<W: std::io::Write + std::io::Seek> {
     // the stream's starting offset in the writer, in bytes
     start: u64,
     // various encoding options
-    options: Options,
+    options: EncoderOptions,
     // various encoder caches
     caches: EncodingCaches,
     // our metadata blocks
@@ -1424,7 +1424,7 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
 
     fn new(
         mut writer: W,
-        options: EncodingOptions,
+        options: Options,
         sample_rate: u32,
         bits_per_sample: impl TryInto<SignedBitCount<32>>,
         channels: u8,
@@ -1477,7 +1477,7 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
         Ok(Self {
             start,
             writer: Counter::new(writer),
-            options: Options {
+            options: EncoderOptions {
                 max_partition_order: options.max_partition_order,
                 mid_side: options.mid_side,
                 seektable_style: options.seektable_style,
@@ -1669,7 +1669,7 @@ impl From<EncoderSeekPoint> for SeekPoint {
 }
 
 fn encode_frame<W>(
-    options: &Options,
+    options: &EncoderOptions,
     cache: &mut EncodingCaches,
     mut writer: W,
     streaminfo: &mut Streaminfo,
@@ -1844,7 +1844,7 @@ impl<'c> CorrelatedChannel<'c> {
 }
 
 fn correlate_channels<'c>(
-    options: &Options,
+    options: &EncoderOptions,
     CorrelationCache {
         average_samples,
         difference_samples,
@@ -2057,7 +2057,7 @@ fn correlate_channels<'c>(
 }
 
 fn encode_subframe<'c>(
-    options: &Options,
+    options: &EncoderOptions,
     ChannelCache {
         fixed: fixed_cache,
         fixed_output,
@@ -2228,7 +2228,7 @@ fn encode_verbatim_subframe<W: BitWrite>(
 }
 
 fn encode_fixed_subframe<W: BitWrite>(
-    options: &Options,
+    options: &EncoderOptions,
     FixedCache {
         fixed_buffers: buffers,
     }: &mut FixedCache,
@@ -2298,7 +2298,7 @@ fn encode_fixed_subframe<W: BitWrite>(
 }
 
 fn encode_lpc_subframe<W: BitWrite>(
-    options: &Options,
+    options: &EncoderOptions,
     max_lpc_order: NonZero<u8>,
     cache: &mut LpcCache,
     writer: &mut W,
@@ -2353,7 +2353,7 @@ struct LpcSubframeParameters<'w, 'r> {
 
 impl<'w, 'r> LpcSubframeParameters<'w, 'r> {
     fn best(
-        options: &Options,
+        options: &EncoderOptions,
         bits_per_sample: SignedBitCount<32>,
         max_lpc_order: NonZero<u8>,
         LpcCache {
@@ -2498,7 +2498,7 @@ struct LpcParameters {
 
 impl LpcParameters {
     fn best(
-        options: &Options,
+        options: &EncoderOptions,
         bits_per_sample: SignedBitCount<32>,
         max_lpc_order: NonZero<u8>,
         window: &mut Vec<f64>,
@@ -2695,7 +2695,7 @@ fn estimate_best_order(
 }
 
 fn write_residuals<W: BitWrite>(
-    options: &Options,
+    options: &EncoderOptions,
     writer: &mut W,
     predictor_order: usize,
     residuals: &[i32],
@@ -2782,7 +2782,7 @@ fn write_residuals<W: BitWrite>(
     }
 
     fn best_partitions<'r, const RICE_MAX: u32>(
-        options: &Options,
+        options: &EncoderOptions,
         block_size: usize,
         residuals: &'r [i32],
     ) -> ArrayVec<Partition<'r, RICE_MAX>, MAX_PARTITIONS> {
@@ -2815,7 +2815,7 @@ fn write_residuals<W: BitWrite>(
     }
 
     fn write_block<const RICE_MAX: u32, W: BitWrite>(
-        options: &Options,
+        options: &EncoderOptions,
         writer: &mut W,
         predictor_order: usize,
         residuals: &[i32],
