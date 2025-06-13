@@ -1399,14 +1399,14 @@ pub enum SubframeType {
 ///
 /// This is always a 6-bit field.
 ///
-/// | Bits     | Type and Order
-/// |----------|---------------
-/// | `000000` | Constant
-/// | `000001` | Verbatim
-/// | `000010` to `000111` | reserved
-/// | `001000` to `001100` | Fixed subframe with order `v - 8`
-/// | `001101` to `011111` | reserved
-/// | `100000` to `111111` | LPC subframe with order `v - 31`
+/// | Bits     | Type | Order
+/// |----------|------|--------
+/// | `000000` | CONSTANT | N/A
+/// | `000001` | VERBATIM | N/A
+/// | `000010` to `000111` | reserved | N/A
+/// | `001000` to `001100` | FIXED    | `v - 8`
+/// | `001101` to `011111` | reserved | N/A
+/// | `100000` to `111111` | LPC      | `v - 31`
 #[derive(Debug, Eq, PartialEq)]
 pub enum SubframeHeaderType {
     /// All samples are the same
