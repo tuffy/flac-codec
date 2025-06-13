@@ -895,7 +895,7 @@ pub struct FrameBuf<'s> {
 pub enum Verified {
     /// FLAC file has MD5 hash and decoded contents match that hash
     MD5Match,
-    /// FLAC file has MD5 hash, but decoded contents to not match
+    /// FLAC file has MD5 hash, but decoded contents do not match
     MD5Mismatch,
     /// FLAC file has no MD5 hash, but decodes successfully
     NoMD5,

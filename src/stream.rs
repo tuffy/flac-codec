@@ -1874,6 +1874,18 @@ impl Frame {
 }
 
 /// A 32 or 64-bit FLAC file subframe
+///
+/// The FLAC format itself is limited to 32-bit samples
+/// for input and output, as shown in the STREAMINFO metadata
+/// block.  However, channel correlation means that the
+/// side (difference) channel needs 1 additional bit.
+/// Therefore, the side channel of a 32-bit stereo stream
+/// needs *33* bits to store its samples.
+///
+/// Such subframes are considered "wide" and need to
+/// handle 64-bit samples internally.
+///
+/// This is an extremely rare case in practice.
 #[derive(Debug, Eq, PartialEq)]
 pub enum SubframeWidth {
     /// A common 32-bit subframe
@@ -1887,8 +1899,15 @@ pub enum SubframeWidth {
 pub enum Subframe<I> {
     /// A CONSTANT subframe, in which all samples are identical
     ///
+    /// | Bits                       | Meaning           |
+    /// |----------------------------|-------------------|
+    /// | subframe's bits-per-sample | subframe's sample |
+    ///
+    /// This single sample is repeated for all the samples in the subframe.
+    ///
     /// This is typically for long stretches of silence,
-    /// or for when both channels are identical in a stereo stream.
+    /// or for the difference channel when both channels are
+    /// identical in a stereo stream (false stereo).
     ///
     /// # Example
     ///
@@ -1926,6 +1945,15 @@ pub enum Subframe<I> {
         wasted_bps: u32,
     },
     /// A VERBATIM subframe, in which all samples are stored uncompressed
+    ///
+    /// | Bits           | Meaning |
+    /// |----------------|---------|
+    /// | subframe's bps | sample₀ |
+    /// | subframe's bps | sample₁ |
+    /// | subframe's bps | sample₂ |
+    /// |                | ⋮       |
+    ///
+    /// The number of samples equals the frame's block size.
     ///
     /// This is for random noise which does not compress well
     /// by any other method.
@@ -1972,6 +2000,23 @@ pub enum Subframe<I> {
         wasted_bps: u32,
     },
     /// A FIXED subframe, encoded with a fixed set of parameters
+    ///
+    /// | Bits           | Meaning         |
+    /// |----------------|-----------------|
+    /// | subframe's bps | warm-up sample₀ |
+    /// | subframe's bps | warm-up sample₁ |
+    /// | subframe's bps | warm-up sample₂ |
+    /// |                | ⋮               |
+    /// |                | [`Residuals`]   |
+    ///
+    /// The number of warm-up simples equals the subframe's
+    /// predictor order (from the subframe header).
+    ///
+    /// FIXED subframes have predictor coefficients that are
+    /// defined by their predictor order.  Because those coefficients
+    /// require no floating-point math to calculate, these subframes
+    /// can be encoded by limited hardware with no floating-point
+    /// capabilities.
     ///
     /// # Example
     ///
@@ -2026,6 +2071,28 @@ pub enum Subframe<I> {
     },
     /// An LPC subframe, encoded with a variable set of parameters
     ///
+    /// | Bits           | Meaning         |
+    /// |----------------|-----------------|
+    /// | subframe's bps | warm-up sample₀ |
+    /// | subframe's bps | warm-up sample₁ |
+    /// | subframe's bps | warm-up sample₂ |
+    /// |                | ⋮               |
+    /// | 4              | precision (+1)  |
+    /// | 5              | shift           |
+    /// | `precision`    | coefficient₀    |
+    /// | `precision`    | coefficient₁    |
+    /// | `precision`    | coefficient₂    |
+    /// |                | ⋮               |
+    /// |                | [`Residuals`]   |
+    ///
+    /// The number of warm-up samples *and* number of predictor
+    /// coefficients is equal to the subframe's predictor order
+    /// (from the subframe header).  The `precision` value
+    /// is used to determine the size of the predictor coefficients.
+    /// The `shift` value is stored as a signed integer,
+    /// but negative shifts are *not* supported by the format
+    /// and should be considered an error.
+    ///
     /// # Example
     ///
     /// ```
@@ -2059,7 +2126,7 @@ pub enum Subframe<I> {
     ///         // shift is a 5 bit value
     ///         shift: 0b0101_1,  // 11
     ///         // the total number of coefficients equals the predictor order (1)
-    ///         // size of each coefficient is a signed 12-bit value, from precision
+    ///         // size of each coefficient is a signed 12-bit value (from precision)
     ///         coefficients: vec![0b0111110_00101],  // 1989
     ///         // the total number of residuals equals the block size
     ///         // minus the predictor order,
