@@ -1327,7 +1327,7 @@ fn test_frame_number() {
 /// | Bits | Field   | Meaning
 /// |-----:|---------|--------
 /// | 1    | pad (0) |
-/// | 6    | `type_` | subframe type and order (if any)
+/// | 6    | `type_` | subframe type and (if any) order
 /// | 1    | has wasted bits | whether the subframe has wasted bits-per-sample
 /// | (0+) | `wasted_bps`| the number of wasted bits-per-sample, as unary
 ///

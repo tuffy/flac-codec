@@ -816,6 +816,9 @@ where
         Ok(())
     }
 
+    // the starting position in the stream we rewind to
+    let start = std::io::SeekFrom::Start(original.stream_position().map_err(Error::Io)?);
+
     let mut reader = Counter::new(BufReader::new(&mut original));
 
     let mut blocks = BlockList::read(Read::by_ref(&mut reader))?;
@@ -839,7 +842,7 @@ where
             // PADDING block to hold additional bytes
             match grow_padding(&mut blocks, old_size - new_size) {
                 Ok(()) => {
-                    original.rewind().map_err(Error::Io)?;
+                    original.seek(start).map_err(Error::Io)?;
                     write_blocks(blocks, BufWriter::new(original))?
                 }
                 Err(()) => rebuild_file(rebuilt, reader, blocks)?,
@@ -848,7 +851,7 @@ where
         }
         Ordering::Equal => {
             // blocks are the same size, so no need to adjust padding
-            original.rewind().map_err(Error::Io)?;
+            original.seek(start).map_err(Error::Io)?;
             Ok(write_blocks(blocks, BufWriter::new(original))?)
         }
         Ordering::Greater => {
@@ -856,7 +859,7 @@ where
             // PADDING block to hold additional bytes
             match shrink_padding(&mut blocks, new_size - old_size) {
                 Ok(()) => {
-                    original.rewind().map_err(Error::Io)?;
+                    original.seek(start).map_err(Error::Io)?;
                     write_blocks(blocks.into_iter(), BufWriter::new(original))?
                 }
                 Err(()) => rebuild_file(rebuilt, reader, blocks)?,
