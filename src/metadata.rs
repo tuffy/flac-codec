@@ -7,6 +7,9 @@
 // except according to those terms.
 
 //! For handling a FLAC file's metadata blocks
+//!
+//! Many items are capitalized simply because they were capitalized
+//! in the original FLAC format documentation.
 
 use crate::Error;
 use bitstream_io::{
@@ -1118,9 +1121,11 @@ macro_rules! optional_block {
 
 /// A STREAMINFO metadata block
 ///
-/// This block must *always* be present in a FLAC file,
+/// This block contains metadata about the stream's contents.
+///
+/// It must *always* be present in a FLAC file,
 /// must *always* be the first metadata block in the stream,
-/// and must not be present more than once.
+/// and must *not* be present more than once.
 ///
 /// | Bits | Field | Meaning |
 /// |-----:|------:|---------|
@@ -1302,9 +1307,18 @@ impl ToBitStream for Streaminfo {
 
 /// A PADDING metadata block
 ///
-/// This block may occur multiple times in a FLAC file.
+/// Padding blocks are empty blocks consisting of all 0 bytes.
+/// If one wishes to edit the metadata in other blocks,
+/// adjusting the size of the padding block allows
+/// us to do so without have to rewrite the entire FLAC file.
+/// For example, when adding 10 bytes to a comment,
+/// we can subtract 10 bytes from the padding
+/// and the total size of all blocks remains unchanged.
+/// Therefore we can simply overwrite the old comment
+/// block with the new without affecting the following
+/// FLAC audio frames.
 ///
-/// The contents of a PADDING block are all 0 bytes.
+/// This block may occur multiple times in a FLAC file.
 ///
 /// # Example
 ///
@@ -1365,6 +1379,9 @@ impl ToBitStream for Padding {
 
 /// An APPLICATION metadata block
 ///
+/// This block is for handling application-specific binary metadata,
+/// such as foreign RIFF WAVE tags.
+///
 /// This block may occur multiple times in a FLAC file.
 ///
 /// | Bits | Field | Meaning |
@@ -1411,6 +1428,19 @@ impl ToBitStream for Application {
 }
 
 /// A SEEKTABLE metadata block
+///
+/// Because FLAC frames do not store their compressed length,
+/// a seek table is used for random access within a FLAC file.
+/// By mapping a sample number to a byte offset,
+/// one can quickly reach different parts of the file
+/// without decoding the whole thing.
+///
+/// Also note that seek point byte offsets are
+/// relative to the start of the first FLAC frame,
+/// and *not* relative to the start of the entire file.
+/// This allows us to change the size of the set
+/// of metadata blocks without having to recalculate
+/// the contents of the seek table.
 ///
 /// This block may occur only once in a FLAC file.
 ///
@@ -1632,6 +1662,21 @@ impl ToBitStream for SeekPoint {
 
 /// A VORBIS_COMMENT metadata block
 ///
+/// This block contains metadata such as track name,
+/// artist name, album name, etc.  Its contents are
+/// UTF-8 encoded, `=`-delimited text fields
+/// with a field name followed by value,
+/// such as:
+///
+/// "TITLE=Track Title"
+///
+/// Field names are case-insensitive and
+/// may occur multiple times within the same comment
+/// (a track may have multiple artists and choose to
+/// store an "ARTIST" field for each one).
+///
+/// Commonly-used fields are available in the [`fields`] module.
+///
 /// This block may occur only once in a FLAC file.
 ///
 /// # Byte Order
@@ -1711,6 +1756,23 @@ impl VorbisComment {
     /// Given a field name, returns first matching value, if any
     ///
     /// Fields are matched case-insensitively
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use flac_codec::metadata::{VorbisComment, fields::{ARTIST, TITLE}};
+    ///
+    /// let comment = VorbisComment {
+    ///     fields: vec![
+    ///         "ARTIST=Artist 1".to_owned(),
+    ///         "ARTIST=Artist 2".to_owned(),
+    ///     ],
+    ///     ..VorbisComment::default()
+    /// };
+    ///
+    /// assert_eq!(comment.field(ARTIST), Some("Artist 1"));
+    /// assert_eq!(comment.field(TITLE), None);
+    /// ```
     pub fn field(&self, field: &str) -> Option<&str> {
         self.field_values(field).next()
     }
@@ -1718,6 +1780,25 @@ impl VorbisComment {
     /// Given a field name, iterates over any matching values
     ///
     /// Fields are matched case-insensitively
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use flac_codec::metadata::{VorbisComment, fields::ARTIST};
+    ///
+    /// let comment = VorbisComment {
+    ///     fields: vec![
+    ///         "ARTIST=Artist 1".to_owned(),
+    ///         "ARTIST=Artist 2".to_owned(),
+    ///     ],
+    ///     ..VorbisComment::default()
+    /// };
+    ///
+    /// assert_eq!(
+    ///     comment.field_values(ARTIST).collect::<Vec<_>>(),
+    ///     vec!["Artist 1", "Artist 2"],
+    /// );
+    /// ```
     pub fn field_values(&self, field: &str) -> impl Iterator<Item = &str> {
         self.fields.iter().filter_map(|f| {
             f.split_once('=')
@@ -1730,6 +1811,27 @@ impl VorbisComment {
     /// # Panics
     ///
     /// Panics if field contains the `=` character.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use flac_codec::metadata::{VorbisComment, fields::ARTIST};
+    ///
+    /// let mut comment = VorbisComment {
+    ///     fields: vec![
+    ///         "ARTIST=Artist 1".to_owned(),
+    ///         "ARTIST=Artist 2".to_owned(),
+    ///     ],
+    ///     ..VorbisComment::default()
+    /// };
+    ///
+    /// comment.append_field(ARTIST, "Artist 3");
+    ///
+    /// assert_eq!(
+    ///     comment.field_values(ARTIST).collect::<Vec<_>>(),
+    ///     vec!["Artist 1", "Artist 2", "Artist 3"],
+    /// );
+    /// ```
     pub fn append_field<S>(&mut self, field: &str, value: S)
     where
         S: std::fmt::Display,
@@ -1746,6 +1848,24 @@ impl VorbisComment {
     /// # Panics
     ///
     /// Panics if field contains the `=` character.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use flac_codec::metadata::{VorbisComment, fields::ARTIST};
+    ///
+    /// let mut comment = VorbisComment {
+    ///     fields: vec![
+    ///         "ARTIST=Artist 1".to_owned(),
+    ///         "ARTIST=Artist 2".to_owned(),
+    ///     ],
+    ///     ..VorbisComment::default()
+    /// };
+    ///
+    /// comment.remove_field(ARTIST);
+    ///
+    /// assert_eq!(comment.field(ARTIST), None);
+    /// ```
     pub fn remove_field(&mut self, field: &str) {
         assert!(!field.contains('='), "field must not contain '='");
 
@@ -1762,6 +1882,27 @@ impl VorbisComment {
     /// # Panics
     ///
     /// Panics if field contains the `=` character.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use flac_codec::metadata::{VorbisComment, fields::ARTIST};
+    ///
+    /// let mut comment = VorbisComment {
+    ///     fields: vec![
+    ///         "ARTIST=Artist 1".to_owned(),
+    ///         "ARTIST=Artist 2".to_owned(),
+    ///     ],
+    ///     ..VorbisComment::default()
+    /// };
+    ///
+    /// comment.set_field_value(ARTIST, "Artist 3");
+    ///
+    /// assert_eq!(
+    ///     comment.field_values(ARTIST).collect::<Vec<_>>(),
+    ///     vec!["Artist 3"],
+    /// );
+    /// ```
     pub fn set_field_value<S>(&mut self, field: &str, value: S)
     where
         S: std::fmt::Display,
@@ -1777,6 +1918,35 @@ impl VorbisComment {
     /// # Panics
     ///
     /// Panics if field contains the `=` character
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use flac_codec::metadata::{VorbisComment, fields::ARTIST};
+    ///
+    /// let mut comment = VorbisComment {
+    ///     fields: vec![
+    ///         "ARTIST=Artist 1".to_owned(),
+    ///         "ARTIST=Artist 2".to_owned(),
+    ///     ],
+    ///     ..VorbisComment::default()
+    /// };
+    ///
+    /// comment.set_field_values(ARTIST, ["Artist 3", "Artist 4"]);
+    ///
+    /// assert_eq!(
+    ///     comment.field_values(ARTIST).collect::<Vec<_>>(),
+    ///     vec!["Artist 3", "Artist 4"],
+    /// );
+    ///
+    /// // reminder that Option also implements IntoIterator
+    /// comment.set_field_values(ARTIST, Some("Artist 5"));
+    ///
+    /// assert_eq!(
+    ///     comment.field_values(ARTIST).collect::<Vec<_>>(),
+    ///     vec!["Artist 5"],
+    /// );
+    /// ```
     pub fn set_field_values<S, I>(&mut self, field: &str, values: I)
     where
         S: std::fmt::Display,
@@ -1889,7 +2059,10 @@ pub mod fields {
 
 /// A CUESHEET metadata block
 ///
-/// This block may occur multiple times in a FLAC file.
+/// A cue sheet stores a disc's original layout
+/// with all its tracks, index points, and disc-specific metadata.
+///
+/// This block may occur multiple times in a FLAC file, theoretically.
 ///
 /// | Bits  | Field | Meaning |
 /// |------:|------:|---------|
@@ -2165,6 +2338,9 @@ impl ToBitStreamUsing for CuesheetIndexPoint {
 }
 
 /// A PICTURE metadata block
+///
+/// Picture blocks are for embedding artwork
+/// such as album covers, liner notes, etc.
 ///
 /// This block may occur multiple times in a FLAC file.
 ///
@@ -2628,7 +2804,7 @@ impl PictureMetrics {
 
 /// A collection of metadata blocks
 ///
-/// This collection enforces the restruction that FLAC files
+/// This collection enforces the restriction that FLAC files
 /// must always contain a STREAMINFO metadata block
 /// and that block must always be first in the file.
 ///

@@ -830,6 +830,10 @@ impl<R: std::io::Read + std::io::Seek> SeekableFlacSampleReader<R> {
 
 /// A FLAC reader which operates on streamed input
 ///
+/// Streamed FLAC files are simply a collection of raw
+/// FLAC frames with no accompanying metadata,
+/// like might be delivered over a multicast stream.
+///
 /// Because this reader needs to scan the stream for
 /// valid frame sync codes before playback,
 /// it requires [`std::io::BufRead`] instead of [`std::io::Read`].

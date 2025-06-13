@@ -7,6 +7,9 @@
 // except according to those terms.
 
 //! For handling common FLAC stream items
+//!
+//! Many items are capitalized simply because they were capitalized
+//! in the original FLAC format documentation.
 
 use crate::Error;
 use crate::crc::{Checksum, Crc16, CrcReader, CrcWriter};
@@ -367,7 +370,7 @@ impl ToBitStream for FrameHeader {
 /// Handing uncommon block sizes is why this type
 /// is a generic with two different implementations
 /// from reading from a bitstream.
-/// This first reads common sizes, while the second
+/// The first reads common sizes, while the second
 /// reads additional bits if necessary.
 ///
 /// # Example
@@ -584,7 +587,7 @@ impl TryFrom<u16> for BlockSize<u16> {
 ///
 /// Handing uncommon frame rates is why this type is a generic
 /// with multiple implementations from reading from a bitstream.
-/// This first reads common rates, while the second reads additional bits if necessary.
+/// The first reads common rates, while the second reads additional bits if necessary.
 ///
 /// # Example
 ///
@@ -2528,7 +2531,7 @@ impl ToBitStreamUsing for Subframe<i64> {
 /// (method 0 is the common case).
 ///
 /// The number of residual partitions equals
-/// 2ⁿ where n is the partion order.
+/// 2ⁿ where n is the partition order.
 ///
 /// # Example
 /// ```
