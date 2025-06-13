@@ -13,7 +13,7 @@ fn roundtrip_test(flac: &[u8]) {
             .unwrap()
     );
     let mut output = Vec::new();
-    write_blocks(blocks, &mut output).unwrap();
+    write_blocks(&mut output, blocks).unwrap();
     std::io::copy(&mut data, &mut output).unwrap();
     assert_eq!(flac.len(), output.len());
     assert_eq!(flac, output.as_slice());
@@ -33,7 +33,7 @@ fn perform_test(flac: &[u8], f: impl FnOnce(&mut Vec<Block>)) -> Result<(), Erro
 
     f(&mut blocks);
 
-    write_blocks(blocks, std::io::sink())?;
+    write_blocks(std::io::sink(), blocks)?;
 
     Ok(())
 }

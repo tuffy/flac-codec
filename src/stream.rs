@@ -1919,8 +1919,8 @@ pub enum Subframe<I> {
     /// use bitstream_io::{BitReader, BitRead, BigEndian, SignedBitCount};
     ///
     /// let data: &[u8] = &[
-    ///     0x00,        // subframe header
-    ///     0x00, 0x00,  // subframe data
+    ///     0b0_000000_0,  // subframe header
+    ///     0x00, 0x00,    // subframe data
     /// ];
     ///
     /// let mut r = BitReader::endian(data, BigEndian);
@@ -1968,7 +1968,7 @@ pub enum Subframe<I> {
     /// use bitstream_io::{BitReader, BitRead, BigEndian, SignedBitCount};
     ///
     /// let data: &[u8] = &[
-    ///     0x02,  // subframe header
+    ///     0b0_000001_0,  // subframe header
     ///     // subframe data
     ///     0x00, 0x00, 0x00, 0x01, 0x00, 0x02, 0x00, 0x03, 0x00, 0x04,
     ///     0x00, 0x05, 0x00, 0x06, 0x00, 0x07, 0x00, 0x08, 0x00, 0x09,
@@ -2028,7 +2028,7 @@ pub enum Subframe<I> {
     /// use bitstream_io::{BitReader, BitRead, BigEndian, BitCount, SignedBitCount};
     ///
     /// let data: &[u8] = &[
-    ///     0x18,  // subframe header
+    ///     0b0_001100_0,  // subframe header
     ///     // warm-up samples
     ///     0x00, 0x00, 0x00, 0x01, 0x00, 0x02, 0x00, 0x03,
     ///     // residuals
@@ -2104,7 +2104,7 @@ pub enum Subframe<I> {
     /// use std::num::NonZero;
     ///
     /// let data: &[u8] = &[
-    ///     0x40,  // subframe header
+    ///     0b0_100000_0,  // subframe header
     ///     // warm-up sample
     ///     0x00, 0x00,
     ///     // precision + shift + coefficient
