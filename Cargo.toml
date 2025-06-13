@@ -1,12 +1,16 @@
 [package]
 name = "flac-codec"
+description = "An all-in-one library for handling the FLAC file format"
+keywords = ["flac"]
 version = "0.1.0"
+authors = ["Brian Langenberger <bjl@usa.net>"]
+license = "MIT/Apache-2.0"
 edition = "2024"
 rust-version = "1.87"
 
 [dependencies]
-arrayvec = "0.7.6"
 bitstream-io = "4.2"
+arrayvec = "0.7"
 md5 = "0.7"
 rayon = { version = "1.10", optional = true }
 
