@@ -3260,6 +3260,51 @@ impl BlockList {
     }
 
     /// Updates first instance of the given block, creating it if necessary
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use flac_codec::metadata::{BlockList, Streaminfo, VorbisComment};
+    /// use flac_codec::metadata::fields::ARTIST;
+    ///
+    /// // build a BlockList with a dummy Streaminfo
+    /// let mut blocklist = BlockList::new(
+    ///     Streaminfo {
+    ///         minimum_block_size: 0,
+    ///         maximum_block_size: 0,
+    ///         minimum_frame_size: None,
+    ///         maximum_frame_size: None,
+    ///         sample_rate: 44100,
+    ///         channels: 1u8.try_into().unwrap(),
+    ///         bits_per_sample: 16u32.try_into().unwrap(),
+    ///         total_samples: None,
+    ///         md5: None,
+    ///     },
+    /// );
+    ///
+    /// // the block starts out with no comment
+    /// assert!(blocklist.get::<VorbisComment>().is_none());
+    ///
+    /// // update Vorbis Comment with artist field,
+    /// // which adds a new block to the list
+    /// blocklist.update::<VorbisComment>(
+    ///     |vc| vc.append_field(ARTIST, "Artist 1")
+    /// );
+    /// assert!(blocklist.get::<VorbisComment>().is_some());
+    ///
+    /// // updating Vorbis Comment again reuses that same block
+    /// blocklist.update::<VorbisComment>(
+    ///     |vc| vc.append_field(ARTIST, "Artist 2")
+    /// );
+    ///
+    /// // the block now has two entries
+    /// assert_eq!(
+    ///     blocklist.get::<VorbisComment>()
+    ///         .unwrap()
+    ///         .field_values(ARTIST).collect::<Vec<_>>(),
+    ///     vec!["Artist 1", "Artist 2"],
+    /// );
+    /// ```
     pub fn update<B>(&mut self, f: impl FnOnce(&mut B))
     where
         B: OptionalMetadataBlock + Default,
