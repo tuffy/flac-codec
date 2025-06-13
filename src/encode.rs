@@ -1480,7 +1480,7 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
         }
 
         let start = writer.stream_position()?;
-        write_blocks(blocks.blocks(), writer.by_ref())?;
+        write_blocks(writer.by_ref(), blocks.blocks())?;
 
         Ok(Self {
             start,
@@ -1620,7 +1620,7 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
             // of the stream
             let writer = self.writer.stream();
             writer.seek(std::io::SeekFrom::Start(self.start))?;
-            write_blocks(self.blocks.blocks(), writer.by_ref())
+            write_blocks(writer.by_ref(), self.blocks.blocks())
         } else {
             Ok(())
         }

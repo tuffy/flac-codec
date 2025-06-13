@@ -566,9 +566,58 @@ impl<R: std::io::Read> Iterator for BlockReader<R> {
 
 /// Returns iterator of blocks from the given reader
 ///
+/// The reader should be positioned at the start of the FLAC
+/// file.
+///
 /// Because this may perform many small reads,
 /// using a buffered reader may greatly improve performance
 /// when reading from a raw `File`.
+///
+/// # Example
+///
+/// ```
+/// use flac_codec::{
+///     metadata::{read_blocks, Application, Block},
+///     encode::{FlacSampleWriter, Options},
+/// };
+/// use std::io::{Cursor, Seek};
+///
+/// let mut flac = Cursor::new(vec![]);  // a FLAC file in memory
+///
+/// // add some APPLICATION blocks at encode-time
+/// let application_1 = Application {id: 0x1234, data: vec![1, 2, 3, 4]};
+/// let application_2 = Application {id: 0x5678, data: vec![5, 6, 7, 8]};
+///
+/// let options = Options::default()
+///     .application(application_1.clone())
+///     .application(application_2.clone())
+///     .no_padding()
+///     .no_seektable();
+///
+/// let mut writer = FlacSampleWriter::new(
+///     &mut flac,  // our wrapped writer
+///     options,    // our encoding options
+///     44100,      // sample rate
+///     16,         // bits-per-sample
+///     1,          // channel count
+///     Some(1),    // total samples
+/// ).unwrap();
+///
+/// // write a simple FLAC file
+/// writer.write(std::slice::from_ref(&0)).unwrap();
+/// writer.finalize().unwrap();
+///
+/// flac.rewind().unwrap();
+///
+/// // read blocks from encoded file
+/// let blocks = read_blocks(flac)
+///     .skip(1)  // skip STREAMINFO block
+///     .collect::<Result<Vec<Block>, _>>()
+///     .unwrap();
+///
+/// // ensure they match our APPLICATION blocks
+/// assert_eq!(blocks, vec![application_1.into(), application_2.into()]);
+/// ```
 pub fn read_blocks<R: std::io::Read>(r: R) -> BlockReader<R> {
     BlockReader::new(r)
 }
@@ -586,9 +635,51 @@ pub fn blocks<P: AsRef<Path>>(p: P) -> std::io::Result<BlockReader<BufReader<Fil
 
 /// Returns first instance of the given block from the given reader
 ///
+/// The reader should be positioned at the start of the FLAC
+/// file.
+///
 /// Because this may perform many small reads,
 /// using a buffered reader may greatly improve performance
 /// when reading from a raw `File`.
+///
+/// # Example
+///
+/// ```
+/// use flac_codec::{
+///     metadata::{read_block, Streaminfo},
+///     encode::{FlacSampleWriter, Options},
+/// };
+/// use std::io::{Cursor, Seek};
+///
+/// let mut flac: Cursor<Vec<u8>> = Cursor::new(vec![]);  // a FLAC file in memory
+///
+/// let mut writer = FlacSampleWriter::new(
+///     &mut flac,           // our wrapped writer
+///     Options::default(),  // default encoding options
+///     44100,               // sample rate
+///     16,                  // bits-per-sample
+///     1,                   // channel count
+///     Some(1),             // total samples
+/// ).unwrap();
+///
+/// // write a simple FLAC file
+/// writer.write(std::slice::from_ref(&0)).unwrap();
+/// writer.finalize().unwrap();
+///
+/// flac.rewind().unwrap();
+///
+/// // STREAMINFO block must always be present
+/// let streaminfo = match read_block::<_, Streaminfo>(flac) {
+///     Ok(Some(streaminfo)) => streaminfo,
+///     _ => panic!("STREAMINFO not found"),
+/// };
+///
+/// // verify STREAMINFO fields against encoding parameters
+/// assert_eq!(streaminfo.sample_rate, 44100);
+/// assert_eq!(u32::from(streaminfo.bits_per_sample), 16);
+/// assert_eq!(streaminfo.channels.get(), 1);
+/// assert_eq!(streaminfo.total_samples.map(|s| s.get()), Some(1));
+/// ```
 pub fn read_block<R, B>(r: R) -> Result<Option<B>, Error>
 where
     R: std::io::Read,
@@ -628,9 +719,48 @@ where
 /// Passes along any I/O errors from the underlying stream.
 /// May also generate an error if any of the blocks are invalid
 /// (e.g. STREAMINFO not being the first block, any block is too large, etc.).
+///
+/// # Example
+///
+/// ```
+/// use flac_codec::metadata::{
+///     write_blocks, read_blocks, Streaminfo, Application, Block,
+/// };
+/// use std::io::{Cursor, Seek};
+///
+/// let mut flac: Cursor<Vec<u8>> = Cursor::new(vec![]);  // a FLAC file in memory
+///
+/// // our test blocks
+/// let blocks: Vec<Block> = vec![
+///     Streaminfo {
+///         minimum_block_size: 0,
+///         maximum_block_size: 0,
+///         minimum_frame_size: None,
+///         maximum_frame_size: None,
+///         sample_rate: 44100,
+///         channels: 1u8.try_into().unwrap(),
+///         bits_per_sample: 16u32.try_into().unwrap(),
+///         total_samples: None,
+///         md5: None,
+///     }.into(),
+///     Application {id: 0x1234, data: vec![1, 2, 3, 4]}.into(),
+///     Application {id: 0x5678, data: vec![5, 6, 7, 8]}.into(),
+/// ];
+///
+/// // write our test blocks to a file
+/// write_blocks(&mut flac, blocks.clone()).unwrap();
+///
+/// flac.rewind().unwrap();
+///
+/// // read our blocks back from that file
+/// let read_blocks = read_blocks(flac).collect::<Result<Vec<Block>, _>>().unwrap();
+///
+/// // they should be identical
+/// assert_eq!(blocks, read_blocks);
+/// ```
 pub fn write_blocks<B: AsBlockRef>(
-    blocks: impl IntoIterator<Item = B>,
     mut w: impl std::io::Write,
+    blocks: impl IntoIterator<Item = B>,
 ) -> Result<(), Error> {
     fn iter_last<T>(i: impl Iterator<Item = T>) -> impl Iterator<Item = (bool, T)> {
         struct LastIterator<I: std::iter::Iterator> {
@@ -712,19 +842,22 @@ pub fn write_blocks<B: AsBlockRef>(
 
 /// Given a Path, attempts to update FLAC metadata blocks
 ///
+/// Returns `true` if the file was completely rebuilt,
+/// or `false` if the original was overwritten.
+///
 /// # Errors
 ///
 /// Returns error if unable to read metadata blocks,
 /// unable to write blocks, or if the existing or updated
 /// blocks do not conform to the FLAC file specification.
-pub fn update_file<P, E>(path: P, f: impl FnOnce(&mut BlockList) -> Result<(), E>) -> Result<(), E>
+pub fn update<P, E>(path: P, f: impl FnOnce(&mut BlockList) -> Result<(), E>) -> Result<bool, E>
 where
     P: AsRef<Path>,
     E: From<Error>,
 {
     use std::fs::OpenOptions;
 
-    update(
+    update_file(
         OpenOptions::new()
             .read(true)
             .write(true)
@@ -741,22 +874,170 @@ where
 ///
 /// The original file should be rewound to the start of the stream.
 ///
-/// Applies closure `f` to the blocks and attempts to update
-/// them if `Save::Commit` is returned.
+/// Applies closure `f` to the blocks and attempts to update them.
 ///
 /// If the updated blocks can be made the same size as the
 /// original file by adjusting padding, the file will be
-/// completely overwritten with new contents.
+/// partially overwritten with new contents.
 ///
 /// If the new blocks are too large (or small) to fit into
 /// the original file, the original unmodified file is dropped
 /// and the `rebuilt` closure is called to build a new
 /// file.  The file's contents are then dumped into the new file.
-pub fn update<F, N, E>(
+///
+/// Returns `true` if the file was completely rebuilt,
+/// or `false` if the original was overwritten.
+///
+/// # Example 1
+///
+/// ```
+/// use flac_codec::{
+///     metadata::{update_file, BlockList, Padding, VorbisComment},
+///     metadata::fields::TITLE,
+///     encode::{FlacSampleWriter, Options},
+/// };
+/// use std::io::{Cursor, Seek};
+///
+/// let mut flac = Cursor::new(vec![]);  // a FLAC file in memory
+///
+/// // include a small amount of padding
+/// const PADDING_SIZE: u32 = 100;
+/// let options = Options::default().padding(PADDING_SIZE).unwrap();
+///
+/// let mut writer = FlacSampleWriter::new(
+///     &mut flac,  // our wrapped writer
+///     options,    // our encoding options
+///     44100,      // sample rate
+///     16,         // bits-per-sample
+///     1,          // channel count
+///     Some(1),    // total samples
+/// ).unwrap();
+///
+/// // write a simple FLAC file
+/// writer.write(std::slice::from_ref(&0)).unwrap();
+/// writer.finalize().unwrap();
+///
+/// flac.rewind().unwrap();
+///
+/// let mut rebuilt: Vec<u8> = vec![];
+///
+/// // update file with new Vorbis Comment
+/// assert!(matches!(
+///     update_file::<_, _, flac_codec::Error>(
+///         // our original file
+///         &mut flac,
+///         // a closure to create a new file, if necessary
+///         || Ok(&mut rebuilt),
+///         // the closure that performs the metadata update
+///         |blocklist| {
+///             blocklist.update::<VorbisComment>(
+///                 // the blocklist itself has a closure
+///                 // that updates a block, creating it if necessary
+///                 // (in this case, we're updating the Vorbis comment)
+///                 |vc| vc.set_field_value(TITLE, "Track Title")
+///             );
+///             Ok(())
+///         },
+///     ),
+///     Ok(false),  // false indicates the original file was updated
+/// ));
+///
+/// flac.rewind().unwrap();
+///
+/// // re-read the metadata blocks from the original file
+/// let blocks = BlockList::read(flac).unwrap();
+///
+/// // the original file now has a Vorbis Comment block
+/// // with the track title that we added
+/// assert_eq!(
+///     blocks.get::<VorbisComment>().and_then(|vc| vc.field(TITLE)),
+///     Some("Track Title"),
+/// );
+///
+/// // the original file's padding block is smaller than before
+/// // to accomodate our new Vorbis Comment block
+/// assert!(u32::from(blocks.get::<Padding>().unwrap().size) < PADDING_SIZE);
+///
+/// // and the unneeded rebuilt file remains empty
+/// assert!(rebuilt.is_empty());
+/// ```
+///
+/// # Example 2
+///
+/// ```
+/// use flac_codec::{
+///     metadata::{update_file, BlockList, VorbisComment},
+///     metadata::fields::TITLE,
+///     encode::{FlacSampleWriter, Options},
+/// };
+/// use std::io::{Cursor, Seek};
+///
+/// let mut flac = Cursor::new(vec![]);  // a FLAC file in memory
+///
+/// // include no padding in our encoded file
+/// let options = Options::default().no_padding();
+///
+/// let mut writer = FlacSampleWriter::new(
+///     &mut flac,  // our wrapped writer
+///     options,    // our encoding options
+///     44100,      // sample rate
+///     16,         // bits-per-sample
+///     1,          // channel count
+///     Some(1),    // total samples
+/// ).unwrap();
+///
+/// // write a simple FLAC file
+/// writer.write(std::slice::from_ref(&0)).unwrap();
+/// writer.finalize().unwrap();
+///
+/// flac.rewind().unwrap();
+///
+/// let mut rebuilt: Vec<u8> = vec![];
+///
+/// // update file with new Vorbis Comment
+/// assert!(matches!(
+///     update_file::<_, _, flac_codec::Error>(
+///         // our original file
+///         &mut flac,
+///         // a closure to create a new file, if necessary
+///         || Ok(&mut rebuilt),
+///         // the closure that performs the metadata update
+///         |blocklist| {
+///             blocklist.update::<VorbisComment>(
+///                 // the blocklist itself has a closure
+///                 // that updates a block, creating it if necessary
+///                 // (in this case, we're updating the Vorbis comment)
+///                 |vc| vc.set_field_value(TITLE, "Track Title")
+///             );
+///             Ok(())
+///         },
+///     ),
+///     Ok(true),  // true indicates the original file was not updated
+/// ));
+///
+/// flac.rewind().unwrap();
+///
+/// // re-read the metadata blocks from the original file
+/// let blocks = BlockList::read(flac).unwrap();
+///
+/// // the original file remains unchanged
+/// // and has no Vorbis Comment block
+/// assert_eq!(blocks.get::<VorbisComment>(), None);
+///
+/// // now read the metadata blocks from the rebuilt file
+/// let blocks = BlockList::read(rebuilt.as_slice()).unwrap();
+///
+/// // the rebuilt file has our Vorbis Comment entry instead
+/// assert_eq!(
+///     blocks.get::<VorbisComment>().and_then(|vc| vc.field(TITLE)),
+///     Some("Track Title"),
+/// );
+/// ```
+pub fn update_file<F, N, E>(
     mut original: F,
     rebuilt: impl FnOnce() -> std::io::Result<N>,
     f: impl FnOnce(&mut BlockList) -> Result<(), E>,
-) -> Result<(), E>
+) -> Result<bool, E>
 where
     F: std::io::Read + std::io::Seek + std::io::Write,
     N: std::io::Write,
@@ -777,7 +1058,7 @@ where
     {
         // dump our new blocks and remaining FLAC data to temp file
         let mut tmp = Vec::new();
-        write_blocks(blocks, &mut tmp)?;
+        write_blocks(&mut tmp, blocks)?;
         std::io::copy(&mut r, &mut tmp).map_err(Error::Io)?;
         drop(r);
 
@@ -835,7 +1116,7 @@ where
 
     let new_size = {
         let mut new_size = Counter::new(sink());
-        write_blocks(blocks.blocks(), &mut new_size)?;
+        write_blocks(&mut new_size, blocks.blocks())?;
         new_size.count
     };
 
@@ -846,16 +1127,21 @@ where
             match grow_padding(&mut blocks, old_size - new_size) {
                 Ok(()) => {
                     original.seek(start).map_err(Error::Io)?;
-                    write_blocks(blocks, BufWriter::new(original))?
+                    write_blocks(BufWriter::new(original), blocks)
+                        .map(|()| false)
+                        .map_err(E::from)
                 }
-                Err(()) => rebuild_file(rebuilt, reader, blocks)?,
+                Err(()) => rebuild_file(rebuilt, reader, blocks)
+                    .map(|()| true)
+                    .map_err(E::from),
             }
-            Ok(())
         }
         Ordering::Equal => {
             // blocks are the same size, so no need to adjust padding
             original.seek(start).map_err(Error::Io)?;
-            Ok(write_blocks(blocks, BufWriter::new(original))?)
+            write_blocks(BufWriter::new(original), blocks)
+                .map(|()| false)
+                .map_err(E::from)
         }
         Ordering::Greater => {
             // blocks have grown in size, so try to shrink
@@ -863,11 +1149,14 @@ where
             match shrink_padding(&mut blocks, new_size - old_size) {
                 Ok(()) => {
                     original.seek(start).map_err(Error::Io)?;
-                    write_blocks(blocks.into_iter(), BufWriter::new(original))?
+                    write_blocks(BufWriter::new(original), blocks)
+                        .map(|()| false)
+                        .map_err(E::from)
                 }
-                Err(()) => rebuild_file(rebuilt, reader, blocks)?,
+                Err(()) => rebuild_file(rebuilt, reader, blocks)
+                    .map(|()| true)
+                    .map_err(E::from),
             }
-            Ok(())
         }
     }
 }
@@ -2626,6 +2915,7 @@ impl ToBitStream for PictureType {
 
 /// An error when trying to identify a picture's metrics
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum InvalidPicture {
     /// An I/O Error
     Io(std::io::Error),
