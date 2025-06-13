@@ -49,7 +49,7 @@ const MAX_CHANNELS: usize = 8;
 ///     Some(2000),          // total bytes
 /// ).unwrap();
 ///
-/// // write 1000 samples as signed, little-endian bytes
+/// // write 1000 samples as 16-bit, signed, little-endian bytes (2000 bytes total)
 /// let written_bytes = (0..1000).map(i16::to_le_bytes).flatten().collect::<Vec<u8>>();
 /// assert!(writer.write_all(&written_bytes).is_ok());
 ///
@@ -58,6 +58,7 @@ const MAX_CHANNELS: usize = 8;
 ///
 /// flac.rewind().unwrap();
 ///
+/// // open reader around written FLAC file
 /// let mut reader = FlacReader::endian(flac, LittleEndian).unwrap();
 ///
 /// // read 2000 bytes
@@ -383,7 +384,6 @@ impl<W: std::io::Write + std::io::Seek, E: crate::byteorder::Endianness> Drop fo
 ///     decode::{FlacSampleReader, FlacSampleRead},
 /// };
 /// use std::io::{Cursor, Seek};
-/// use std::num::NonZero;
 ///
 /// let mut flac = Cursor::new(vec![]);  // a FLAC file in memory
 ///
@@ -405,6 +405,7 @@ impl<W: std::io::Write + std::io::Seek, E: crate::byteorder::Endianness> Drop fo
 ///
 /// flac.rewind().unwrap();
 ///
+/// // open reader around written FLAC file
 /// let mut reader = FlacSampleReader::new(flac).unwrap();
 ///
 /// // read 1000 samples
@@ -665,7 +666,6 @@ impl FlacSampleWriter<BufWriter<File>> {
 ///     encode::{FlacStreamWriter, Options},
 /// };
 /// use std::io::{Cursor, Seek};
-/// use std::num::NonZero;
 /// use bitstream_io::SignedBitCount;
 ///
 /// let mut flac = Cursor::new(vec![]);

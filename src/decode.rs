@@ -113,7 +113,7 @@ pub trait FlacSampleRead {
 ///     Some(2000),          // total bytes
 /// ).unwrap();
 ///
-/// // write 1000 samples as signed, little-endian bytes
+/// // write 1000 samples as 16-bit, signed, little-endian bytes (2000 bytes total)
 /// let written_bytes = (0..1000).map(i16::to_le_bytes).flatten().collect::<Vec<u8>>();
 /// assert!(writer.write_all(&written_bytes).is_ok());
 ///
@@ -122,6 +122,7 @@ pub trait FlacSampleRead {
 ///
 /// flac.rewind().unwrap();
 ///
+/// // open reader around written FLAC file
 /// let mut reader = FlacReader::endian(flac, LittleEndian).unwrap();
 ///
 /// // read 2000 bytes
@@ -283,7 +284,6 @@ impl<R: std::io::Read, E: crate::byteorder::Endianness> std::io::BufRead for Fla
 ///     decode::{FlacSampleReader, FlacSampleRead},
 /// };
 /// use std::io::{Cursor, Seek};
-/// use std::num::NonZero;
 ///
 /// let mut flac = Cursor::new(vec![]);  // a FLAC file in memory
 ///
@@ -305,6 +305,7 @@ impl<R: std::io::Read, E: crate::byteorder::Endianness> std::io::BufRead for Fla
 ///
 /// flac.rewind().unwrap();
 ///
+/// // open reader around written FLAC file
 /// let mut reader = FlacSampleReader::new(flac).unwrap();
 ///
 /// // read 1000 samples
@@ -421,6 +422,59 @@ impl<R: std::io::Read> FlacSampleRead for FlacSampleReader<R> {
 ///
 /// This has an additional [`std::io::Seek`] bound over
 /// the wrapped reader in order to enable seeking.
+///
+/// # Example
+///
+/// ```
+/// use flac_codec::{
+///     byteorder::LittleEndian,
+///     encode::{FlacWriter, Options},
+///     decode::SeekableFlacReader,
+/// };
+/// use std::io::{Cursor, Read, Seek, SeekFrom, Write};
+///
+/// let mut flac = Cursor::new(vec![]);  // a FLAC file in memory
+///
+/// let mut writer = FlacWriter::endian(
+///     &mut flac,           // our wrapped writer
+///     LittleEndian,        // .wav-style byte order
+///     Options::default(),  // default encoding options
+///     44100,               // sample rate
+///     16,                  // bits-per-sample
+///     1,                   // channel count
+///     Some(2000),          // total bytes
+/// ).unwrap();
+///
+/// // write 1000 samples as 16-bit, signed, little-endian bytes (2000 bytes total)
+/// let written_bytes = (0..1000).map(i16::to_le_bytes).flatten().collect::<Vec<u8>>();
+/// assert!(writer.write_all(&written_bytes).is_ok());
+///
+/// // finalize writing file
+/// assert!(writer.finalize().is_ok());
+///
+/// flac.rewind().unwrap();
+///
+/// // open reader around written FLAC file
+/// let mut reader = SeekableFlacReader::endian(flac, LittleEndian).unwrap();
+///
+/// // read 2000 bytes
+/// let mut read_bytes_1 = vec![];
+/// assert!(reader.read_to_end(&mut read_bytes_1).is_ok());
+///
+/// // ensure input and output matches
+/// assert_eq!(read_bytes_1, written_bytes);
+///
+/// // rewind reader to halfway through file
+/// assert!(reader.seek(SeekFrom::Start(1000)).is_ok());
+///
+/// // read 1000 bytes
+/// let mut read_bytes_2 = vec![];
+/// assert!(reader.read_to_end(&mut read_bytes_2).is_ok());
+///
+/// // ensure output matches back half of input
+/// assert_eq!(read_bytes_2.len(), 1000);
+/// assert!(written_bytes.ends_with(&read_bytes_2));
+/// ```
 #[derive(Clone)]
 pub struct SeekableFlacReader<R, E> {
     // our wrapped FLAC reader
@@ -625,6 +679,57 @@ impl<R: std::io::Read + std::io::Seek, E: crate::byteorder::Endianness> std::io:
 }
 
 /// A seekable FLAC reader which outputs PCM samples as signed integers
+///
+/// # Example
+///
+/// ```
+/// use flac_codec::{
+///     encode::{FlacSampleWriter, Options},
+///     decode::{SeekableFlacSampleReader, FlacSampleRead},
+/// };
+/// use std::io::{Cursor, Seek};
+///
+/// let mut flac = Cursor::new(vec![]);  // a FLAC file in memory
+///
+/// let mut writer = FlacSampleWriter::new(
+///     &mut flac,           // our wrapped writer
+///     Options::default(),  // default encoding options
+///     44100,               // sample rate
+///     16,                  // bits-per-sample
+///     1,                   // channel count
+///     Some(1000),          // total samples
+/// ).unwrap();
+///
+/// // write 1000 samples
+/// let written_samples = (0..1000).collect::<Vec<i32>>();
+/// assert!(writer.write(&written_samples).is_ok());
+///
+/// // finalize writing file
+/// assert!(writer.finalize().is_ok());
+///
+/// flac.rewind().unwrap();
+///
+/// // open reader around written FLAC file
+/// let mut reader = SeekableFlacSampleReader::new(flac).unwrap();
+///
+/// // read 1000 samples
+/// let mut read_samples_1 = vec![0; 1000];
+/// assert!(matches!(reader.read(&mut read_samples_1), Ok(1000)));
+///
+/// // ensure they match
+/// assert_eq!(read_samples_1, written_samples);
+///
+/// // rewind reader to halfway through file
+/// assert!(reader.seek(500).is_ok());
+///
+/// // read 500 samples
+/// let mut read_samples_2 = vec![0; 500];
+/// assert!(matches!(reader.read(&mut read_samples_2), Ok(500)));
+///
+/// // ensure output matches back half of input
+/// assert_eq!(read_samples_2.len(), 500);
+/// assert!(written_samples.ends_with(&read_samples_2));
+/// ```
 #[derive(Clone)]
 pub struct SeekableFlacSampleReader<R> {
     // the wrapped sample reader
