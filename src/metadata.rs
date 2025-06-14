@@ -2125,6 +2125,8 @@ impl VorbisComment {
     /// );
     /// ```
     pub fn all(&self, field: &str) -> impl Iterator<Item = &str> {
+        assert!(!field.contains('='), "field must not contain '='");
+
         self.fields.iter().filter_map(|f| {
             f.split_once('=')
                 .and_then(|(key, value)| key.eq_ignore_ascii_case(field).then_some(value))
@@ -2221,7 +2223,7 @@ impl VorbisComment {
     ///     ..VorbisComment::default()
     /// };
     ///
-    /// comment.replace(ARTIST).extend(["Artist 3", "Artist 4"]);
+    /// comment.replace(ARTIST, ["Artist 3", "Artist 4"]);
     ///
     /// assert_eq!(
     ///     comment.all(ARTIST).collect::<Vec<_>>(),
@@ -2229,33 +2231,24 @@ impl VorbisComment {
     /// );
     ///
     /// // reminder that Option also implements IntoIterator
-    /// comment.replace(ARTIST).extend(Some("Artist 5"));
+    /// comment.replace(ARTIST, Some("Artist 5"));
     ///
     /// assert_eq!(
     ///     comment.all(ARTIST).collect::<Vec<_>>(),
     ///     vec!["Artist 5"],
     /// );
     /// ```
-    pub fn replace<S: std::fmt::Display>(&mut self, field: &str) -> impl Extend<S> {
-        struct Replace<'f, 'v, S: std::fmt::Display> {
-            field: &'f str,
-            fields: &'v mut Vec<String>,
-            type_: std::marker::PhantomData<S>,
-        }
-
-        impl<S: std::fmt::Display> Extend<S> for Replace<'_, '_, S> {
-            fn extend<I: IntoIterator<Item = S>>(&mut self, iter: I) {
-                self.fields
-                    .extend(iter.into_iter().map(|value| format!("{}={value}", self.field)));
-            }
-        }
-
+    pub fn replace<S: std::fmt::Display>(
+        &mut self,
+        field: &str,
+        replacements: impl IntoIterator<Item = S>,
+    ) {
         self.remove(field);
-        Replace {
-            field,
-            fields: &mut self.fields,
-            type_: std::marker::PhantomData,
-        }
+        self.fields.extend(
+            replacements
+                .into_iter()
+                .map(|value| format!("{field}={value}")),
+        );
     }
 }
 
