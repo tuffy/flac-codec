@@ -1806,6 +1806,11 @@ pub struct SeekTable {
     pub points: Vec<SeekPoint>,
 }
 
+impl SeekTable {
+    /// The maximum number of seek points that fit into a seek table
+    pub const MAX_POINTS: usize = (1 << 24) / ((64 + 64 + 16) / 8);
+}
+
 block!(SeekTable, SeekTable, false);
 optional_block!(SeekTable, SeekTable);
 

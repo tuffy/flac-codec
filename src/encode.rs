@@ -1473,8 +1473,13 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
                 sample_rate,
                 EncoderSeekPoint::placeholders(total_samples.get(), options.block_size),
             ) {
-                blocks.insert(crate::metadata::SeekTable {
-                    points: placeholders.map(|p| p.into()).collect(),
+                use crate::metadata::SeekTable;
+
+                blocks.insert(SeekTable {
+                    points: placeholders
+                        .take(SeekTable::MAX_POINTS)
+                        .map(|p| p.into())
+                        .collect(),
                 });
             }
         }

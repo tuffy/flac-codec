@@ -1,6 +1,6 @@
 [package]
 name = "flac-codec"
-description = "An all-in-one library for handling the FLAC file format"
+description = "A comprehensive library for handling FLAC files"
 keywords = ["flac"]
 version = "0.1.0"
 authors = ["Brian Langenberger <bjl@usa.net>"]
