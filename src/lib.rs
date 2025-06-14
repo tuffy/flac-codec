@@ -8,6 +8,30 @@
 
 //! A library for reading, writing, and editing the metadata
 //! of FLAC-formatted audio files.
+//!
+//! ## FLAC Format Layout
+//!
+//! In order to understand the layout of this crate, it may be
+//! helpful to understand the layout of the FLAC format itself.
+//! A FLAC file begins with a 4 byte `fLaC` tag
+//! (bytes `[0x66, 0x4c, 0x61, 0x43]`) and is followed
+//! by one or more metadata blocks.
+//! Metadata blocks contain information about the file
+//! like stream parameters, textual information, the
+//! seek table, etc.
+//! The metadata blocks are then followed by one or more
+//! frames containing audio data.
+//! A typical FLAC file contains only a handful of
+//! metadata blocks, but hundreds of frames.
+//!
+//! Metadata blocks are detailed in the [`metadata`] module,
+//! while frames are detailed in [`stream`].
+//!
+//! ```text
+//! ┌──────────┬────────┬┄┄┄┄┄┄┄┄┬┄┄┄┬────────┬┄┄┄┄┄┄┄┄┬┄┄┄╮
+//! │ FLAC Tag │ Block₀ │ Block₁ ┆ … ┆ Frame₀ │ Frame₁ ┆ … ┆
+//! └──────────┴────────┴┄┄┄┄┄┄┄┄┴┄┄┄┴────────┴┄┄┄┄┄┄┄┄┴┄┄┄╯
+//! ```
 
 #![warn(missing_docs)]
 #![forbid(unsafe_code)]
@@ -20,7 +44,7 @@ pub mod encode;
 pub mod metadata;
 pub mod stream;
 
-/// A unified FLAC format error
+/// A unified FLAC error
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum Error {

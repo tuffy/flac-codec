@@ -94,7 +94,7 @@ mod private {
 /// | 8-56      | `frame_number`
 /// | (8 or 16) | uncommon block size
 /// | (8 or 16) | uncommon sample rate
-/// | 8         | CRC-8
+/// | 8         | CRC-8 of header data
 ///
 /// # Example
 /// ```
@@ -1580,8 +1580,14 @@ impl<const RICE_MAX: u32> ToBitStream for ResidualPartitionHeader<RICE_MAX> {
 /// A whole FLAC frame
 ///
 /// A FLAC frame consists of a header, one or more subframes
-/// (each corresponding to a different channel), and a CRC-16
-/// checksum.
+/// (each corresponding to a different channel), and concludes with
+/// a CRC-16 checksum over all the data in the frame.
+///
+/// ```text
+/// ┌──────────────┬───────────┬┄┄┄┄┄┄┄┄┄┄┄┬┄┄┄┬────────┐
+/// │ Frame Header │ Subframe₀ │ Subframe₁ ┆ … ┆ CRC-16 │
+/// └──────────────┴───────────┴┄┄┄┄┄┄┄┄┄┄┄┴┄┄┄┴────────┘
+/// ```
 ///
 /// # Example
 ///
@@ -1898,13 +1904,15 @@ pub enum SubframeWidth {
 }
 
 /// A FLAC's frame's subframe, one per channel
+///
+/// A subframe consists of a subframe header followed by subframe data.
 #[derive(Debug, Eq, PartialEq)]
 pub enum Subframe<I> {
     /// A CONSTANT subframe, in which all samples are identical
     ///
-    /// | Bits                       | Meaning           |
-    /// |----------------------------|-------------------|
-    /// | subframe's bits-per-sample | subframe's sample |
+    /// | Bits                       | Field    |
+    /// |----------------------------|----------|
+    /// | subframe's bits-per-sample | `sample` |
     ///
     /// This single sample is repeated for all the samples in the subframe.
     ///
@@ -1949,12 +1957,12 @@ pub enum Subframe<I> {
     },
     /// A VERBATIM subframe, in which all samples are stored uncompressed
     ///
-    /// | Bits           | Meaning |
-    /// |----------------|---------|
-    /// | subframe's bps | sample₀ |
-    /// | subframe's bps | sample₁ |
-    /// | subframe's bps | sample₂ |
-    /// |                | ⋮       |
+    /// | Bits           | Field      |
+    /// |----------------|------------|
+    /// | subframe's bps | `samples₀` |
+    /// | subframe's bps | `samples₁` |
+    /// | subframe's bps | `samples₂` |
+    /// |                | ⋮          |
     ///
     /// The number of samples equals the frame's block size.
     ///
@@ -2004,13 +2012,13 @@ pub enum Subframe<I> {
     },
     /// A FIXED subframe, encoded with a fixed set of parameters
     ///
-    /// | Bits           | Meaning         |
-    /// |----------------|-----------------|
-    /// | subframe's bps | warm-up sample₀ |
-    /// | subframe's bps | warm-up sample₁ |
-    /// | subframe's bps | warm-up sample₂ |
-    /// |                | ⋮               |
-    /// |                | [`Residuals`]   |
+    /// | Bits           | Field         |
+    /// |----------------|---------------|
+    /// | subframe's bps | `warm_up₀`    |
+    /// | subframe's bps | `warm_up₁`    |
+    /// | subframe's bps | `warm_up₂`    |
+    /// |                | ⋮             |
+    /// |                | [`Residuals`] |
     ///
     /// The number of warm-up simples equals the subframe's
     /// predictor order (from the subframe header).
@@ -2074,19 +2082,19 @@ pub enum Subframe<I> {
     },
     /// An LPC subframe, encoded with a variable set of parameters
     ///
-    /// | Bits           | Meaning         |
-    /// |----------------|-----------------|
-    /// | subframe's bps | warm-up sample₀ |
-    /// | subframe's bps | warm-up sample₁ |
-    /// | subframe's bps | warm-up sample₂ |
-    /// |                | ⋮               |
-    /// | 4              | precision (+1)  |
-    /// | 5              | shift           |
-    /// | `precision`    | coefficient₀    |
-    /// | `precision`    | coefficient₁    |
-    /// | `precision`    | coefficient₂    |
-    /// |                | ⋮               |
-    /// |                | [`Residuals`]   |
+    /// | Bits           | Field            |
+    /// |----------------|------------------|
+    /// | subframe's bps | `warm_up₀`       |
+    /// | subframe's bps | `warm_up₁`       |
+    /// | subframe's bps | `warm_up₂`       |
+    /// |                | ⋮                |
+    /// | 4              | `precision` (+1) |
+    /// | 5              | `shift`          |
+    /// | `precision`    | `coefficients₀`  |
+    /// | `precision`    | `coefficients₁`  |
+    /// | `precision`    | `coefficients₂`  |
+    /// |                | ⋮                |
+    /// |                | [`Residuals`]    |
     ///
     /// The number of warm-up samples *and* number of predictor
     /// coefficients is equal to the subframe's predictor order
