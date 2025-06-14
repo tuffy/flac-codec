@@ -2221,7 +2221,7 @@ impl VorbisComment {
     ///     ..VorbisComment::default()
     /// };
     ///
-    /// comment.set_field_values(ARTIST, ["Artist 3", "Artist 4"]);
+    /// comment.replace(ARTIST).extend(["Artist 3", "Artist 4"]);
     ///
     /// assert_eq!(
     ///     comment.all(ARTIST).collect::<Vec<_>>(),
@@ -2229,23 +2229,33 @@ impl VorbisComment {
     /// );
     ///
     /// // reminder that Option also implements IntoIterator
-    /// comment.set_field_values(ARTIST, Some("Artist 5"));
+    /// comment.replace(ARTIST).extend(Some("Artist 5"));
     ///
     /// assert_eq!(
     ///     comment.all(ARTIST).collect::<Vec<_>>(),
     ///     vec!["Artist 5"],
     /// );
     /// ```
-    pub fn set_field_values<S, I>(&mut self, field: &str, values: I)
-    where
-        S: std::fmt::Display,
-        I: IntoIterator<Item = S>,
-    {
-        assert!(!field.contains('='), "field must not contain '='");
+    pub fn replace<S: std::fmt::Display>(&mut self, field: &str) -> impl Extend<S> {
+        struct Replace<'f, 'v, S: std::fmt::Display> {
+            field: &'f str,
+            fields: &'v mut Vec<String>,
+            type_: std::marker::PhantomData<S>,
+        }
+
+        impl<S: std::fmt::Display> Extend<S> for Replace<'_, '_, S> {
+            fn extend<I: IntoIterator<Item = S>>(&mut self, iter: I) {
+                self.fields
+                    .extend(iter.into_iter().map(|value| format!("{}={value}", self.field)));
+            }
+        }
 
         self.remove(field);
-        self.fields
-            .extend(values.into_iter().map(|value| format!("{field}={value}")));
+        Replace {
+            field,
+            fields: &mut self.fields,
+            type_: std::marker::PhantomData,
+        }
     }
 }
 
