@@ -1126,7 +1126,7 @@ impl Options {
         S: std::fmt::Display,
     {
         self.metadata
-            .update::<VorbisComment>(|vc| vc.append_field(field, value));
+            .update::<VorbisComment>(|vc| vc.insert(field, value));
         self
     }
 

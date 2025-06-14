@@ -934,7 +934,7 @@ where
 ///                 // the blocklist itself has a closure
 ///                 // that updates a block, creating it if necessary
 ///                 // (in this case, we're updating the Vorbis comment)
-///                 |vc| vc.set_field_value(TITLE, "Track Title")
+///                 |vc| vc.set(TITLE, "Track Title")
 ///             );
 ///             Ok(())
 ///         },
@@ -950,7 +950,7 @@ where
 /// // the original file now has a Vorbis Comment block
 /// // with the track title that we added
 /// assert_eq!(
-///     blocks.get::<VorbisComment>().and_then(|vc| vc.field(TITLE)),
+///     blocks.get::<VorbisComment>().and_then(|vc| vc.get(TITLE)),
 ///     Some("Track Title"),
 /// );
 ///
@@ -1007,7 +1007,7 @@ where
 ///                 // the blocklist itself has a closure
 ///                 // that updates a block, creating it if necessary
 ///                 // (in this case, we're updating the Vorbis comment)
-///                 |vc| vc.set_field_value(TITLE, "Track Title")
+///                 |vc| vc.set(TITLE, "Track Title")
 ///             );
 ///             Ok(())
 ///         },
@@ -1029,7 +1029,7 @@ where
 ///
 /// // the rebuilt file has our Vorbis Comment entry instead
 /// assert_eq!(
-///     blocks.get::<VorbisComment>().and_then(|vc| vc.field(TITLE)),
+///     blocks.get::<VorbisComment>().and_then(|vc| vc.get(TITLE)),
 ///     Some("Track Title"),
 /// );
 /// ```
@@ -2019,9 +2019,9 @@ impl ToBitStream for SeekPoint {
 ///     },
 /// );
 ///
-/// assert_eq!(comment.field(TITLE), Some("Testing"));
-/// assert_eq!(comment.field(ALBUM), Some("Test Album"));
-/// assert_eq!(comment.field(ARTIST), None);
+/// assert_eq!(comment.get(TITLE), Some("Testing"));
+/// assert_eq!(comment.get(ALBUM), Some("Test Album"));
+/// assert_eq!(comment.get(ARTIST), None);
 /// ```
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct VorbisComment {
@@ -2059,11 +2059,47 @@ impl VorbisComment {
     ///     ..VorbisComment::default()
     /// };
     ///
-    /// assert_eq!(comment.field(ARTIST), Some("Artist 1"));
-    /// assert_eq!(comment.field(TITLE), None);
+    /// assert_eq!(comment.get(ARTIST), Some("Artist 1"));
+    /// assert_eq!(comment.get(TITLE), None);
     /// ```
-    pub fn field(&self, field: &str) -> Option<&str> {
-        self.field_values(field).next()
+    pub fn get(&self, field: &str) -> Option<&str> {
+        self.all(field).next()
+    }
+
+    /// Replaces any instances of the given field with value
+    ///
+    /// Fields are matched case-insensitively
+    ///
+    /// # Panics
+    ///
+    /// Panics if field contains the `=` character.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use flac_codec::metadata::{VorbisComment, fields::ARTIST};
+    ///
+    /// let mut comment = VorbisComment {
+    ///     fields: vec![
+    ///         "ARTIST=Artist 1".to_owned(),
+    ///         "ARTIST=Artist 2".to_owned(),
+    ///     ],
+    ///     ..VorbisComment::default()
+    /// };
+    ///
+    /// comment.set(ARTIST, "Artist 3");
+    ///
+    /// assert_eq!(
+    ///     comment.all(ARTIST).collect::<Vec<_>>(),
+    ///     vec!["Artist 3"],
+    /// );
+    /// ```
+    pub fn set<S>(&mut self, field: &str, value: S)
+    where
+        S: std::fmt::Display,
+    {
+        self.remove(field);
+        self.insert(field, value);
     }
 
     /// Given a field name, iterates over any matching values
@@ -2084,11 +2120,11 @@ impl VorbisComment {
     /// };
     ///
     /// assert_eq!(
-    ///     comment.field_values(ARTIST).collect::<Vec<_>>(),
+    ///     comment.all(ARTIST).collect::<Vec<_>>(),
     ///     vec!["Artist 1", "Artist 2"],
     /// );
     /// ```
-    pub fn field_values(&self, field: &str) -> impl Iterator<Item = &str> {
+    pub fn all(&self, field: &str) -> impl Iterator<Item = &str> {
         self.fields.iter().filter_map(|f| {
             f.split_once('=')
                 .and_then(|(key, value)| key.eq_ignore_ascii_case(field).then_some(value))
@@ -2114,14 +2150,14 @@ impl VorbisComment {
     ///     ..VorbisComment::default()
     /// };
     ///
-    /// comment.append_field(ARTIST, "Artist 3");
+    /// comment.insert(ARTIST, "Artist 3");
     ///
     /// assert_eq!(
-    ///     comment.field_values(ARTIST).collect::<Vec<_>>(),
+    ///     comment.all(ARTIST).collect::<Vec<_>>(),
     ///     vec!["Artist 1", "Artist 2", "Artist 3"],
     /// );
     /// ```
-    pub fn append_field<S>(&mut self, field: &str, value: S)
+    pub fn insert<S>(&mut self, field: &str, value: S)
     where
         S: std::fmt::Display,
     {
@@ -2151,53 +2187,17 @@ impl VorbisComment {
     ///     ..VorbisComment::default()
     /// };
     ///
-    /// comment.remove_field(ARTIST);
+    /// comment.remove(ARTIST);
     ///
-    /// assert_eq!(comment.field(ARTIST), None);
+    /// assert_eq!(comment.get(ARTIST), None);
     /// ```
-    pub fn remove_field(&mut self, field: &str) {
+    pub fn remove(&mut self, field: &str) {
         assert!(!field.contains('='), "field must not contain '='");
 
         self.fields.retain(|f| match f.split_once('=') {
             Some((key, _)) => !key.eq_ignore_ascii_case(field),
             None => true,
         });
-    }
-
-    /// Replaces any instances of the given field with value
-    ///
-    /// Fields are matched case-insensitively
-    ///
-    /// # Panics
-    ///
-    /// Panics if field contains the `=` character.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use flac_codec::metadata::{VorbisComment, fields::ARTIST};
-    ///
-    /// let mut comment = VorbisComment {
-    ///     fields: vec![
-    ///         "ARTIST=Artist 1".to_owned(),
-    ///         "ARTIST=Artist 2".to_owned(),
-    ///     ],
-    ///     ..VorbisComment::default()
-    /// };
-    ///
-    /// comment.set_field_value(ARTIST, "Artist 3");
-    ///
-    /// assert_eq!(
-    ///     comment.field_values(ARTIST).collect::<Vec<_>>(),
-    ///     vec!["Artist 3"],
-    /// );
-    /// ```
-    pub fn set_field_value<S>(&mut self, field: &str, value: S)
-    where
-        S: std::fmt::Display,
-    {
-        self.remove_field(field);
-        self.append_field(field, value);
     }
 
     /// Replaces any instances of the given field with the given values
@@ -2224,7 +2224,7 @@ impl VorbisComment {
     /// comment.set_field_values(ARTIST, ["Artist 3", "Artist 4"]);
     ///
     /// assert_eq!(
-    ///     comment.field_values(ARTIST).collect::<Vec<_>>(),
+    ///     comment.all(ARTIST).collect::<Vec<_>>(),
     ///     vec!["Artist 3", "Artist 4"],
     /// );
     ///
@@ -2232,7 +2232,7 @@ impl VorbisComment {
     /// comment.set_field_values(ARTIST, Some("Artist 5"));
     ///
     /// assert_eq!(
-    ///     comment.field_values(ARTIST).collect::<Vec<_>>(),
+    ///     comment.all(ARTIST).collect::<Vec<_>>(),
     ///     vec!["Artist 5"],
     /// );
     /// ```
@@ -2243,7 +2243,7 @@ impl VorbisComment {
     {
         assert!(!field.contains('='), "field must not contain '='");
 
-        self.remove_field(field);
+        self.remove(field);
         self.fields
             .extend(values.into_iter().map(|value| format!("{field}={value}")));
     }
@@ -3288,20 +3288,20 @@ impl BlockList {
     /// // update Vorbis Comment with artist field,
     /// // which adds a new block to the list
     /// blocklist.update::<VorbisComment>(
-    ///     |vc| vc.append_field(ARTIST, "Artist 1")
+    ///     |vc| vc.insert(ARTIST, "Artist 1")
     /// );
     /// assert!(blocklist.get::<VorbisComment>().is_some());
     ///
     /// // updating Vorbis Comment again reuses that same block
     /// blocklist.update::<VorbisComment>(
-    ///     |vc| vc.append_field(ARTIST, "Artist 2")
+    ///     |vc| vc.insert(ARTIST, "Artist 2")
     /// );
     ///
     /// // the block now has two entries
     /// assert_eq!(
     ///     blocklist.get::<VorbisComment>()
     ///         .unwrap()
-    ///         .field_values(ARTIST).collect::<Vec<_>>(),
+    ///         .all(ARTIST).collect::<Vec<_>>(),
     ///     vec!["Artist 1", "Artist 2"],
     /// );
     /// ```

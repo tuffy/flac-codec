@@ -86,7 +86,7 @@ fn test_write_metadata() {
     assert!(matches!(
         basic_test(|blocks| {
             let mut comment = VorbisComment::default();
-            comment.append_field(TITLE, "Test Title");
+            comment.insert(TITLE, "Test Title");
             blocks.push(comment.into());
         }),
         Ok(())
@@ -96,7 +96,7 @@ fn test_write_metadata() {
     assert!(matches!(
         basic_test(|blocks| {
             let mut comment = VorbisComment::default();
-            comment.append_field(TITLE, "Test Title");
+            comment.insert(TITLE, "Test Title");
             blocks.insert(0, comment.into());
         }),
         Err(Error::MissingStreaminfo)
@@ -106,7 +106,7 @@ fn test_write_metadata() {
     assert!(matches!(
         basic_test(|blocks| {
             let mut comment = VorbisComment::default();
-            comment.append_field(TITLE, "Test Title");
+            comment.insert(TITLE, "Test Title");
             blocks.push(comment.clone().into());
             blocks.push(comment.into());
         }),
