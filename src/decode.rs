@@ -383,6 +383,7 @@ impl<R: std::io::Read> Metadata for FlacSampleReader<R> {
 }
 
 impl<R: std::io::Read> FlacSampleRead for FlacSampleReader<R> {
+    #[inline]
     fn read(&mut self, samples: &mut [i32]) -> Result<usize, Error> {
         if self.buf.is_empty() {
             match self.decoder.read_frame()? {
@@ -400,6 +401,7 @@ impl<R: std::io::Read> FlacSampleRead for FlacSampleReader<R> {
         Ok(to_consume)
     }
 
+    #[inline]
     fn fill_buf(&mut self) -> Result<&[i32], Error> {
         if self.buf.is_empty() {
             match self.decoder.read_frame()? {
@@ -413,8 +415,86 @@ impl<R: std::io::Read> FlacSampleRead for FlacSampleReader<R> {
         Ok(self.buf.make_contiguous())
     }
 
+    #[inline]
     fn consume(&mut self, amt: usize) {
         self.buf.drain(0..amt);
+    }
+}
+
+impl<R: std::io::Read> IntoIterator for FlacSampleReader<R> {
+    type IntoIter = FlacSampleIterator<R>;
+    type Item = Result<i32, Error>;
+
+    fn into_iter(self) -> FlacSampleIterator<R> {
+        FlacSampleIterator { reader: self }
+    }
+}
+
+/// A FLAC reader which iterates over decoded samples as signed integers
+///
+/// # Example
+///
+/// ```
+/// use flac_codec::{
+///     encode::{FlacSampleWriter, Options},
+///     decode::{FlacSampleReader, FlacSampleRead},
+/// };
+/// use std::io::{Cursor, Seek};
+///
+/// let mut flac = Cursor::new(vec![]);  // a FLAC file in memory
+///
+/// let mut writer = FlacSampleWriter::new(
+///     &mut flac,           // our wrapped writer
+///     Options::default(),  // default encoding options
+///     44100,               // sample rate
+///     16,                  // bits-per-sample
+///     1,                   // channel count
+///     Some(10),            // total samples
+/// ).unwrap();
+///
+/// // write 10 samples
+/// let written_samples = (0..10).collect::<Vec<i32>>();
+/// assert!(writer.write(&written_samples).is_ok());
+///
+/// // finalize writing file
+/// assert!(writer.finalize().is_ok());
+///
+/// flac.rewind().unwrap();
+///
+/// // open reader around written FLAC file
+/// let reader = FlacSampleReader::new(flac).unwrap();
+///
+/// // convert reader to iterator
+/// let mut iter = reader.into_iter();
+///
+/// // read all its samples
+/// let read_samples = iter.collect::<Result<Vec<_>, _>>().unwrap();
+///
+/// // ensure they match
+/// assert_eq!(read_samples, written_samples);
+/// assert_eq!(read_samples, vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+/// ```
+#[derive(Clone)]
+pub struct FlacSampleIterator<R> {
+    reader: FlacSampleReader<R>,
+}
+
+impl<R: std::io::Read> Iterator for FlacSampleIterator<R> {
+    type Item = Result<i32, Error>;
+
+    #[inline]
+    fn next(&mut self) -> Option<Result<i32, Error>> {
+        match self.reader.buf.pop_front() {
+            Some(sample) => Some(Ok(sample)),
+            None => match self.reader.decoder.read_frame() {
+                Ok(Some(frame)) => {
+                    self.reader.buf.extend(frame.iter());
+                    self.reader.buf.pop_front().map(Ok)
+                }
+                Err(e) => Some(Err(e)),
+                Ok(None) => None,
+            },
+        }
     }
 }
 
