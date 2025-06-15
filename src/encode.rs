@@ -287,7 +287,7 @@ impl<E: crate::byteorder::Endianness> FlacWriter<BufWriter<File>, E> {
         total_bytes: Option<u64>,
     ) -> Result<Self, Error> {
         FlacWriter::new(
-            BufWriter::new(File::create(path.as_ref())?),
+            BufWriter::new(options.create(path)?),
             options,
             sample_rate,
             bits_per_sample,
@@ -620,7 +620,7 @@ impl FlacSampleWriter<BufWriter<File>> {
         total_samples: Option<u64>,
     ) -> Result<Self, Error> {
         FlacSampleWriter::new(
-            BufWriter::new(File::create(path.as_ref())?),
+            BufWriter::new(options.create(path)?),
             options,
             sample_rate,
             bits_per_sample,
@@ -987,6 +987,8 @@ impl SeektableStyle {
 /// FLAC encoding options
 #[derive(Clone, Debug)]
 pub struct Options {
+    // whether to clobber existing file
+    clobber: bool,
     block_size: u16,
     max_partition_order: u32,
     mid_side: bool,
@@ -1017,6 +1019,7 @@ impl Default for Options {
         });
 
         Self {
+            clobber: false,
             block_size: 4096,
             mid_side: true,
             max_partition_order: 5,
@@ -1204,6 +1207,18 @@ impl Options {
         }
     }
 
+    /// Overwrites existing file if it already exists
+    ///
+    /// This only applies to encoding functions which
+    /// create files from paths.
+    ///
+    /// The default is to not overwrite files
+    /// if they already exist.
+    pub fn overwrite(mut self) -> Self {
+        self.clobber = true;
+        self
+    }
+
     /// Returns the fastest encoding options
     ///
     /// These are tuned to encode as quickly as possible.
@@ -1227,6 +1242,20 @@ impl Options {
             max_partition_order: 6,
             max_lpc_order: NonZero::new(12),
             ..Self::default()
+        }
+    }
+
+    /// Creates files according to whether clobber is set or not
+    fn create<P: AsRef<Path>>(&self, path: P) -> std::io::Result<File> {
+        if self.clobber {
+            File::create(path)
+        } else {
+            use std::fs::OpenOptions;
+
+            OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(path.as_ref())
         }
     }
 }
