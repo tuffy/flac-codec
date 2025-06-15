@@ -1882,6 +1882,109 @@ impl Frame {
     }
 }
 
+/// An iterator of Frames
+pub struct FramesIterator<R> {
+    reader: crate::Counter<R>,
+    blocks: crate::metadata::BlockList,
+    metadata_len: u64,
+    remaining_samples: Option<u64>,
+}
+
+impl<R: std::io::Read> FramesIterator<R> {
+    /// Opens new FramesIterator from the given reader
+    ///
+    /// The reader must be positioned at the start of the
+    /// FLAC stream.  If the file has non-FLAC data
+    /// at the beginning (such as ID3v2 tags), one
+    /// should skip such data before initializing a `FramesIterator`.
+    pub fn new(reader: R) -> Result<Self, Error> {
+        let mut reader = crate::Counter::new(reader);
+        let blocks = crate::metadata::BlockList::read(&mut reader)?;
+
+        Ok(Self {
+            metadata_len: reader.count,
+            remaining_samples: blocks.streaminfo().total_samples.map(|s| s.get()),
+            blocks,
+            reader,
+        })
+    }
+
+    /// Returns shared reference to FLAC's metadata blocks
+    pub fn metadata(&self) -> &crate::metadata::BlockList {
+        &self.blocks
+    }
+
+    /// Returns total length of all metadata blocks and FLAC tag
+    pub fn metadata_len(&self) -> u64 {
+        self.metadata_len
+    }
+}
+
+impl FramesIterator<std::io::BufReader<std::fs::File>> {
+    /// Opens new FramesIterator from file on disk
+    pub fn open<P: AsRef<std::path::Path>>(path: P) -> Result<Self, Error> {
+        std::fs::File::open(path.as_ref())
+            .map_err(Error::Io)
+            .and_then(|f| Self::new(std::io::BufReader::new(f)))
+    }
+}
+
+impl<R: std::io::Read> Iterator for FramesIterator<R> {
+    /// Returns both frame and frame's absolute position in stream, in bytes
+    type Item = Result<(Frame, u64), Error>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.remaining_samples.as_mut() {
+            Some(0) => None,
+            Some(remaining) => {
+                let offset = self.reader.count;
+                match Frame::read(&mut self.reader, self.blocks.streaminfo()) {
+                    Ok(frame) => {
+                        *remaining = remaining
+                            .checked_sub(u64::from(u16::from(frame.header.block_size)))
+                            .unwrap_or_default();
+                        Some(Ok((frame, offset)))
+                    }
+                    Err(err) => Some(Err(err)),
+                }
+            }
+            None => {
+                // if total number of remaining samples isn't known,
+                // treat an EOF error as the end of stream
+                // (this is an uncommon case)
+                let offset = self.reader.count;
+                match Frame::read(&mut self.reader, self.blocks.streaminfo()) {
+                    Ok(frame) => Some(Ok((frame, offset))),
+                    Err(Error::Io(err)) if err.kind() == std::io::ErrorKind::UnexpectedEof => None,
+                    Err(err) => Some(Err(err)),
+                }
+            }
+        }
+    }
+}
+
+impl<R> crate::metadata::Metadata for FramesIterator<R> {
+    fn channel_count(&self) -> u8 {
+        self.blocks.streaminfo().channels.get()
+    }
+
+    fn sample_rate(&self) -> u32 {
+        self.blocks.streaminfo().sample_rate
+    }
+
+    fn bits_per_sample(&self) -> u32 {
+        self.blocks.streaminfo().bits_per_sample.into()
+    }
+
+    fn total_samples(&self) -> Option<u64> {
+        self.blocks.streaminfo().total_samples.map(|s| s.get())
+    }
+
+    fn md5(&self) -> Option<&[u8; 16]> {
+        self.blocks.streaminfo().md5.as_ref()
+    }
+}
+
 /// A 32 or 64-bit FLAC file subframe
 ///
 /// The FLAC format itself is limited to 32-bit samples

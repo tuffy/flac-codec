@@ -943,8 +943,6 @@ fn update_md5<W: std::io::Write + std::io::Seek>(
 
 #[derive(Copy, Clone, Debug)]
 enum SeektableStyle {
-    // Don't generate seektable
-    None,
     // Generate seekpoint every nth seconds
     Seconds(NonZero<u8>),
     // Generate seekpoint every nth frames
@@ -964,22 +962,21 @@ impl SeektableStyle {
         self,
         sample_rate: u32,
         seekpoints: impl Iterator<Item = EncoderSeekPoint> + 's,
-    ) -> Option<Box<dyn Iterator<Item = EncoderSeekPoint> + 's>> {
+    ) -> Box<dyn Iterator<Item = EncoderSeekPoint> + 's> {
         match self {
-            Self::None => None,
             Self::Seconds(seconds) => {
                 let nth_sample = u64::from(u32::from(seconds.get()) * sample_rate);
                 let mut offset = 0;
-                Some(Box::new(seekpoints.filter(move |point| {
+                Box::new(seekpoints.filter(move |point| {
                     if point.range().contains(&offset) {
                         offset += nth_sample;
                         true
                     } else {
                         false
                     }
-                })))
+                }))
             }
-            Self::Frames(frames) => Some(Box::new(seekpoints.step_by(frames.get()))),
+            Self::Frames(frames) => Box::new(seekpoints.step_by(frames.get())),
         }
     }
 }
@@ -993,7 +990,7 @@ pub struct Options {
     max_partition_order: u32,
     mid_side: bool,
     metadata: BlockList,
-    seektable_style: SeektableStyle,
+    seektable_style: Option<SeektableStyle>,
     max_lpc_order: Option<NonZero<u8>>,
     window: Window,
 }
@@ -1024,7 +1021,7 @@ impl Default for Options {
             mid_side: true,
             max_partition_order: 5,
             metadata,
-            seektable_style: SeektableStyle::default(),
+            seektable_style: Some(SeektableStyle::default()),
             max_lpc_order: NonZero::new(8),
             window: Window::default(),
         }
@@ -1183,9 +1180,7 @@ impl Options {
         // note that we can't drop a placeholder seektable
         // into the metadata blocks until we know
         // the sample rate and total samples of our stream
-        self.seektable_style = NonZero::new(seconds)
-            .map(SeektableStyle::Seconds)
-            .unwrap_or(SeektableStyle::None);
+        self.seektable_style = NonZero::new(seconds).map(SeektableStyle::Seconds);
         self
     }
 
@@ -1193,16 +1188,14 @@ impl Options {
     ///
     /// If `frames` is 0, removes the SEEKTABLE block
     pub fn seektable_frames(mut self, frames: usize) -> Self {
-        self.seektable_style = NonZero::new(frames)
-            .map(SeektableStyle::Frames)
-            .unwrap_or(SeektableStyle::None);
+        self.seektable_style = NonZero::new(frames).map(SeektableStyle::Frames);
         self
     }
 
     /// Do not generate a seektable in our encoded file
     pub fn no_seektable(self) -> Self {
         Self {
-            seektable_style: SeektableStyle::None,
+            seektable_style: None,
             ..self
         }
     }
@@ -1290,7 +1283,7 @@ impl std::fmt::Display for OptionsError {
 struct EncoderOptions {
     max_partition_order: u32,
     mid_side: bool,
-    seektable_style: SeektableStyle,
+    seektable_style: Option<SeektableStyle>,
     max_lpc_order: Option<NonZero<u8>>,
     window: Window,
 }
@@ -1498,10 +1491,12 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
 
         // insert a dummy SeekTable to be populated later
         if let Some(total_samples) = total_samples {
-            if let Some(placeholders) = options.seektable_style.filter(
-                sample_rate,
-                EncoderSeekPoint::placeholders(total_samples.get(), options.block_size),
-            ) {
+            if let Some(placeholders) = options.seektable_style.map(|s| {
+                s.filter(
+                    sample_rate,
+                    EncoderSeekPoint::placeholders(total_samples.get(), options.block_size),
+                )
+            }) {
                 use crate::metadata::SeekTable;
 
                 blocks.insert(SeekTable {
@@ -1593,7 +1588,7 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
             if let Some(encoded_points) = self
                 .options
                 .seektable_style
-                .filter(self.sample_rate.into(), self.seekpoints.iter().cloned())
+                .map(|s| s.filter(self.sample_rate.into(), self.seekpoints.iter().cloned()))
             {
                 match self.blocks.get_pair_mut() {
                     (Some(SeekTable { points }), _) => {
