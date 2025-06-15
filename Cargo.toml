@@ -5,6 +5,9 @@ keywords = ["flac"]
 version = "0.1.0"
 authors = ["Brian Langenberger <bjl@usa.net>"]
 license = "MIT/Apache-2.0"
+documentation = "https://docs.rs/flac-codec/"
+homepage = "https://github.com/tuffy/flac-codec"
+repository = "https://github.com/tuffy/flac-codec"
 edition = "2024"
 rust-version = "1.87"
 
