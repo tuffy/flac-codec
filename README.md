@@ -16,7 +16,7 @@ fashion with a straightforward API.
 ## Decodes Files
 
 - Decode FLAC files to bytes in some endianness
-  (useful for storing in other PCM containers, like RIFF WAVE files)
+  (useful for storing in other PCM containers, like .wav files)
 - Decode FLAC files to signed integer samples
   (audio playback system libraries often require these)
 - Decode subset FLAC files from raw "subset" streams
@@ -25,8 +25,7 @@ fashion with a straightforward API.
 - Provides an easy reading API
   - If you need bytes, the byte reader simply implements `std::io::Read`
   - If you need samples, a `Read`-like trait for signed integers is also provided
-- Offers seekable reader variants if the underlying stream
-  is also seekable
+- Offers seekable reader variants if the underlying stream is also seekable
 
 ## Encodes Files
 
@@ -39,14 +38,15 @@ fashion with a straightforward API.
 - Provides an easy writing API
   - If you can provide bytes, there's an encoder that implements `std::io::Write`
   - If you can provide samples, a `Write`-like interface is also provided
+- Encoding process modeled on the reference implementation's
+  and achieves similar compression when using identical parameters
 - Offers multithreaded encoding via the optional `rayon` feature for better performance
 
 ## Analyzes Files
 
 - Parses FLAC files to Rust data structures
 - Can rebuild FLAC files from those same data structures
-- Is able to round-trip files that are byte-for-byte identical
-  to the originals
+- Is able to round-trip files that are byte-for-byte identical to the originals
 
 ## Tested
 
