@@ -718,7 +718,7 @@ impl<W: std::io::Write> FlacStreamWriter<W> {
             options: EncoderOptions {
                 max_partition_order: options.max_partition_order,
                 mid_side: options.mid_side,
-                seektable_style: options.seektable_style,
+                seektable_interval: options.seektable_interval,
                 max_lpc_order: options.max_lpc_order,
                 window: options.window,
             },
@@ -941,33 +941,34 @@ fn update_md5<W: std::io::Write + std::io::Seek>(
     }
 }
 
+/// The interval of seek points to generate
 #[derive(Copy, Clone, Debug)]
-enum SeektableStyle {
-    // Generate seekpoint every nth seconds
+pub enum SeekTableInterval {
+    ///Generate seekpoint every nth seconds
     Seconds(NonZero<u8>),
-    // Generate seekpoint every nth frames
+    /// Generate seekpoint every nth frames
     Frames(NonZero<usize>),
 }
 
-impl Default for SeektableStyle {
+impl Default for SeekTableInterval {
     fn default() -> Self {
         Self::Seconds(NonZero::new(10).unwrap())
     }
 }
 
-impl SeektableStyle {
+impl SeekTableInterval {
     // decimates full set of seekpoints based on the requested
     // seektable style, or returns None if no seektable is requested
     fn filter<'s>(
         self,
         sample_rate: u32,
-        seekpoints: impl Iterator<Item = EncoderSeekPoint> + 's,
+        seekpoints: impl IntoIterator<Item = EncoderSeekPoint> + 's,
     ) -> Box<dyn Iterator<Item = EncoderSeekPoint> + 's> {
         match self {
             Self::Seconds(seconds) => {
                 let nth_sample = u64::from(u32::from(seconds.get()) * sample_rate);
                 let mut offset = 0;
-                Box::new(seekpoints.filter(move |point| {
+                Box::new(seekpoints.into_iter().filter(move |point| {
                     if point.range().contains(&offset) {
                         offset += nth_sample;
                         true
@@ -976,7 +977,7 @@ impl SeektableStyle {
                     }
                 }))
             }
-            Self::Frames(frames) => Box::new(seekpoints.step_by(frames.get())),
+            Self::Frames(frames) => Box::new(seekpoints.into_iter().step_by(frames.get())),
         }
     }
 }
@@ -990,7 +991,7 @@ pub struct Options {
     max_partition_order: u32,
     mid_side: bool,
     metadata: BlockList,
-    seektable_style: Option<SeektableStyle>,
+    seektable_interval: Option<SeekTableInterval>,
     max_lpc_order: Option<NonZero<u8>>,
     window: Window,
 }
@@ -1021,7 +1022,7 @@ impl Default for Options {
             mid_side: true,
             max_partition_order: 5,
             metadata,
-            seektable_style: Some(SeektableStyle::default()),
+            seektable_interval: Some(SeekTableInterval::default()),
             max_lpc_order: NonZero::new(8),
             window: Window::default(),
         }
@@ -1180,7 +1181,7 @@ impl Options {
         // note that we can't drop a placeholder seektable
         // into the metadata blocks until we know
         // the sample rate and total samples of our stream
-        self.seektable_style = NonZero::new(seconds).map(SeektableStyle::Seconds);
+        self.seektable_interval = NonZero::new(seconds).map(SeekTableInterval::Seconds);
         self
     }
 
@@ -1188,14 +1189,14 @@ impl Options {
     ///
     /// If `frames` is 0, removes the SEEKTABLE block
     pub fn seektable_frames(mut self, frames: usize) -> Self {
-        self.seektable_style = NonZero::new(frames).map(SeektableStyle::Frames);
+        self.seektable_interval = NonZero::new(frames).map(SeekTableInterval::Frames);
         self
     }
 
     /// Do not generate a seektable in our encoded file
     pub fn no_seektable(self) -> Self {
         Self {
-            seektable_style: None,
+            seektable_interval: None,
             ..self
         }
     }
@@ -1283,7 +1284,7 @@ impl std::fmt::Display for OptionsError {
 struct EncoderOptions {
     max_partition_order: u32,
     mid_side: bool,
-    seektable_style: Option<SeektableStyle>,
+    seektable_interval: Option<SeekTableInterval>,
     max_lpc_order: Option<NonZero<u8>>,
     window: Window,
 }
@@ -1491,7 +1492,7 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
 
         // insert a dummy SeekTable to be populated later
         if let Some(total_samples) = total_samples {
-            if let Some(placeholders) = options.seektable_style.map(|s| {
+            if let Some(placeholders) = options.seektable_interval.map(|s| {
                 s.filter(
                     sample_rate,
                     EncoderSeekPoint::placeholders(total_samples.get(), options.block_size),
@@ -1517,7 +1518,7 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
             options: EncoderOptions {
                 max_partition_order: options.max_partition_order,
                 mid_side: options.mid_side,
-                seektable_style: options.seektable_style,
+                seektable_interval: options.seektable_interval,
                 max_lpc_order: options.max_lpc_order,
                 window: options.window,
             },
@@ -1587,7 +1588,7 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
             // update SEEKTABLE metadata block with final values
             if let Some(encoded_points) = self
                 .options
-                .seektable_style
+                .seektable_interval
                 .map(|s| s.filter(self.sample_rate.into(), self.seekpoints.iter().cloned()))
             {
                 match self.blocks.get_pair_mut() {
@@ -1703,6 +1704,101 @@ impl From<EncoderSeekPoint> for SeekPoint {
             None => Self::Placeholder,
         }
     }
+}
+
+/// Given a FLAC stream, generates new seek table
+///
+/// Though encoders should add seek tables by default,
+/// sometimes one isn't present.  This function takes
+/// an existing FLAC file stream and generates a new
+/// seek table suitable for adding to the file's metadata
+/// via the [`crate::metadata::update`] function.
+///
+/// The stream should be rewound to the beginning of the file.
+///
+/// # Errors
+///
+/// Returns any error from the underlying stream.
+///
+/// # Example
+/// ```
+/// use flac_codec::{
+///     encode::{FlacSampleWriter, Options, SeekTableInterval, generate_seektable},
+///     metadata::{SeekTable, read_block},
+/// };
+/// use std::io::{Cursor, Seek};
+///
+/// let mut flac = Cursor::new(vec![]);  // a FLAC file in memory
+///
+/// // add a seekpoint every second
+/// let options = Options::default().seektable_seconds(1);
+///
+/// let mut writer = FlacSampleWriter::new(
+///     &mut flac,         // our wrapped writer
+///     options,           // our seektable options
+///     44100,             // sample rate
+///     16,                // bits-per-sample
+///     1,                 // channel count
+///     Some(60 * 44100),  // one minute's worth of samples
+/// ).unwrap();
+///
+/// // write one minute's worth of samples
+/// writer.write(vec![0; 60 * 44100].as_slice()).unwrap();
+///
+/// // finalize writing file
+/// assert!(writer.finalize().is_ok());
+///
+/// flac.rewind().unwrap();
+///
+/// // get existing seektable
+/// let original_seektable = match read_block::<_, SeekTable>(&mut flac) {
+///     Ok(Some(seektable)) => seektable,
+///     _ => panic!("seektable not found"),
+/// };
+///
+/// flac.rewind().unwrap();
+///
+/// // generate new seektable, also with seekpoints every second
+/// let new_seektable = generate_seektable(
+///     flac,
+///     SeekTableInterval::Seconds(1.try_into().unwrap())
+/// ).unwrap();
+///
+/// // ensure both seektables are identical
+/// assert_eq!(original_seektable, new_seektable);
+/// ```
+pub fn generate_seektable<R: std::io::Read>(
+    r: R,
+    interval: SeekTableInterval,
+) -> Result<crate::metadata::SeekTable, Error> {
+    use crate::{
+        metadata::{Metadata, SeekTable},
+        stream::FramesIterator,
+    };
+
+    let iter = FramesIterator::new(r)?;
+    let metadata_len = iter.metadata_len();
+    let sample_rate = iter.sample_rate();
+    let mut sample_offset = 0;
+
+    iter.map(|r| {
+        r.map(|(frame, offset)| EncoderSeekPoint {
+            sample_offset,
+            byte_offset: Some(offset - metadata_len),
+            frame_samples: frame.header.block_size.into(),
+        })
+        .inspect(|p| {
+            sample_offset += u64::from(p.frame_samples);
+        })
+    })
+    .collect::<Result<Vec<_>, _>>()
+    .map(|seekpoints| SeekTable {
+        points: interval
+            .filter(sample_rate, seekpoints)
+            .take(SeekTable::MAX_POINTS)
+            .map(|p| p.into())
+            .collect(),
+    })
 }
 
 fn encode_frame<W>(

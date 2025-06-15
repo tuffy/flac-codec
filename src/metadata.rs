@@ -1731,6 +1731,11 @@ impl ToBitStream for Application {
 /// of metadata blocks without having to recalculate
 /// the contents of the seek table.
 ///
+/// Because the byte and sample offsets are
+/// file-specific, a seek table generated for one file
+/// should not be transferred to another FLAC file where the
+/// frames are different sizes and in different positions.
+///
 /// This block may occur only once in a FLAC file.
 ///
 /// Its seekpoints occupy the entire block.
