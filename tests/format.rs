@@ -963,8 +963,7 @@ fn test_sine_wave_streams() {
     }
 }
 
-#[test]
-fn test_noise() {
+fn test_noise(channels: u8, bits_per_sample: u32) {
     enum Opt {
         Fast,
         Best,
@@ -974,54 +973,130 @@ fn test_noise() {
         .take(1572864)
         .collect::<Vec<u8>>();
 
-    for channels in [1, 2, 4, 8] {
-        for bits_per_sample in [8, 16, 24, 32] {
-            for option in [None, Some(Opt::Fast), Some(Opt::Best)] {
-                for block_size in [None, Some(32), Some(32768), Some(65535)] {
-                    let mut flac = Cursor::new(vec![]);
+    for option in [None, Some(Opt::Fast), Some(Opt::Best)] {
+        for block_size in [None, Some(32), Some(32768), Some(65535)] {
+            let mut flac = Cursor::new(vec![]);
 
-                    assert!(
-                        FlacWriter::endian(
-                            &mut flac,
-                            LittleEndian,
-                            {
-                                let mut opt = match option {
-                                    None => Options::default(),
-                                    Some(Opt::Fast) => Options::fast(),
-                                    Some(Opt::Best) => Options::best(),
-                                };
-                                opt = match block_size {
-                                    None => opt,
-                                    Some(size) => opt.block_size(size).unwrap(),
-                                };
-                                opt.no_padding()
-                            },
-                            44100,
-                            bits_per_sample,
-                            channels,
-                            u64::try_from(noise.len()).ok(),
-                        )
-                        .unwrap()
-                        .write_all(&noise)
-                        .is_ok()
-                    );
+            assert!(
+                FlacWriter::endian(
+                    &mut flac,
+                    LittleEndian,
+                    {
+                        let mut opt = match option {
+                            None => Options::default(),
+                            Some(Opt::Fast) => Options::fast(),
+                            Some(Opt::Best) => Options::best(),
+                        };
+                        opt = match block_size {
+                            None => opt,
+                            Some(size) => opt.block_size(size).unwrap(),
+                        };
+                        opt.no_padding()
+                    },
+                    44100,
+                    bits_per_sample,
+                    channels,
+                    u64::try_from(noise.len()).ok(),
+                )
+                .unwrap()
+                .write_all(&noise)
+                .is_ok()
+            );
 
-                    assert!(flac.rewind().is_ok());
+            assert!(flac.rewind().is_ok());
 
-                    let mut output = vec![];
+            let mut output = vec![];
 
-                    // ensure file round-trips properly
-                    assert!(
-                        std::io::copy(
-                            &mut FlacReader::endian(&mut flac, LittleEndian).unwrap(),
-                            &mut output,
-                        )
-                        .is_ok(),
-                    );
+            // ensure file round-trips properly
+            assert!(
+                std::io::copy(
+                    &mut FlacReader::endian(&mut flac, LittleEndian).unwrap(),
+                    &mut output,
+                )
+                .is_ok(),
+            );
 
-                    assert_eq!(&output, &noise);
-                }
-            }
+            assert_eq!(&output, &noise);
         }
     }
+}
+
+#[test]
+fn test_noise_1ch_8bps() {
+    test_noise(1, 8);
+}
+
+#[test]
+fn test_noise_2ch_8bps() {
+    test_noise(2, 8);
+}
+
+#[test]
+fn test_noise_4ch_8bps() {
+    test_noise(4, 8);
+}
+
+#[test]
+fn test_noise_8ch_8bps() {
+    test_noise(8, 8);
+}
+
+#[test]
+fn test_noise_1ch_16bps() {
+    test_noise(1, 16);
+}
+
+#[test]
+fn test_noise_2ch_16bps() {
+    test_noise(2, 16);
+}
+
+#[test]
+fn test_noise_4ch_16bps() {
+    test_noise(4, 16);
+}
+
+#[test]
+fn test_noise_8ch_16bps() {
+    test_noise(8, 16);
+}
+
+#[test]
+fn test_noise_1ch_24bps() {
+    test_noise(1, 24);
+}
+
+#[test]
+fn test_noise_2ch_24bps() {
+    test_noise(2, 24);
+}
+
+#[test]
+fn test_noise_4ch_24bps() {
+    test_noise(4, 24);
+}
+
+#[test]
+fn test_noise_8ch_24bps() {
+    test_noise(8, 24);
+}
+
+#[test]
+fn test_noise_1ch_32bps() {
+    test_noise(1, 32);
+}
+
+#[test]
+fn test_noise_2ch_32bps() {
+    test_noise(2, 32);
+}
+
+#[test]
+fn test_noise_4ch_32bps() {
+    test_noise(4, 32);
+}
+
+#[test]
+fn test_noise_8ch_32bps() {
+    test_noise(8, 32);
 }
