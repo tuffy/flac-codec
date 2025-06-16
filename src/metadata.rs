@@ -2790,6 +2790,21 @@ impl Picture {
             colors_used: metrics.colors_used,
         })
     }
+
+    /// Attempt to create new PICTURE block from file on disk
+    pub fn open<S, P>(
+        picture_type: PictureType,
+        description: S,
+        path: P,
+    ) -> Result<Self, InvalidPicture>
+    where
+        S: Into<String>,
+        P: AsRef<Path>,
+    {
+        std::fs::read(path)
+            .map_err(InvalidPicture::Io)
+            .and_then(|data| Self::new(picture_type, description, data))
+    }
 }
 
 impl FromBitStream for Picture {
