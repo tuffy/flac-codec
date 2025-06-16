@@ -256,6 +256,20 @@ pub enum BlockType {
     Picture = 6,
 }
 
+impl std::fmt::Display for BlockType {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            Self::Streaminfo => "STREAMINFO".fmt(f),
+            Self::Padding => "PADDING".fmt(f),
+            Self::Application => "APPLICATION".fmt(f),
+            Self::SeekTable => "SEEKTABLE".fmt(f),
+            Self::VorbisComment => "VORBIS_COMMENT".fmt(f),
+            Self::Cuesheet => "CUESHEET".fmt(f),
+            Self::Picture => "PICTURE".fmt(f),
+        }
+    }
+}
+
 impl FromBitStream for BlockType {
     type Error = Error;
 
@@ -319,6 +333,12 @@ impl BlockSize {
     /// Conditionally subtract `BlockSize` from ourself
     pub fn checked_sub(self, rhs: Self) -> Option<Self> {
         self.0.checked_sub(rhs.0).map(Self)
+    }
+}
+
+impl std::fmt::Display for BlockSize {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        self.0.fmt(f)
     }
 }
 
@@ -714,7 +734,8 @@ where
 /// buffering writes may greatly improve performance
 /// when writing to a raw `File`.
 ///
-/// # Errors
+/// let picture_type = picture.picture_type;
+/// # Errorsprintln!("  type: {} ({})", picture_type as u8, picture_type);
 ///
 /// Passes along any I/O errors from the underlying stream.
 /// May also generate an error if any of the blocks are invalid
@@ -2819,7 +2840,7 @@ impl ToBitStream for Picture {
 }
 
 /// Defined variants of PICTURE type
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum PictureType {
     /// Other
     Other = 0,
@@ -2863,6 +2884,34 @@ pub enum PictureType {
     BandLogo = 19,
     /// Publisher or studio logotype
     PublisherLogo = 20,
+}
+
+impl std::fmt::Display for PictureType {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            Self::Other => "Other".fmt(f),
+            Self::Png32x32 => "32×32 PNG Icon".fmt(f),
+            Self::GeneralFileIcon => "General File Icon".fmt(f),
+            Self::FrontCover => "Cover (front)".fmt(f),
+            Self::BackCover => "Cover (back)".fmt(f),
+            Self::LinerNotes => "Liner Notes".fmt(f),
+            Self::MediaLabel => "Media Label".fmt(f),
+            Self::LeadArtist => "Lead Artist".fmt(f),
+            Self::Artist => "Artist".fmt(f),
+            Self::Conductor => "Conductor".fmt(f),
+            Self::Band => "Band or Orchestra".fmt(f),
+            Self::Composer => "Composer".fmt(f),
+            Self::Lyricist => "lyricist or Text Writer".fmt(f),
+            Self::RecordingLocation => "Recording Location".fmt(f),
+            Self::DuringRecording => "During Recording".fmt(f),
+            Self::DuringPerformance => "During Performance".fmt(f),
+            Self::ScreenCapture => "Movie or Video Screen Capture".fmt(f),
+            Self::Fish => "A Bright Colored Fish".fmt(f),
+            Self::Illustration => "Illustration".fmt(f),
+            Self::BandLogo => "Band or Artist Logotype".fmt(f),
+            Self::PublisherLogo => "Publisher or Studio Logotype".fmt(f),
+        }
+    }
 }
 
 impl FromBitStream for PictureType {
