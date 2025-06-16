@@ -418,7 +418,7 @@ impl std::fmt::Display for BlockSizeOverflow {
 }
 
 /// An iterator over FLAC metadata blocks
-pub struct BlockReader<R: std::io::Read> {
+pub struct BlockIterator<R: std::io::Read> {
     reader: R,
     failed: bool,
     tag_read: bool,
@@ -430,7 +430,7 @@ pub struct BlockReader<R: std::io::Read> {
     finished: bool,
 }
 
-impl<R: std::io::Read> BlockReader<R> {
+impl<R: std::io::Read> BlockIterator<R> {
     /// Creates an iterator over something that implements `Read`.
     /// Because this may perform many small reads,
     /// performance is greatly improved by buffering reads
@@ -491,7 +491,7 @@ impl<R: std::io::Read> BlockReader<R> {
     }
 }
 
-impl<R: std::io::Read> Iterator for BlockReader<R> {
+impl<R: std::io::Read> Iterator for BlockIterator<R> {
     type Item = Result<Block, Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -638,8 +638,8 @@ impl<R: std::io::Read> Iterator for BlockReader<R> {
 /// // ensure they match our APPLICATION blocks
 /// assert_eq!(blocks, vec![application_1.into(), application_2.into()]);
 /// ```
-pub fn read_blocks<R: std::io::Read>(r: R) -> BlockReader<R> {
-    BlockReader::new(r)
+pub fn read_blocks<R: std::io::Read>(r: R) -> BlockIterator<R> {
+    BlockIterator::new(r)
 }
 
 /// Returns iterator of blocks from the given path
@@ -649,7 +649,7 @@ pub fn read_blocks<R: std::io::Read>(r: R) -> BlockReader<R> {
 /// Returns any I/O error from opening the path.
 /// Note that the iterator itself may return any errors
 /// from reading individual blocks.
-pub fn blocks<P: AsRef<Path>>(p: P) -> std::io::Result<BlockReader<BufReader<File>>> {
+pub fn blocks<P: AsRef<Path>>(p: P) -> std::io::Result<BlockIterator<BufReader<File>>> {
     File::open(p.as_ref()).map(|f| read_blocks(BufReader::new(f)))
 }
 

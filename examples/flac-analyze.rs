@@ -24,11 +24,11 @@ fn main() {
 }
 
 fn display_analysis<P: AsRef<Path>>(path: P) -> Result<(), Error> {
-    use flac_codec::stream::FramesIterator;
+    use flac_codec::stream::FrameIterator;
 
     // used to determine the size of the last frame
     let file_len = path.as_ref().metadata().map(|m| m.len())?;
-    let mut frames = FramesIterator::open(path)?.peekable();
+    let mut frames = FrameIterator::open(path)?.peekable();
 
     while let Some((frame, offset)) = frames.next().transpose()? {
         // we don't keep track of each frame's size in bytes,

@@ -1924,20 +1924,20 @@ impl Frame {
 }
 
 /// An iterator of Frames
-pub struct FramesIterator<R> {
+pub struct FrameIterator<R> {
     reader: crate::Counter<R>,
     blocks: crate::metadata::BlockList,
     metadata_len: u64,
     remaining_samples: Option<u64>,
 }
 
-impl<R: std::io::Read> FramesIterator<R> {
-    /// Opens new FramesIterator from the given reader
+impl<R: std::io::Read> FrameIterator<R> {
+    /// Opens new FrameIterator from the given reader
     ///
     /// The reader must be positioned at the start of the
     /// FLAC stream.  If the file has non-FLAC data
     /// at the beginning (such as ID3v2 tags), one
-    /// should skip such data before initializing a `FramesIterator`.
+    /// should skip such data before initializing a `FrameIterator`.
     pub fn new(reader: R) -> Result<Self, Error> {
         let mut reader = crate::Counter::new(reader);
         let blocks = crate::metadata::BlockList::read(&mut reader)?;
@@ -1961,8 +1961,8 @@ impl<R: std::io::Read> FramesIterator<R> {
     }
 }
 
-impl FramesIterator<std::io::BufReader<std::fs::File>> {
-    /// Opens new FramesIterator from file on disk
+impl FrameIterator<std::io::BufReader<std::fs::File>> {
+    /// Opens new FrameIterator from file on disk
     pub fn open<P: AsRef<std::path::Path>>(path: P) -> Result<Self, Error> {
         std::fs::File::open(path.as_ref())
             .map_err(Error::Io)
@@ -1970,7 +1970,7 @@ impl FramesIterator<std::io::BufReader<std::fs::File>> {
     }
 }
 
-impl<R: std::io::Read> Iterator for FramesIterator<R> {
+impl<R: std::io::Read> Iterator for FrameIterator<R> {
     /// Returns both frame and frame's absolute position in stream, in bytes
     type Item = Result<(Frame, u64), Error>;
 
@@ -2004,7 +2004,7 @@ impl<R: std::io::Read> Iterator for FramesIterator<R> {
     }
 }
 
-impl<R> crate::metadata::Metadata for FramesIterator<R> {
+impl<R> crate::metadata::Metadata for FrameIterator<R> {
     fn channel_count(&self) -> u8 {
         self.blocks.streaminfo().channels.get()
     }

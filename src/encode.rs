@@ -1773,10 +1773,10 @@ pub fn generate_seektable<R: std::io::Read>(
 ) -> Result<crate::metadata::SeekTable, Error> {
     use crate::{
         metadata::{Metadata, SeekTable},
-        stream::FramesIterator,
+        stream::FrameIterator,
     };
 
-    let iter = FramesIterator::new(r)?;
+    let iter = FrameIterator::new(r)?;
     let metadata_len = iter.metadata_len();
     let sample_rate = iter.sample_rate();
     let mut sample_offset = 0;
