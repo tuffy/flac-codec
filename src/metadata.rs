@@ -94,9 +94,9 @@ pub trait Metadata {
 /// assert_eq!(
 ///     r.parse::<BlockHeader>().unwrap(),
 ///     BlockHeader {
-///         last: true,
-///         block_type: BlockType::Streaminfo,
-///         size: 0x00_00_22u16.into(),
+///         last: true,                         // 0b1
+///         block_type: BlockType::Streaminfo,  // 0b0000000
+///         size: 0x00_00_22u16.into(),         // 0x00, 0x00, 0x22
 ///     },
 /// );
 /// ```

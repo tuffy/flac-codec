@@ -68,6 +68,7 @@ mod private {
         + std::ops::Neg<Output = Self>
         + std::ops::AddAssign
         + Into<i64>
+        + std::fmt::Display
     {
         /// Unconditionally converts a u32 to ourself
         fn from_u32(u: u32) -> Self;
@@ -558,6 +559,12 @@ impl TryFrom<u16> for BlockSize<u16> {
     }
 }
 
+impl std::fmt::Display for BlockSize<u16> {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        u16::from(*self).fmt(f)
+    }
+}
+
 /// Possible sample rates in a FLAC frame
 ///
 /// Common rates are stored as a 4-bit value,
@@ -794,6 +801,12 @@ impl TryFrom<u32> for SampleRate<u32> {
     }
 }
 
+impl std::fmt::Display for SampleRate<u32> {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        u32::from(*self).fmt(f)
+    }
+}
+
 /// How independent channels are stored
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum Independent {
@@ -939,6 +952,17 @@ impl ChannelAssignment {
         match self {
             Self::Independent(c) => (*c).into(),
             _ => 2,
+        }
+    }
+}
+
+impl std::fmt::Display for ChannelAssignment {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            Self::Independent(_) => "INDEPENDENT".fmt(f),
+            Self::LeftSide => "LEFT_SIDE".fmt(f),
+            Self::SideRight => "SIDE_RIGHT".fmt(f),
+            Self::MidSide => "MID_SIDE".fmt(f),
         }
     }
 }
@@ -1213,6 +1237,12 @@ impl FrameNumber {
     }
 }
 
+impl std::fmt::Display for FrameNumber {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
 impl FromBitStream for FrameNumber {
     type Error = Error;
 
@@ -1393,6 +1423,17 @@ pub enum SubframeType {
     Fixed,
     /// An LPC subframe
     Lpc,
+}
+
+impl std::fmt::Display for SubframeType {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            Self::Constant => "CONSTANT".fmt(f),
+            Self::Verbatim => "VERBATIM".fmt(f),
+            Self::Fixed => "FIXED".fmt(f),
+            Self::Lpc => "LPC".fmt(f),
+        }
+    }
 }
 
 /// A subframe header's type and order
@@ -2625,6 +2666,24 @@ impl ToBitStreamUsing for Subframe<i64> {
     }
 }
 
+/// A residual block's type
+#[derive(Debug, Eq, PartialEq, Copy, Clone, Hash, Ord, PartialOrd)]
+pub enum CodingMethod {
+    /// Partitioned Rice code with 4-bit parameters
+    Rice,
+    /// Partitioned Rice code with 5-bit parameters
+    Rice2,
+}
+
+impl std::fmt::Display for CodingMethod {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            Self::Rice => "RICE".fmt(f),
+            Self::Rice2 => "RICE2".fmt(f),
+        }
+    }
+}
+
 /// Residual values for FIXED or LPC subframes
 ///
 /// | Bits | Meaning |
@@ -2696,6 +2755,24 @@ pub enum Residuals<I> {
         /// The residual partitions
         partitions: Vec<ResidualPartition<0b11111, I>>,
     },
+}
+
+impl<I> Residuals<I> {
+    /// The type of coding method in use, either Rice or Rice2
+    pub fn coding_method(&self) -> CodingMethod {
+        match self {
+            Self::Method0 { .. } => CodingMethod::Rice,
+            Self::Method1 { .. } => CodingMethod::Rice2,
+        }
+    }
+
+    /// The residual block's partition order
+    pub fn partition_order(&self) -> u32 {
+        match self {
+            Self::Method0 { partitions } => partitions.len().ilog2(),
+            Self::Method1 { partitions } => partitions.len().ilog2(),
+        }
+    }
 }
 
 impl<I: SignedInteger> Residuals<I> {
