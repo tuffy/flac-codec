@@ -2584,7 +2584,8 @@ impl Cuesheet {
         let mut tracks: Vec<ParsedTrack<'_>> = Vec::new();
 
         for line in cuesheet.lines() {
-            match line.trim_start().split_once(' ') {
+            let line = line.trim();
+            match line.split_once(' ') {
                 Some(("CATALOG", number)) if catalog.is_none() => {
                     let number = unquote(number);
                     if number.len() == 13 && number.chars().all(|c| c.is_ascii_digit()) {
@@ -2689,7 +2690,7 @@ impl Cuesheet {
                     }
                 }
                 Some((_, _)) => { /* ignore anything unrecongnized */ }
-                None => match line.trim() {
+                None => match line {
                     "CATALOG" => return Err(InvalidCuesheet::CatalogMissingNumber),
                     "ISRC" => return Err(InvalidCuesheet::ISRCMissingNumber),
                     _ => { /* ignore any unrecongized single-item entries */ }
