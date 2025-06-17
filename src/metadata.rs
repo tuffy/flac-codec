@@ -2483,6 +2483,11 @@ impl Cuesheet {
         }
 
         fn parse_isrc(isrc: &str) -> Option<Cow<'_, str>> {
+            fn filter_split(s: &str, amt: usize, f: impl Fn(char) -> bool) -> Option<&str> {
+                s.split_at_checked(amt)
+                    .and_then(|(prefix, rest)| prefix.chars().all(f).then_some(rest))
+            }
+
             // strip out dashes if necessary
             let isrc: Cow<'_, str> = if isrc.contains('-') {
                 isrc.chars()
@@ -2493,31 +2498,11 @@ impl Cuesheet {
                 isrc.into()
             };
 
-            let mut rest: &str = &isrc;
-
-            // first part of prefix code is 2 letters
-            rest = rest.split_at_checked(2).and_then(|(prefix, rest)| {
-                prefix
-                    .chars()
-                    .all(|c| c.is_ascii_alphabetic())
-                    .then_some(rest)
-            })?;
-
-            // second part of prefix code is 3 alphanumeric characters
-            rest = rest.split_at_checked(3).and_then(|(prefix, rest)| {
-                prefix
-                    .chars()
-                    .all(|c| c.is_ascii_alphanumeric())
-                    .then_some(rest)
-            })?;
-
-            // followed by 2 digit year of reference
-            rest = rest.split_at_checked(2).and_then(|(prefix, rest)| {
-                prefix.chars().all(|c| c.is_ascii_digit()).then_some(rest)
-            })?;
-
-            // the remaining 5 digits are designation code
-            rest.chars().all(|c| c.is_ascii_digit()).then_some(isrc)
+            filter_split(&isrc, 2, |c| c.is_ascii_alphabetic())
+                .and_then(|s| filter_split(s, 3, |c| c.is_ascii_alphanumeric()))
+                .and_then(|s| filter_split(s, 2, |c| c.is_ascii_digit()))
+                .and_then(|s| s.chars().all(|c| c.is_ascii_digit()).then_some(()))
+                .map(|()| isrc)
         }
 
         struct ParsedTrack<'s> {
