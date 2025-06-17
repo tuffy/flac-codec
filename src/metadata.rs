@@ -2767,6 +2767,24 @@ impl std::fmt::Display for CuesheetTimestamp {
     }
 }
 
+impl std::str::FromStr for CuesheetTimestamp {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        s.split_once(':')
+            .and_then(|(m, tail)| tail.split_once(':').map(|(s, f)| (m, s, f)))
+            .and_then(|(m, s, f)| {
+                Some(Self::Audio {
+                    minutes: m.parse().ok()?,
+                    seconds: s.parse().ok().filter(|s| *s < 60)?,
+                    frames: f.parse().ok().filter(|f| *f < 75)?,
+                })
+            })
+            .or_else(|| s.parse().ok().map(|samples| Self::NonAudio { samples }))
+            .ok_or(())
+    }
+}
+
 /// A PICTURE metadata block
 ///
 /// Picture blocks are for embedding artwork
