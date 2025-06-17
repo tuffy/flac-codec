@@ -2398,7 +2398,7 @@ pub mod fields {
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct Cuesheet {
     /// Media catalog number in ASCII printable characters
-    pub catalog_number: Box<[u8; 128]>,
+    pub catalog_number: Option<Box<[u8; 128]>>,
     /// Number of lead-in samples
     pub lead_in_samples: u64,
     /// Whether cuesheet corresponds to CA-DA
@@ -2459,6 +2459,278 @@ impl Cuesheet {
             filename,
         }
     }
+
+    /// Attempts to parse new `Cuesheet` from cue sheet file
+    ///
+    /// `total_samples` should be the total number
+    /// of channel-independent samples, used to
+    /// calculate the lead-out track
+    ///
+    /// `cuesheet` is the entire cuesheet as a string slice
+    ///
+    /// This is a simplistic cuesheet parser sufficient
+    /// for generating FLAC-compatible CUESHEET metadata blocks.
+    pub fn parse(total_samples: u64, cuesheet: &str) -> Result<Self, InvalidCuesheet> {
+        use std::borrow::Cow;
+
+        // a bit of a hack, but should be good enough for now
+        fn unquote(s: &str) -> &str {
+            if s.len() > 1 && s.starts_with('"') && s.ends_with('"') {
+                &s[1..s.len() - 1]
+            } else {
+                s
+            }
+        }
+
+        fn parse_isrc(isrc: &str) -> Option<Cow<'_, str>> {
+            // strip out dashes if necessary
+            let isrc: Cow<'_, str> = if isrc.contains('-') {
+                isrc.chars()
+                    .filter(|c| *c != '-')
+                    .collect::<String>()
+                    .into()
+            } else {
+                isrc.into()
+            };
+
+            let mut rest: &str = &isrc;
+
+            // first part of prefix code is 2 letters
+            rest = rest.split_at_checked(2).and_then(|(prefix, rest)| {
+                prefix
+                    .chars()
+                    .all(|c| c.is_ascii_alphabetic())
+                    .then_some(rest)
+            })?;
+
+            // second part of prefix code is 3 alphanumeric characters
+            rest = rest.split_at_checked(3).and_then(|(prefix, rest)| {
+                prefix
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric())
+                    .then_some(rest)
+            })?;
+
+            // followed by 2 digit year of reference
+            rest = rest.split_at_checked(2).and_then(|(prefix, rest)| {
+                prefix.chars().all(|c| c.is_ascii_digit()).then_some(rest)
+            })?;
+
+            // the remaining 5 digits are designation code
+            rest.chars().all(|c| c.is_ascii_digit()).then_some(isrc)
+        }
+
+        struct ParsedTrack<'s> {
+            number: u8,
+            is_audio: bool,
+            isrc: Option<Cow<'s, str>>,
+            // TODO - get pre-emphasis from file, if present
+            points: Vec<ParsedIndex>,
+        }
+
+        impl ParsedTrack<'_> {
+            fn is_cdda(&self) -> bool {
+                self.points.iter().all(|p| p.offset.is_audio())
+            }
+        }
+
+        impl TryFrom<ParsedTrack<'_>> for CuesheetTrack {
+            type Error = InvalidCuesheet;
+
+            fn try_from(track: ParsedTrack) -> Result<Self, Self::Error> {
+                let mut points = track.points.into_iter();
+
+                // first index point in track
+                let mut first = points.next().ok_or(InvalidCuesheet::NoIndexPoints)?;
+
+                // track offset
+                let offset = first.offset.take();
+
+                let mut index_points = vec![CuesheetIndexPoint {
+                    offset: 0,
+                    number: first.number,
+                }];
+
+                index_points.extend(points.map(|p| CuesheetIndexPoint {
+                    offset: u64::from(p.offset) - offset,
+                    number: p.number,
+                }));
+
+                Ok(Self {
+                    offset,
+                    number: track.number,
+                    isrc: track.isrc.map(|isrc| {
+                        let mut number = [0; 12];
+                        number
+                            .iter_mut()
+                            .zip(isrc.as_bytes())
+                            .for_each(|(i, o)| *i = *o);
+                        number
+                    }),
+                    non_audio: !track.is_audio,
+                    // TODO _ get pre-emphasis from file
+                    pre_emphasis: false,
+                    index_points,
+                })
+            }
+        }
+
+        struct ParsedIndex {
+            number: u8,
+            offset: CuesheetTimestamp,
+        }
+
+        let mut catalog = None;
+        let mut tracks: Vec<ParsedTrack<'_>> = Vec::new();
+
+        for line in cuesheet.lines() {
+            match line.trim_start().split_once(' ') {
+                Some(("CATALOG", number)) if catalog.is_none() => {
+                    let number = unquote(number);
+                    if number.len() == 13 && number.chars().all(|c| c.is_ascii_digit()) {
+                        catalog = Some(number);
+                    } else {
+                        return Err(InvalidCuesheet::InvalidCatalogNumber);
+                    }
+                }
+                Some(("CATALOG", _)) => {
+                    return Err(InvalidCuesheet::MultipleCatalogNumber);
+                }
+                Some(("ISRC", number)) => match tracks.last_mut() {
+                    None => return Err(InvalidCuesheet::PrematureISRC),
+                    Some(last_track) => {
+                        if !last_track.points.is_empty() {
+                            return Err(InvalidCuesheet::LateISRC);
+                        } else if last_track.isrc.is_some() {
+                            return Err(InvalidCuesheet::MultipleISRC);
+                        } else {
+                            last_track.isrc = Some(
+                                parse_isrc(unquote(number)).ok_or(InvalidCuesheet::InvalidISRC)?,
+                            );
+                        }
+                    }
+                },
+                Some(("TRACK", rest)) => {
+                    let (number, audio) =
+                        rest.split_once(' ').ok_or(InvalidCuesheet::InvalidTrack)?;
+
+                    let track = ParsedTrack {
+                        number: number
+                            .parse()
+                            .ok()
+                            .filter(|n| *n <= 99)
+                            .ok_or(InvalidCuesheet::InvalidTrack)?,
+                        is_audio: audio == "AUDIO",
+                        isrc: None,
+                        points: Vec::default(),
+                    };
+
+                    match tracks.last() {
+                        None => {
+                            tracks.push(track);
+                        }
+                        Some(last_track) => {
+                            if track.number == last_track.number + 1 {
+                                tracks.push(track);
+                            } else {
+                                return Err(InvalidCuesheet::InvalidTrack);
+                            }
+                        }
+                    }
+                }
+                Some(("INDEX", rest)) => {
+                    let (number, timestamp) = rest
+                        .split_once(' ')
+                        .ok_or(InvalidCuesheet::InvalidIndexPoint)?;
+
+                    let point = ParsedIndex {
+                        number: number
+                            .parse()
+                            .ok()
+                            .filter(|n| *n <= 99)
+                            .ok_or(InvalidCuesheet::InvalidIndexPoint)?,
+                        offset: timestamp
+                            .parse()
+                            .map_err(|()| InvalidCuesheet::InvalidIndexPoint)?,
+                    };
+
+                    let (is_first_track, track_points) = match tracks.as_mut_slice() {
+                        [] => return Err(InvalidCuesheet::PrematureIndex),
+                        [track] => (true, &mut track.points),
+                        [.., track] => (false, &mut track.points),
+                    };
+
+                    match track_points.last() {
+                        // first index point in track must be 0 or 1
+                        None => {
+                            if matches!(point.number, 0 | 1) {
+                                // first index point in first track
+                                // must have offset of 0
+                                if is_first_track && u64::from(point.offset) != 0 {
+                                    return Err(InvalidCuesheet::NonZeroStartingIndex);
+                                } else {
+                                    track_points.push(point);
+                                }
+                            } else {
+                                return Err(InvalidCuesheet::InvalidIndexPoint);
+                            }
+                        }
+                        // index points in track must increment
+                        // offsets must also increment
+                        Some(last_point) => {
+                            if (point.number == last_point.number + 1)
+                                && (u64::from(point.offset) > u64::from(last_point.offset))
+                            {
+                                track_points.push(point);
+                            } else {
+                                return Err(InvalidCuesheet::InvalidIndexPoint);
+                            }
+                        }
+                    }
+                }
+                Some((_, _)) => { /* ignore anything unrecongnized */ }
+                None => match line.trim() {
+                    "CATALOG" => return Err(InvalidCuesheet::CatalogMissingNumber),
+                    "ISRC" => return Err(InvalidCuesheet::ISRCMissingNumber),
+                    _ => { /* ignore any unrecongized single-item entries */ }
+                },
+            }
+        }
+
+        if tracks.is_empty() {
+            return Err(InvalidCuesheet::NoTracks);
+        }
+
+        let is_cdda = tracks.iter().all(|t| t.is_cdda());
+
+        // TODO - ensure total samples is past final index point
+
+        Ok(Cuesheet {
+            catalog_number: catalog.map(|catalog| {
+                let mut number = [0; 128];
+                number
+                    .iter_mut()
+                    .zip(catalog.as_bytes())
+                    .for_each(|(i, o)| *i = *o);
+                Box::new(number)
+            }),
+            lead_in_samples: if is_cdda { 88200 } else { 0 },
+            is_cdda,
+            tracks: tracks
+                .into_iter()
+                .map(CuesheetTrack::try_from)
+                // append lead-out track
+                .chain(std::iter::once(Ok(CuesheetTrack {
+                    offset: total_samples,
+                    number: if is_cdda { 170 } else { 255 },
+                    isrc: None,
+                    non_audio: false,
+                    pre_emphasis: false,
+                    index_points: vec![],
+                })))
+                .collect::<Result<Vec<_>, _>>()?,
+        })
+    }
 }
 
 block!(Cuesheet, Cuesheet, true);
@@ -2468,13 +2740,16 @@ impl FromBitStream for Cuesheet {
     type Error = Error;
 
     fn from_reader<R: BitRead + ?Sized>(r: &mut R) -> Result<Self, Self::Error> {
-        let catalog_number = r.read_to()?;
+        let catalog_number: [u8; 128] = r.read_to()?;
         let lead_in_samples = r.read_to()?;
         let is_cdda = r.read_bit()?;
         r.skip(7 + 258 * 8)?;
 
         Ok(Self {
-            catalog_number: Box::new(catalog_number),
+            catalog_number: catalog_number
+                .iter()
+                .any(|b| *b != 0)
+                .then(|| Box::new(catalog_number)),
             lead_in_samples,
             is_cdda,
             tracks: (0..r.read_to::<u8>()?)
@@ -2488,7 +2763,10 @@ impl ToBitStream for Cuesheet {
     type Error = Error;
 
     fn to_writer<W: BitWrite + ?Sized>(&self, w: &mut W) -> Result<(), Self::Error> {
-        w.write_from(*self.catalog_number)?;
+        w.write_from::<[u8; 128]>(match &self.catalog_number {
+            Some(number) => **number,
+            None => [0; 128],
+        })?;
         w.write_from(self.lead_in_samples)?;
         w.write_bit(self.is_cdda)?;
         w.pad(7 + 258 * 8)?;
@@ -2721,6 +2999,7 @@ impl ToBitStreamUsing for CuesheetIndexPoint {
 }
 
 /// A cuesheet timestamp converted to MM:SS:FF
+#[derive(Copy, Clone)]
 enum CuesheetTimestamp {
     Audio {
         minutes: u64,
@@ -2752,6 +3031,48 @@ impl CuesheetTimestamp {
     fn non_audio(offset: u64) -> Self {
         Self::NonAudio { samples: offset }
     }
+
+    fn is_audio(&self) -> bool {
+        matches!(self, Self::Audio { .. })
+    }
+
+    fn take(&mut self) -> u64 {
+        use std::mem::take;
+
+        match self {
+            Self::Audio {
+                minutes,
+                seconds,
+                frames,
+            } => u64::from(Self::Audio {
+                minutes: take(minutes),
+                seconds: take(seconds),
+                frames: take(frames),
+            }),
+            Self::NonAudio { samples } => u64::from(Self::NonAudio {
+                samples: take(samples),
+            }),
+        }
+    }
+}
+
+impl From<CuesheetTimestamp> for u64 {
+    fn from(timestamp: CuesheetTimestamp) -> u64 {
+        (match timestamp {
+            CuesheetTimestamp::Audio {
+                minutes,
+                seconds,
+                frames,
+            } => {
+                (minutes
+                    * CuesheetTimestamp::FRAMES_PER_SECOND
+                    * CuesheetTimestamp::SECONDS_PER_MINUTE)
+                    + (u64::from(seconds) * CuesheetTimestamp::FRAMES_PER_SECOND)
+                    + u64::from(frames)
+            }
+            CuesheetTimestamp::NonAudio { samples } => samples,
+        }) * CuesheetTimestamp::SAMPLES_PER_FRAME
+    }
 }
 
 impl std::fmt::Display for CuesheetTimestamp {
@@ -2782,6 +3103,65 @@ impl std::str::FromStr for CuesheetTimestamp {
             })
             .or_else(|| s.parse().ok().map(|samples| Self::NonAudio { samples }))
             .ok_or(())
+    }
+}
+
+/// An error when trying to parse cue sheet data
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum InvalidCuesheet {
+    /// CATALOG tag missing catalog number
+    CatalogMissingNumber,
+    /// multiple CATALOG numbers found
+    MultipleCatalogNumber,
+    /// CATALOG number not 13 digits
+    InvalidCatalogNumber,
+    /// Multiple ISRC numbers
+    MultipleISRC,
+    /// Invalid ISRC number
+    InvalidISRC,
+    /// ISRC number found before track
+    PrematureISRC,
+    /// ISRC number after INDEX points
+    LateISRC,
+    /// ISRC tag missing number
+    ISRCMissingNumber,
+    /// Unable to parse TRACK field correctly
+    InvalidTrack,
+    /// No tracks in cue sheet
+    NoTracks,
+    /// Non-Zero starting INDEX in first TRACK
+    NonZeroStartingIndex,
+    /// INDEX point occurs before TRACK
+    PrematureIndex,
+    /// Invalid INDEX point in cuesheet
+    InvalidIndexPoint,
+    /// No INDEX Points in track
+    NoIndexPoints,
+}
+
+impl std::error::Error for InvalidCuesheet {}
+
+impl std::fmt::Display for InvalidCuesheet {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            Self::CatalogMissingNumber => "CATALOG tag missing number".fmt(f),
+            Self::MultipleCatalogNumber => "multiple CATALOG numbers found".fmt(f),
+            Self::InvalidCatalogNumber => "invalid CATALOG number".fmt(f),
+            Self::MultipleISRC => "multiple ISRC numbers found for track".fmt(f),
+            Self::InvalidISRC => "invalid ISRC number found".fmt(f),
+            Self::PrematureISRC => "ISRC number found before TRACK".fmt(f),
+            Self::LateISRC => "ISRC number found after INDEX points".fmt(f),
+            Self::ISRCMissingNumber => "ISRC tag missing number".fmt(f),
+            Self::InvalidTrack => "invalid TRACK entry".fmt(f),
+            Self::NoTracks => "no TRACK entries in cue sheet".fmt(f),
+            Self::NonZeroStartingIndex => {
+                "first INDEX of first track must have 00:00:00 offset".fmt(f)
+            }
+            Self::PrematureIndex => "INDEX found before TRACK".fmt(f),
+            Self::InvalidIndexPoint => "invalid INDEX entry".fmt(f),
+            Self::NoIndexPoints => "no INDEX points in track".fmt(f),
+        }
     }
 }
 
