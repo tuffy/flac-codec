@@ -2436,21 +2436,16 @@ impl Cuesheet {
                         )?;
 
                         for index in &track.index_points {
-                            if self.cuesheet.is_cdda {
-                                writeln!(
-                                    f,
-                                    "    INDEX {:02} {}",
-                                    index.number,
-                                    CuesheetTimestamp::from(track.offset + index.offset)
-                                )?;
-                            } else {
-                                writeln!(
-                                    f,
-                                    "    INDEX {:02} {}",
-                                    index.number,
-                                    track.offset + index.offset
-                                )?;
-                            }
+                            writeln!(
+                                f,
+                                "    INDEX {:02} {}",
+                                index.number,
+                                (if self.cuesheet.is_cdda {
+                                    CuesheetTimestamp::audio
+                                } else {
+                                    CuesheetTimestamp::non_audio
+                                })(track.offset + index.offset)
+                            )?;
                         }
                     }
                 }
@@ -2726,23 +2721,26 @@ impl ToBitStreamUsing for CuesheetIndexPoint {
 }
 
 /// A cuesheet timestamp converted to MM:SS:FF
-struct CuesheetTimestamp {
-    minutes: u64,
-    seconds: u8,
-    frames: u8,
+enum CuesheetTimestamp {
+    Audio {
+        minutes: u64,
+        seconds: u8,
+        frames: u8,
+    },
+    NonAudio {
+        samples: u64,
+    },
 }
 
 impl CuesheetTimestamp {
     const FRAMES_PER_SECOND: u64 = 75;
     const SECONDS_PER_MINUTE: u64 = 60;
     const SAMPLES_PER_FRAME: u64 = 44100 / 75;
-}
 
-impl From<u64> for CuesheetTimestamp {
-    fn from(offset: u64) -> Self {
+    fn audio(offset: u64) -> Self {
         let total_frames = offset / Self::SAMPLES_PER_FRAME;
 
-        Self {
+        Self::Audio {
             minutes: (total_frames / Self::FRAMES_PER_SECOND) / Self::SECONDS_PER_MINUTE,
             seconds: ((total_frames / Self::FRAMES_PER_SECOND) % Self::SECONDS_PER_MINUTE)
                 .try_into()
@@ -2750,15 +2748,22 @@ impl From<u64> for CuesheetTimestamp {
             frames: (total_frames % Self::FRAMES_PER_SECOND).try_into().unwrap(),
         }
     }
+
+    fn non_audio(offset: u64) -> Self {
+        Self::NonAudio { samples: offset }
+    }
 }
 
 impl std::fmt::Display for CuesheetTimestamp {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(
-            f,
-            "{:02}:{:02}:{:02}",
-            self.minutes, self.seconds, self.frames
-        )
+        match self {
+            Self::Audio {
+                minutes,
+                seconds,
+                frames,
+            } => write!(f, "{minutes:02}:{seconds:02}:{frames:02}"),
+            Self::NonAudio { samples } => write!(f, "{samples}"),
+        }
     }
 }
 
