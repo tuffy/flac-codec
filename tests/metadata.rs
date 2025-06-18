@@ -1,7 +1,5 @@
 use flac_codec::Error;
-use flac_codec::metadata::{
-    Block, Cuesheet, CuesheetTrack, VorbisComment, read_blocks, write_blocks,
-};
+use flac_codec::metadata::{Block, VorbisComment, read_blocks, write_blocks};
 
 fn roundtrip_test(flac: &[u8]) {
     use std::io::Read;
@@ -44,20 +42,6 @@ fn basic_test(f: impl FnOnce(&mut Vec<Block>)) -> Result<(), Error> {
 
 fn seektable_test(f: impl FnOnce(&mut Vec<Block>)) -> Result<(), Error> {
     perform_test(include_bytes!("data/seektable.flac").as_slice(), f)
-}
-
-fn cuesheet_file_test(f: impl FnOnce(&mut Cuesheet)) -> Result<(), Error> {
-    perform_test(
-        include_bytes!("data/cuesheet.flac").as_slice(),
-        |blocks| match &mut blocks[2] {
-            Block::Cuesheet(cuesheet) => f(cuesheet),
-            _ => panic!("cuesheet not found"),
-        },
-    )
-}
-
-fn cuesheet_test(f: impl FnOnce(&mut CuesheetTrack)) -> Result<(), Error> {
-    cuesheet_file_test(|cuesheet| f(&mut cuesheet.tracks[1]))
 }
 
 #[test]
@@ -137,78 +121,5 @@ fn test_write_metadata() {
             }
         }),
         Err(Error::InvalidSeekTablePoint)
-    ));
-
-    assert!(matches!(cuesheet_test(|_| { /* do nothing */ }), Ok(())));
-
-    // the total number of CUESHEET tracks must fit into a u8
-    assert!(matches!(
-        cuesheet_file_test(|Cuesheet { tracks, .. }| {
-            let track = tracks[0].clone();
-            while tracks.len() < 256 {
-                tracks.insert(0, track.clone());
-            }
-        }),
-        Err(Error::ExcessiveCuesheetTracks)
-    ));
-
-    // CUESHEET index points must be evenly divisible by 588
-    assert!(matches!(
-        cuesheet_test(|track| {
-            track.offset += 1;
-        }),
-        Err(Error::InvalidCuesheetOffset)
-    ));
-
-    // the total CUESHEET track index points must fit into a u8
-    assert!(matches!(
-        cuesheet_test(|track| {
-            let point = track.index_points[0].clone();
-            while track.index_points.len() < 256 {
-                track.index_points.push(point.clone());
-            }
-        }),
-        Err(Error::ExcessiveCuesheetIndexPoints)
-    ));
-
-    // non-lead out tracks must have at least 1 index point
-    assert!(matches!(
-        cuesheet_test(|track| {
-            track.index_points.clear();
-        }),
-        Err(Error::InvalidCuesheetIndexPoints)
-    ));
-
-    // the first index point must be 0 or 1
-    assert!(matches!(
-        cuesheet_test(|track| {
-            track.index_points[0].number = 2;
-        }),
-        Err(Error::InvalidCuesheetIndexPointNum)
-    ));
-
-    // index points must increment
-    assert!(matches!(
-        cuesheet_test(|track| {
-            track.index_points[1].number = track.index_points[0].number;
-        }),
-        Err(Error::InvalidCuesheetIndexPointNum)
-    ));
-
-    // lead-out tracks must have no index points
-    assert!(matches!(
-        cuesheet_file_test(|Cuesheet { tracks, .. }| {
-            use flac_codec::metadata::CuesheetIndexPoint;
-
-            tracks
-                .last_mut()
-                .unwrap()
-                .index_points
-                .push(CuesheetIndexPoint {
-                    number: 0,
-                    offset: 0,
-                });
-        }),
-        Err(Error::InvalidCuesheetIndexPoints)
     ));
 }

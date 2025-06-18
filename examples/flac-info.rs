@@ -112,23 +112,22 @@ fn display_vorbis_comment(comment: VorbisComment) {
 }
 
 fn display_cuesheet(cuesheet: Cuesheet) {
-    println!(
-        "  media catalog number: {}",
-        Hex(trim_nulls(cuesheet.catalog_number.as_slice()))
-    );
-    println!("  lead-in: {}", cuesheet.lead_in_samples);
-    println!("  is CDDA: {}", cuesheet.is_cdda);
-    println!("  number of tracks: {}", cuesheet.tracks.len());
+    use flac_codec::metadata::cuesheet::{Contiguous, LeadOut, Track, Index, Adjacent};
 
-    for (num, track) in cuesheet.tracks.into_iter().enumerate() {
-        println!("    track[{num}]");
-        println!("      offset: {}", track.offset);
-        if track.number == 255 {
-            println!("      number: 255 (LEAD-OUT)");
-        } else {
+    fn display_tracks<O, N>(tracks: Contiguous<Track<O, N, Contiguous<Index<O>>>>, lead_out: Track<O, LeadOut, ()>)
+    where
+        N: std::fmt::Display + Adjacent,
+        O: std::fmt::Display + Adjacent,
+    {
+        let tracks_len = tracks.len();
+        println!("  number of tracks: {}", tracks_len + 1);
+
+        for (num, track) in tracks.into_iter().enumerate() {
+            println!("    track[{num}]");
+            println!("      offset: {}", track.offset);
             println!("      number: {}", track.number);
-            match track.isrc {
-                Some(isrc) => println!("      ISRC: {}", Hex(&isrc)),
+            match &track.isrc {
+                Some(isrc) => println!("      ISRC: {}", isrc.as_ref()),
                 None => println!("      IRSC:"),
             }
             println!(
@@ -147,6 +146,37 @@ fn display_cuesheet(cuesheet: Cuesheet) {
                 println!("          number: {}", point.number);
             }
         }
+        println!("    track[{}]", tracks_len);
+        println!("      offset: {}", lead_out.offset);
+        println!("      number: (LEAD-OUT)");
+        match lead_out.isrc {
+            Some(isrc) => println!("      ISRC: {}", isrc.as_ref()),
+            None => println!("      IRSC:"),
+        }
+        println!(
+            "      type: {}",
+            if lead_out.non_audio {
+                "NON-AUDIO"
+            } else {
+                "AUDIO"
+            }
+        );
+        println!("      pre-emphasis: {}", lead_out.pre_emphasis);
+    }
+
+    println!("  media catalog number: {}", cuesheet.catalog_number(),);
+    if let Some(lead_in_samples) = cuesheet.lead_in_samples() {
+        println!("  lead-in: {lead_in_samples}");
+    }
+    println!("  is CDDA: {}", cuesheet.is_cdda());
+
+    match cuesheet {
+        Cuesheet::CDDA {
+            tracks, lead_out, ..
+        } => display_tracks(tracks, lead_out),
+        Cuesheet::NonCDDA {
+            tracks, lead_out, ..
+        } => display_tracks(tracks, lead_out),
     }
 }
 
@@ -171,11 +201,4 @@ impl std::fmt::Display for Hex<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         self.0.iter().try_for_each(|b| write!(f, "{:02x}", b))
     }
-}
-
-fn trim_nulls(mut s: &[u8]) -> &[u8] {
-    while let [rest @ .., 0] = s {
-        s = rest
-    }
-    s
 }

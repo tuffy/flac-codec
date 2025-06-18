@@ -67,6 +67,10 @@ pub enum Error {
     InvalidSeekTableSize,
     /// A SEEKTABLE point whose offset does not increment properly
     InvalidSeekTablePoint,
+    /// A CDDA CUESHEET has invalid catalog number
+    InvalidCatalogNumber,
+    /// Invalid CUESHEET ISRC code
+    InvalidISRC,
     /// A CDDA CUESHEET offset that does not start on a CD frame boundary
     InvalidCuesheetOffset,
     /// An invalid CDDA CUESHEET track number
@@ -99,10 +103,10 @@ pub enum Error {
     ExcessiveStringLength,
     /// A `Picture` struct whose data is larger than a `u32`
     ExcessivePictureSize,
-    /// A `Cuesheet` struct with more than `u8` tracks
-    ExcessiveCuesheetTracks,
-    /// A `CuesheetTrack` struct with more than `u8` index points
-    ExcessiveCuesheetIndexPoints,
+    /// A `Cuesheet` with an invalid number of tracks
+    InvalidCuesheetTrackCount,
+    /// A `CuesheetTrack` with an invalud number of index points
+    InvalidCuesheetIndexPointCount,
     /// A block size less than 15 that's not the last block
     ShortBlock,
     /// A metadata block larger than its 24-bit size field can hold
@@ -207,6 +211,8 @@ impl std::fmt::Display for Error {
             Self::MultipleVorbisComment => "multiple VORBIS_COMMENT blocks found in file".fmt(f),
             Self::InvalidSeekTableSize => "invalid SEEKTABLE block size".fmt(f),
             Self::InvalidSeekTablePoint => "invalid SEEKTABLE point".fmt(f),
+            Self::InvalidCatalogNumber => "invalid CUESHEET catalog number".fmt(f),
+            Self::InvalidISRC => "invalid CUESHEET track ISRC".fmt(f),
             Self::InvalidCuesheetOffset => "invalid CUESHEET sample offset".fmt(f),
             Self::InvalidCuesheetTrackNumber => "invalid CUESHEET track number".fmt(f),
             Self::InvalidCuesheetIndexPoints => {
@@ -223,9 +229,9 @@ impl std::fmt::Display for Error {
             Self::ExcessiveVorbisEntries => "excessive number of VORBIS_COMMENT entries".fmt(f),
             Self::ExcessiveStringLength => "excessive string length".fmt(f),
             Self::ExcessivePictureSize => "excessive PICTURE data size".fmt(f),
-            Self::ExcessiveCuesheetTracks => "excessive number of CUESHEET tracks".fmt(f),
-            Self::ExcessiveCuesheetIndexPoints => {
-                "excessive number of CUESHEET track index points".fmt(f)
+            Self::InvalidCuesheetTrackCount => "invalid number of CUESHEET tracks".fmt(f),
+            Self::InvalidCuesheetIndexPointCount => {
+                "invalid number of CUESHEET track index points".fmt(f)
             }
             Self::ExcessiveBlockSize => "excessive metadata block size".fmt(f),
             Self::InvalidSyncCode => "invalid frame sync code".fmt(f),
