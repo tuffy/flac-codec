@@ -2393,6 +2393,7 @@ pub mod fields {
 /// | 64 | `lead_in_samples` | number of lead-in samples
 /// | 1  | `is_cdda` | whether cuesheet corresponds to CD-DA
 /// | 7+258×8 | padding | all 0 bits
+/// | 8  | track count | number of cuesheet tracks
 /// | | `tracks` | cuesheet track₀, cuesheet track₁, …
 ///
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -2407,10 +2408,11 @@ pub enum Cuesheet {
 
         /// The cue sheet's non-lead-out tracks
         tracks: cuesheet::Contiguous<
+            99,
             cuesheet::Track<
                 cuesheet::CDDAOffset,
-                cuesheet::CDDATrackNum,
-                cuesheet::Contiguous<cuesheet::Index<cuesheet::CDDAOffset>>,
+                NonZero<u8>,
+                cuesheet::Contiguous<255, cuesheet::Index<cuesheet::CDDAOffset>>,
             >,
         >,
 
@@ -2424,11 +2426,8 @@ pub enum Cuesheet {
 
         /// The cue sheet's non-lead-out tracks
         tracks: cuesheet::Contiguous<
-            cuesheet::Track<
-                u64,
-                cuesheet::NonCDDATrackNum,
-                cuesheet::Contiguous<cuesheet::Index<u64>>,
-            >,
+            255,
+            cuesheet::Track<u64, NonZero<u8>, cuesheet::Contiguous<255, cuesheet::Index<u64>>>,
         >,
 
         /// The required lead-out-track
@@ -3028,17 +3027,17 @@ pub mod cuesheet {
 
     /// A Vec-like type which requires all items to be adjacent
     #[derive(Debug, Clone, Eq, PartialEq)]
-    pub struct Contiguous<T: Adjacent> {
+    pub struct Contiguous<const MAX: usize, T: Adjacent> {
         items: Vec<T>,
     }
 
-    impl<T: Adjacent> Default for Contiguous<T> {
+    impl<const MAX: usize, T: Adjacent> Default for Contiguous<MAX, T> {
         fn default() -> Self {
             Self { items: Vec::new() }
         }
     }
 
-    impl<T: Adjacent> Contiguous<T> {
+    impl<const MAX: usize, T: Adjacent> Contiguous<MAX, T> {
         /// Attempts to push item into contiguous set
         ///
         /// # Errors
@@ -3047,23 +3046,27 @@ pub mod cuesheet {
         /// in the set or is not contiguous with the
         /// existing items.
         pub fn try_push(&mut self, item: T) -> Result<(), T> {
-            match self.items.last() {
-                None => {
-                    if item.valid_first() {
-                        self.items.push(item);
-                        Ok(())
-                    } else {
-                        Err(item)
+            if self.items.len() < MAX {
+                match self.items.last() {
+                    None => {
+                        if item.valid_first() {
+                            self.items.push(item);
+                            Ok(())
+                        } else {
+                            Err(item)
+                        }
+                    }
+                    Some(last) => {
+                        if item.is_next(last) {
+                            self.items.push(item);
+                            Ok(())
+                        } else {
+                            Err(item)
+                        }
                     }
                 }
-                Some(last) => {
-                    if item.is_next(last) {
-                        self.items.push(item);
-                        Ok(())
-                    } else {
-                        Err(item)
-                    }
-                }
+            } else {
+                Err(item)
             }
         }
 
@@ -3083,7 +3086,7 @@ pub mod cuesheet {
         }
     }
 
-    impl<T: Adjacent> std::ops::Deref for Contiguous<T> {
+    impl<const MAX: usize, T: Adjacent> std::ops::Deref for Contiguous<MAX, T> {
         type Target = [T];
 
         fn deref(&self) -> &[T] {
@@ -3159,114 +3162,6 @@ pub mod cuesheet {
 
         fn is_next(&self, previous: &Self) -> bool {
             self.offset > previous.offset
-        }
-    }
-
-    /// A CD-DA track number between 1 and 99, inclusive
-    #[derive(Copy, Clone, Eq, PartialEq, Debug)]
-    pub struct CDDATrackNum {
-        number: std::num::NonZero<u8>,
-    }
-
-    impl CDDATrackNum {
-        const MAX: NonZero<u8> = NonZero::new(99).unwrap();
-    }
-
-    impl std::fmt::Display for CDDATrackNum {
-        fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-            write!(f, "{:02}", self.number)
-        }
-    }
-
-    impl FromBitStream for CDDATrackNum {
-        type Error = Error;
-
-        fn from_reader<R: BitRead + ?Sized>(r: &mut R) -> Result<Self, Self::Error> {
-            Ok(Self {
-                number: r.read_to::<u8>().map_err(Error::Io).and_then(|n| {
-                    NonZero::new(n)
-                        .filter(|n| *n <= Self::MAX)
-                        .ok_or(Error::InvalidCuesheetTrackNumber)
-                })?,
-            })
-        }
-    }
-
-    impl ToBitStream for CDDATrackNum {
-        type Error = std::io::Error;
-
-        fn to_writer<W: BitWrite + ?Sized>(&self, w: &mut W) -> Result<(), Self::Error> {
-            // value already checked to be <= MAX,
-            // so no need to check it again
-            w.write_from(self.number.get())
-        }
-    }
-
-    impl Adjacent for CDDATrackNum {
-        fn valid_first(&self) -> bool {
-            self.number == std::num::NonZero::<u8>::MIN
-        }
-
-        fn is_next(&self, previous: &Self) -> bool {
-            previous
-                .number
-                .checked_add(1)
-                .map(|n| n == self.number)
-                .unwrap_or(false)
-        }
-    }
-
-    /// A non-CD-DA track number between 1 and 254, inclusive
-    #[derive(Copy, Clone, Eq, PartialEq, Debug)]
-    pub struct NonCDDATrackNum {
-        number: std::num::NonZero<u8>,
-    }
-
-    impl NonCDDATrackNum {
-        const MAX: NonZero<u8> = NonZero::new(254).unwrap();
-    }
-
-    impl std::fmt::Display for NonCDDATrackNum {
-        fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-            write!(f, "{:02}", self.number)
-        }
-    }
-
-    impl Adjacent for NonCDDATrackNum {
-        fn valid_first(&self) -> bool {
-            self.number == std::num::NonZero::<u8>::MIN
-        }
-
-        fn is_next(&self, previous: &Self) -> bool {
-            previous
-                .number
-                .checked_add(1)
-                .map(|n| n == self.number)
-                .unwrap_or(false)
-        }
-    }
-
-    impl FromBitStream for NonCDDATrackNum {
-        type Error = Error;
-
-        fn from_reader<R: BitRead + ?Sized>(r: &mut R) -> Result<Self, Self::Error> {
-            Ok(Self {
-                number: r.read_to::<u8>().map_err(Error::Io).and_then(|n| {
-                    NonZero::new(n)
-                        .filter(|n| *n <= Self::MAX)
-                        .ok_or(Error::InvalidCuesheetTrackNumber)
-                })?,
-            })
-        }
-    }
-
-    impl ToBitStream for NonCDDATrackNum {
-        type Error = std::io::Error;
-
-        fn to_writer<W: BitWrite + ?Sized>(&self, w: &mut W) -> Result<(), Self::Error> {
-            // value already checked to be <= MAX,
-            // so no need to check it again
-            w.write_from(self.number.get())
         }
     }
 
@@ -3385,12 +3280,15 @@ pub mod cuesheet {
         pub index_points: P,
     }
 
-    impl FromBitStream for Track<CDDAOffset, CDDATrackNum, Contiguous<Index<CDDAOffset>>> {
+    impl FromBitStream for Track<CDDAOffset, NonZero<u8>, Contiguous<255, Index<CDDAOffset>>> {
         type Error = Error;
 
         fn from_reader<R: BitRead + ?Sized>(r: &mut R) -> Result<Self, Self::Error> {
             let offset = r.parse()?;
-            let number = r.parse()?;
+            let number = r
+                .read_to()
+                .map_err(Error::Io)
+                .and_then(|s| NonZero::new(s).ok_or(Error::InvalidCuesheetTrackNumber))?;
             let isrc = ISRC::read_opt(r)?;
             let non_audio = r.read_bit()?;
             let pre_emphasis = r.read_bit()?;
@@ -3412,12 +3310,12 @@ pub mod cuesheet {
         }
     }
 
-    impl ToBitStream for Track<CDDAOffset, CDDATrackNum, Contiguous<Index<CDDAOffset>>> {
+    impl ToBitStream for Track<CDDAOffset, NonZero<u8>, Contiguous<255, Index<CDDAOffset>>> {
         type Error = Error;
 
         fn to_writer<W: BitWrite + ?Sized>(&self, w: &mut W) -> Result<(), Self::Error> {
             w.build(&self.offset)?;
-            w.build(&self.number)?;
+            w.write_from(self.number.get())?;
             ISRC::write_opt(w, self.isrc.as_ref())?;
             w.write_bit(self.non_audio)?;
             w.write_bit(self.pre_emphasis)?;
@@ -3475,12 +3373,15 @@ pub mod cuesheet {
         }
     }
 
-    impl FromBitStream for Track<u64, NonCDDATrackNum, Contiguous<Index<u64>>> {
+    impl FromBitStream for Track<u64, NonZero<u8>, Contiguous<255, Index<u64>>> {
         type Error = Error;
 
         fn from_reader<R: BitRead + ?Sized>(r: &mut R) -> Result<Self, Self::Error> {
             let offset = r.read_to()?;
-            let number = r.parse()?;
+            let number = r
+                .read_to()
+                .map_err(Error::Io)
+                .and_then(|s| NonZero::new(s).ok_or(Error::InvalidCuesheetTrackNumber))?;
             let isrc = ISRC::read_opt(r)?;
             let non_audio = r.read_bit()?;
             let pre_emphasis = r.read_bit()?;
@@ -3502,12 +3403,12 @@ pub mod cuesheet {
         }
     }
 
-    impl ToBitStream for Track<u64, NonCDDATrackNum, Contiguous<Index<u64>>> {
+    impl ToBitStream for Track<u64, NonZero<u8>, Contiguous<255, Index<u64>>> {
         type Error = Error;
 
         fn to_writer<W: BitWrite + ?Sized>(&self, w: &mut W) -> Result<(), Self::Error> {
             w.write_from(self.offset)?;
-            w.build(&self.number)?;
+            w.write_from(self.number.get())?;
             ISRC::write_opt(w, self.isrc.as_ref())?;
             w.write_bit(self.non_audio)?;
             w.write_bit(self.pre_emphasis)?;

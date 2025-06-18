@@ -112,10 +112,12 @@ fn display_vorbis_comment(comment: VorbisComment) {
 }
 
 fn display_cuesheet(cuesheet: Cuesheet) {
-    use flac_codec::metadata::cuesheet::{Contiguous, LeadOut, Track, Index, Adjacent};
+    use flac_codec::metadata::cuesheet::{Adjacent, Contiguous, Index, LeadOut, Track};
 
-    fn display_tracks<O, N>(tracks: Contiguous<Track<O, N, Contiguous<Index<O>>>>, lead_out: Track<O, LeadOut, ()>)
-    where
+    fn display_tracks<const MAX: usize, O, N>(
+        tracks: Contiguous<MAX, Track<O, N, Contiguous<255, Index<O>>>>,
+        lead_out: Track<O, LeadOut, ()>,
+    ) where
         N: std::fmt::Display + Adjacent,
         O: std::fmt::Display + Adjacent,
     {
