@@ -2438,8 +2438,33 @@ pub enum Cuesheet {
 impl Cuesheet {
     /// Media catalog number
     pub fn catalog_number(&self) -> impl std::fmt::Display {
-        // FIXME - implement this
-        "TODO"
+        use cuesheet::Digit;
+
+        enum Digits<'d> {
+            Digits(&'d [Digit]),
+            Empty,
+        }
+
+        impl std::fmt::Display for Digits<'_> {
+            fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                match self {
+                    Self::Digits(digits) => digits.iter().try_for_each(|d| d.fmt(f)),
+                    Self::Empty => Ok(()),
+                }
+            }
+        }
+
+        match self {
+            Self::CDDA {
+                catalog_number: Some(catalog_number),
+                ..
+            } => Digits::Digits(catalog_number),
+            Self::CDDA {
+                catalog_number: None,
+                ..
+            } => Digits::Empty,
+            Self::NonCDDA { catalog_number, .. } => Digits::Digits(catalog_number),
+        }
     }
 
     /// The number of lead-in samples for CD-DA discs

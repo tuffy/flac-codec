@@ -27,9 +27,27 @@ fn test_png() {
     test(32, 32, 16, 0, include_bytes!("data/images/basn0g16.png"));
     test(32, 32, 24, 0, include_bytes!("data/images/basn2c08.png"));
     test(32, 32, 48, 0, include_bytes!("data/images/basn2c16.png"));
-    test(32, 32, 0, 1 << 1, include_bytes!("data/images/basn3p01.png"));
-    test(32, 32, 0, 1 << 2, include_bytes!("data/images/basn3p02.png"));
-    test(32, 32, 0, 1 << 8, include_bytes!("data/images/basn3p08.png"));
+    test(
+        32,
+        32,
+        0,
+        1 << 1,
+        include_bytes!("data/images/basn3p01.png"),
+    );
+    test(
+        32,
+        32,
+        0,
+        1 << 2,
+        include_bytes!("data/images/basn3p02.png"),
+    );
+    test(
+        32,
+        32,
+        0,
+        1 << 8,
+        include_bytes!("data/images/basn3p08.png"),
+    );
     test(32, 32, 16, 0, include_bytes!("data/images/basn4a08.png"));
     test(32, 32, 32, 0, include_bytes!("data/images/basn4a16.png"));
     test(32, 32, 32, 0, include_bytes!("data/images/basn6a08.png"));
@@ -55,14 +73,24 @@ fn test_jpeg() {
         );
     }
 
-    test(49, 37, 24, include_bytes!("data/images/sample-blue-100x75.jpg"));
+    test(
+        49,
+        37,
+        24,
+        include_bytes!("data/images/sample-blue-100x75.jpg"),
+    );
     test(
         100,
         100,
         24,
         include_bytes!("data/images/sample-green-200x200.jpg"),
     );
-    test(150, 150, 24, include_bytes!("data/images/sample-red-400x300.jpg"));
+    test(
+        150,
+        150,
+        24,
+        include_bytes!("data/images/sample-red-400x300.jpg"),
+    );
 }
 
 #[test]
@@ -85,7 +113,22 @@ fn test_gif() {
         );
     }
 
-    test(50, 38, 2, include_bytes!("data/images/sample-red-100x75.gif"));
-    test(100, 100, 2, include_bytes!("data/images/sample-green-200x200.gif"));
-    test(200, 150, 2, include_bytes!("data/images/sample-blue-400x300.gif"));
+    test(
+        50,
+        38,
+        2,
+        include_bytes!("data/images/sample-red-100x75.gif"),
+    );
+    test(
+        100,
+        100,
+        2,
+        include_bytes!("data/images/sample-green-200x200.gif"),
+    );
+    test(
+        200,
+        150,
+        2,
+        include_bytes!("data/images/sample-blue-400x300.gif"),
+    );
 }
