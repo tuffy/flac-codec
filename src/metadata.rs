@@ -2407,17 +2407,10 @@ pub enum Cuesheet {
         lead_in_samples: u64,
 
         /// The cue sheet's non-lead-out tracks
-        tracks: cuesheet::Contiguous<
-            99,
-            cuesheet::Track<
-                cuesheet::CDDAOffset,
-                NonZero<u8>,
-                cuesheet::Contiguous<255, cuesheet::Index<cuesheet::CDDAOffset>>,
-            >,
-        >,
+        tracks: cuesheet::Contiguous<99, cuesheet::TrackCDDA>,
 
         /// The required lead-out-track
-        lead_out: cuesheet::Track<cuesheet::CDDAOffset, cuesheet::LeadOut, ()>,
+        lead_out: cuesheet::LeadOutCDDA,
     },
     /// A Non-CD-DA Cuesheet, for non-audio CDs
     NonCDDA {
@@ -2425,13 +2418,10 @@ pub enum Cuesheet {
         catalog_number: Vec<cuesheet::Digit>,
 
         /// The cue sheet's non-lead-out tracks
-        tracks: cuesheet::Contiguous<
-            255,
-            cuesheet::Track<u64, NonZero<u8>, cuesheet::Contiguous<255, cuesheet::Index<u64>>>,
-        >,
+        tracks: cuesheet::Contiguous<254, cuesheet::TrackNonCDDA>,
 
         /// The required lead-out-track
-        lead_out: cuesheet::Track<u64, cuesheet::LeadOut, ()>,
+        lead_out: cuesheet::LeadOutNonCDDA,
     },
 }
 
@@ -2535,9 +2525,7 @@ impl Cuesheet {
                                     f,
                                     "    INDEX {:02} {}",
                                     index.number,
-                                    cuesheet::Timestamp::from(u64::from(
-                                        index.offset + track.offset
-                                    )),
+                                    cuesheet::Timestamp::from(index.offset + track.offset),
                                 )?;
                             }
                         }
@@ -3500,6 +3488,18 @@ pub mod cuesheet {
             self.offset.is_next(&previous.offset) && self.number.is_next(&previous.number)
         }
     }
+
+    /// A CD-DA CUESHEET track
+    pub type TrackCDDA = Track<CDDAOffset, NonZero<u8>, Contiguous<255, Index<CDDAOffset>>>;
+
+    /// A non-CD-DA CUESHEET track
+    pub type TrackNonCDDA = Track<u64, NonZero<u8>, Contiguous<255, Index<u64>>>;
+
+    /// A CD-DA CUESHEET lead-out track
+    pub type LeadOutCDDA = Track<CDDAOffset, LeadOut, ()>;
+
+    /// A non-CD-DA CUESHEET lead-out track
+    pub type LeadOutNonCDDA = Track<u64, LeadOut, ()>;
 
     /// An individual CUESHEET track index point
     ///
