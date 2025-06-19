@@ -128,10 +128,7 @@ fn display_cuesheet(cuesheet: Cuesheet) {
             println!("    track[{num}]");
             println!("      offset: {}", track.offset);
             println!("      number: {}", track.number);
-            match &track.isrc {
-                Some(isrc) => println!("      ISRC: {}", isrc.as_ref()),
-                None => println!("      IRSC:"),
-            }
+            println!("      ISRC: {}", track.isrc);
             println!(
                 "      type: {}",
                 if track.non_audio {
@@ -151,10 +148,7 @@ fn display_cuesheet(cuesheet: Cuesheet) {
         println!("    track[{}]", tracks_len);
         println!("      offset: {}", lead_out.offset);
         println!("      number: (LEAD-OUT)");
-        match lead_out.isrc {
-            Some(isrc) => println!("      ISRC: {}", isrc.as_ref()),
-            None => println!("      IRSC:"),
-        }
+        println!("      ISRC: {}", lead_out.isrc);
         println!(
             "      type: {}",
             if lead_out.non_audio {

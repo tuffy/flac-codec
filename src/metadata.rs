@@ -3074,17 +3074,23 @@ pub mod cuesheet {
         pub const NON_CDDA: NonZero<u8> = NonZero::new(255).unwrap();
     }
 
-    /// An ISRC value
+    /// An ISRC value string matching the format
     #[derive(Debug, Clone, Eq, PartialEq)]
-    pub struct ISRC(String);
+    pub struct ISRCString(String);
 
-    impl AsRef<str> for ISRC {
+    impl std::fmt::Display for ISRCString {
+        fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            self.0.fmt(f)
+        }
+    }
+
+    impl AsRef<str> for ISRCString {
         fn as_ref(&self) -> &str {
             self.0.as_str()
         }
     }
 
-    impl FromStr for ISRC {
+    impl FromStr for ISRCString {
         type Err = Error;
 
         fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -3106,38 +3112,77 @@ pub mod cuesheet {
                 .and_then(|s| filter_split(s, 3, |c| c.is_ascii_alphanumeric()))
                 .and_then(|s| filter_split(s, 2, |c| c.is_ascii_digit()))
                 .and_then(|s| s.chars().all(|c| c.is_ascii_digit()).then_some(()))
-                .map(|()| ISRC(isrc.into_owned()))
+                .map(|()| ISRCString(isrc.into_owned()))
                 .ok_or(Error::InvalidISRC)
         }
     }
 
-    impl ISRC {
-        fn read_opt<R: BitRead + ?Sized>(r: &mut R) -> Result<Option<Self>, Error> {
+    /// An optional ISRC value
+    #[derive(Default, Debug, Clone, Eq, PartialEq)]
+    pub enum ISRC {
+        /// An undefined ISRC value in which all bits are 0
+        #[default]
+        None,
+        /// A defined ISRC value matching the ISRC format
+        String(ISRCString),
+    }
+
+    impl std::fmt::Display for ISRC {
+        fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            match self {
+                Self::String(s) => s.fmt(f),
+                Self::None => "".fmt(f),
+            }
+        }
+    }
+
+    impl FromBitStream for ISRC {
+        type Error = Error;
+
+        fn from_reader<R: BitRead + ?Sized>(r: &mut R) -> Result<Self, Error> {
             let isrc = r.read_to::<[u8; 12]>()?;
             if isrc.iter().all(|b| *b == 0) {
-                Ok(None)
+                Ok(ISRC::None)
             } else {
                 str::from_utf8(&isrc)
                     .map_err(|_| Error::InvalidISRC)
-                    .and_then(ISRC::from_str)
-                    .map(Some)
+                    .and_then(ISRCString::from_str)
+                    .map(ISRC::String)
             }
         }
+    }
 
-        fn write_opt<W: BitWrite + ?Sized>(
-            w: &mut W,
-            isrc: Option<&ISRC>,
-        ) -> Result<(), std::io::Error> {
-            w.write_from(match isrc {
-                Some(isrc) => {
+    impl ToBitStream for ISRC {
+        type Error = std::io::Error;
+
+        fn to_writer<W: BitWrite + ?Sized>(&self, w: &mut W) -> Result<(), std::io::Error> {
+            w.write_from(match self {
+                Self::String(isrc) => {
                     let mut o = [0; 12];
                     o.iter_mut()
                         .zip(isrc.as_ref().as_bytes())
                         .for_each(|(o, i)| *o = *i);
                     o
                 }
-                None => [0; 12],
+                Self::None => [0; 12],
             })
+        }
+    }
+
+    impl AsRef<str> for ISRC {
+        fn as_ref(&self) -> &str {
+            match self {
+                Self::String(s) => s.as_ref(),
+                Self::None => "",
+            }
+        }
+    }
+
+    impl FromStr for ISRC {
+        type Err = Error;
+
+        fn from_str(s: &str) -> Result<Self, Error> {
+            ISRCString::from_str(s).map(ISRC::String)
         }
     }
 
@@ -3165,7 +3210,7 @@ pub mod cuesheet {
         pub number: N,
 
         /// Track's ISRC
-        pub isrc: Option<ISRC>,
+        pub isrc: ISRC,
 
         /// Whether track is non-audio
         pub non_audio: bool,
@@ -3186,7 +3231,7 @@ pub mod cuesheet {
                 .read_to()
                 .map_err(Error::Io)
                 .and_then(|s| NonZero::new(s).ok_or(Error::InvalidCuesheetTrackNumber))?;
-            let isrc = ISRC::read_opt(r)?;
+            let isrc = r.parse()?;
             let non_audio = r.read_bit()?;
             let pre_emphasis = r.read_bit()?;
             r.skip(6 + 13 * 8)?;
@@ -3213,7 +3258,7 @@ pub mod cuesheet {
         fn to_writer<W: BitWrite + ?Sized>(&self, w: &mut W) -> Result<(), Self::Error> {
             w.build(&self.offset)?;
             w.write_from(self.number.get())?;
-            ISRC::write_opt(w, self.isrc.as_ref())?;
+            w.build(&self.isrc)?;
             w.write_bit(self.non_audio)?;
             w.write_bit(self.pre_emphasis)?;
             w.pad(6 + 13 * 8)?;
@@ -3237,7 +3282,7 @@ pub mod cuesheet {
                     .map(|_| LeadOut)
                     .ok_or(Error::InvalidCuesheetTrackNumber)
             })?;
-            let isrc = ISRC::read_opt(r)?;
+            let isrc = r.parse()?;
             let non_audio = r.read_bit()?;
             let pre_emphasis = r.read_bit()?;
             r.skip(6 + 13 * 8)?;
@@ -3261,7 +3306,7 @@ pub mod cuesheet {
         fn to_writer<W: BitWrite + ?Sized>(&self, w: &mut W) -> Result<(), Self::Error> {
             w.build(&self.offset)?;
             w.write_from(LeadOut::CDDA.get())?;
-            ISRC::write_opt(w, self.isrc.as_ref())?;
+            w.build(&self.isrc)?;
             w.write_bit(self.non_audio)?;
             w.write_bit(self.pre_emphasis)?;
             w.pad(6 + 13 * 8)?;
@@ -3279,7 +3324,7 @@ pub mod cuesheet {
                 .read_to()
                 .map_err(Error::Io)
                 .and_then(|s| NonZero::new(s).ok_or(Error::InvalidCuesheetTrackNumber))?;
-            let isrc = ISRC::read_opt(r)?;
+            let isrc = r.parse()?;
             let non_audio = r.read_bit()?;
             let pre_emphasis = r.read_bit()?;
             r.skip(6 + 13 * 8)?;
@@ -3306,7 +3351,7 @@ pub mod cuesheet {
         fn to_writer<W: BitWrite + ?Sized>(&self, w: &mut W) -> Result<(), Self::Error> {
             w.write_from(self.offset)?;
             w.write_from(self.number.get())?;
-            ISRC::write_opt(w, self.isrc.as_ref())?;
+            w.build(&self.isrc)?;
             w.write_bit(self.non_audio)?;
             w.write_bit(self.pre_emphasis)?;
             w.pad(6 + 13 * 8)?;
@@ -3330,7 +3375,7 @@ pub mod cuesheet {
                     .map(|_| LeadOut)
                     .ok_or(Error::InvalidCuesheetTrackNumber)
             })?;
-            let isrc = ISRC::read_opt(r)?;
+            let isrc = r.parse()?;
             let non_audio = r.read_bit()?;
             let pre_emphasis = r.read_bit()?;
             r.skip(6 + 13 * 8)?;
@@ -3354,7 +3399,7 @@ pub mod cuesheet {
         fn to_writer<W: BitWrite + ?Sized>(&self, w: &mut W) -> Result<(), Self::Error> {
             w.write_from(self.offset)?;
             w.write_from::<u8>(LeadOut::NON_CDDA.get())?;
-            ISRC::write_opt(w, self.isrc.as_ref())?;
+            w.build(&self.isrc)?;
             w.write_bit(self.non_audio)?;
             w.write_bit(self.pre_emphasis)?;
             w.pad(6 + 13 * 8)?;
@@ -3388,7 +3433,7 @@ pub mod cuesheet {
             LeadOutCDDA {
                 offset,
                 number: LeadOut,
-                isrc: None,
+                isrc: ISRC::None,
                 non_audio: false,
                 pre_emphasis: false,
                 index_points: (),
@@ -3405,7 +3450,7 @@ pub mod cuesheet {
             LeadOutNonCDDA {
                 offset,
                 number: LeadOut,
-                isrc: None,
+                isrc: ISRC::None,
                 non_audio: false,
                 pre_emphasis: false,
                 index_points: (),
@@ -3551,7 +3596,7 @@ where
                 Self {
                     offset: None,
                     number,
-                    isrc: None,
+                    isrc: cuesheet::ISRC::None,
                     non_audio: false,
                     pre_emphasis: false,
                     index_points: cuesheet::Contiguous::default(),
@@ -3660,16 +3705,18 @@ where
                         .map_err(|_| InvalidCuesheet::ExcessiveIndexPoints)?;
                 }
                 ("ISRC", isrc) => {
+                    use cuesheet::ISRC;
+
                     let wip_track = wip_track.as_mut().ok_or(InvalidCuesheet::PrematureISRC)?;
                     match &mut wip_track.isrc {
-                        track_isrc @ None => {
-                            *track_isrc = Some(
+                        track_isrc @ ISRC::None => {
+                            *track_isrc = ISRC::String(
                                 unquote(isrc)
                                     .parse()
                                     .map_err(|_| InvalidCuesheet::InvalidISRC)?,
                             );
                         }
-                        Some(_) => return Err(InvalidCuesheet::MultipleISRC),
+                        ISRC::String(_) => return Err(InvalidCuesheet::MultipleISRC),
                     }
                 }
                 _ => { /*do nothing for now*/ }
