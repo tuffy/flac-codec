@@ -3659,6 +3659,19 @@ where
                         .try_push(index)
                         .map_err(|_| InvalidCuesheet::ExcessiveIndexPoints)?;
                 }
+                ("ISRC", isrc) => {
+                    let wip_track = wip_track.as_mut().ok_or(InvalidCuesheet::PrematureISRC)?;
+                    match &mut wip_track.isrc {
+                        track_isrc @ None => {
+                            *track_isrc = Some(
+                                unquote(isrc)
+                                    .parse()
+                                    .map_err(|_| InvalidCuesheet::InvalidISRC)?,
+                            );
+                        }
+                        Some(_) => return Err(InvalidCuesheet::MultipleISRC),
+                    }
+                }
                 _ => { /*do nothing for now*/ }
             }
         }
