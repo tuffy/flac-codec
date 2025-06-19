@@ -7,17 +7,15 @@ fn main() {
                 total_samples: Some(total_samples),
                 ..
             })) => {
-                // FIXME - re-implement this
-                println!("{total_samples}");
-                // match Cuesheet::parse(
-                //     total_samples.get(),
-                //     &std::fs::read_to_string(cuesheet).unwrap(),
-                // ) {
-                //     Ok(cuesheet) => {
-                //         dbg!(cuesheet);
-                //     }
-                //     Err(err) => eprintln!("* {}: {err}", cuesheet.display()),
-                // }
+                match Cuesheet::parse(
+                    total_samples.get(),
+                    &std::fs::read_to_string(cuesheet).unwrap(),
+                ) {
+                    Ok(cuesheet) => {
+                        dbg!(cuesheet);
+                    }
+                    Err(err) => eprintln!("* {}: {err}", cuesheet.display()),
+                }
             }
             _ => eprintln!("* Unable to get total samples from FLAC file"),
         },
