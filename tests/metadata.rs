@@ -123,3 +123,272 @@ fn test_write_metadata() {
         Err(Error::InvalidSeekTablePoint)
     ));
 }
+
+#[test]
+fn test_cuesheets() {
+    use flac_codec::metadata::{Cuesheet, InvalidCuesheet};
+
+    assert!(Cuesheet::parse(44100 * 10, include_str!("data/cuesheets/OK-0.cue"),).is_ok());
+    assert!(Cuesheet::parse(44100 * 60 * 79, include_str!("data/cuesheets/OK-1.cue"),).is_ok());
+    assert!(Cuesheet::parse(44100 * 10, include_str!("data/cuesheets/OK-2.cue"),).is_ok());
+    assert!(Cuesheet::parse(44100 * 10, include_str!("data/cuesheets/OK-3.cue"),).is_ok());
+    assert!(Cuesheet::parse(44100 * 10, include_str!("data/cuesheets/OK-4.cue"),).is_ok());
+    assert!(Cuesheet::parse(44100 * 10, include_str!("data/cuesheets/OK-5.cue"),).is_ok());
+
+    assert!(matches!(
+        Cuesheet::parse(
+            44100 * 10,
+            include_str!("data/cuesheets/BAD-MultipleCatalogNumber.cue")
+        ),
+        Err(InvalidCuesheet::MultipleCatalogNumber)
+    ));
+
+    assert!(matches!(
+        Cuesheet::parse(
+            44100 * 10,
+            include_str!("data/cuesheets/BAD-CatalogMissingNumber.cue")
+        ),
+        Err(InvalidCuesheet::CatalogMissingNumber)
+    ));
+
+    assert!(matches!(
+        Cuesheet::parse(
+            44100 * 10,
+            include_str!("data/cuesheets/BAD-InvalidCatalogNumber-1.cue")
+        ),
+        Err(InvalidCuesheet::InvalidCatalogNumber)
+    ));
+
+    assert!(matches!(
+        Cuesheet::parse(
+            44100 * 10,
+            include_str!("data/cuesheets/BAD-InvalidCatalogNumber-2.cue")
+        ),
+        Err(InvalidCuesheet::InvalidCatalogNumber)
+    ));
+
+    assert!(matches!(
+        Cuesheet::parse(
+            44100 * 10,
+            include_str!("data/cuesheets/BAD-PrematureFlags.cue")
+        ),
+        Err(InvalidCuesheet::PrematureFlags)
+    ));
+
+    assert!(matches!(
+        Cuesheet::parse(44100 * 10, include_str!("data/cuesheets/BAD-LateFlags.cue")),
+        Err(InvalidCuesheet::LateFlags)
+    ));
+
+    assert!(matches!(
+        Cuesheet::parse(
+            44100 * 10,
+            include_str!("data/cuesheets/BAD-PrematureIndex.cue")
+        ),
+        Err(InvalidCuesheet::PrematureIndex)
+    ));
+
+    assert!(matches!(
+        Cuesheet::parse(
+            44100 * 10,
+            include_str!("data/cuesheets/BAD-InvalidIndexPoint-1.cue")
+        ),
+        Err(InvalidCuesheet::InvalidIndexPoint)
+    ));
+
+    assert!(matches!(
+        Cuesheet::parse(
+            44100 * 10,
+            include_str!("data/cuesheets/BAD-InvalidIndexPoint-2.cue")
+        ),
+        Err(InvalidCuesheet::InvalidIndexPoint)
+    ));
+
+    assert!(matches!(
+        Cuesheet::parse(
+            44100 * 10,
+            include_str!("data/cuesheets/BAD-InvalidIndexPoint-3.cue")
+        ),
+        Err(InvalidCuesheet::InvalidIndexPoint)
+    ));
+
+    assert!(matches!(
+        Cuesheet::parse(
+            44100 * 10,
+            include_str!("data/cuesheets/BAD-InvalidIndexPoint-4.cue")
+        ),
+        Err(InvalidCuesheet::InvalidIndexPoint)
+    ));
+
+    assert!(matches!(
+        Cuesheet::parse(
+            44100 * 10,
+            include_str!("data/cuesheets/BAD-InvalidIndexPoint-5.cue")
+        ),
+        Err(InvalidCuesheet::InvalidIndexPoint)
+    ));
+
+    assert!(matches!(
+        Cuesheet::parse(
+            44100 * 10,
+            include_str!("data/cuesheets/BAD-IndexPointsOutOfSequence-1.cue")
+        ),
+        Err(InvalidCuesheet::IndexPointsOutOfSequence)
+    ));
+
+    assert!(matches!(
+        Cuesheet::parse(
+            44100 * 10,
+            include_str!("data/cuesheets/BAD-IndexPointsOutOfSequence-2.cue")
+        ),
+        Err(InvalidCuesheet::IndexPointsOutOfSequence)
+    ));
+
+    assert!(matches!(
+        Cuesheet::parse(
+            44100 * 10,
+            include_str!("data/cuesheets/BAD-IndexPointsOutOfSequence-3.cue")
+        ),
+        Err(InvalidCuesheet::IndexPointsOutOfSequence)
+    ));
+
+    assert!(matches!(
+        Cuesheet::parse(
+            44100 * 10,
+            include_str!("data/cuesheets/BAD-IndexPointsOutOfSequence-4.cue")
+        ),
+        Err(InvalidCuesheet::IndexPointsOutOfSequence)
+    ));
+
+
+    assert!(matches!(
+        Cuesheet::parse(
+            44100 * 10,
+            include_str!("data/cuesheets/BAD-MultipleISRC.cue")
+        ),
+        Err(InvalidCuesheet::MultipleISRC)
+    ));
+
+    assert!(matches!(
+        Cuesheet::parse(
+            44100 * 10,
+            include_str!("data/cuesheets/BAD-PrematureISRC.cue")
+        ),
+        Err(InvalidCuesheet::PrematureISRC)
+    ));
+
+    assert!(matches!(
+        Cuesheet::parse(
+            44100 * 10,
+            include_str!("data/cuesheets/BAD-LateISRC.cue")
+        ),
+        Err(InvalidCuesheet::LateISRC)
+    ));
+
+    assert!(matches!(
+        Cuesheet::parse(
+            44100 * 10,
+            include_str!("data/cuesheets/BAD-InvalidISRC-1.cue")
+        ),
+        Err(InvalidCuesheet::InvalidISRC)
+    ));
+
+    assert!(matches!(
+        Cuesheet::parse(
+            44100 * 10,
+            include_str!("data/cuesheets/BAD-InvalidISRC-2.cue")
+        ),
+        Err(InvalidCuesheet::InvalidISRC)
+    ));
+
+    assert!(matches!(
+        Cuesheet::parse(
+            44100 * 10,
+            include_str!("data/cuesheets/BAD-InvalidTrack-1.cue")
+        ),
+        Err(InvalidCuesheet::InvalidTrack)
+    ));
+
+    // FIXME - all tracks need an index point of 01
+    // (is this in the spec anywhere?)
+    // assert!(matches!(
+    //     Cuesheet::parse(
+    //         44100 * 10,
+    //         include_str!("data/cuesheets/BAD-InvalidTrack-2.cue")
+    //     ),
+    //     Err(InvalidCuesheet::InvalidTrack)
+    // ));
+
+    assert!(matches!(
+        Cuesheet::parse(
+            44100 * 10,
+            include_str!("data/cuesheets/BAD-InvalidTrack-3.cue")
+        ),
+        Err(InvalidCuesheet::InvalidTrack)
+    ));
+
+    // FIXME - if there's an INDEX 01, there should be an INDEX 00
+    // assert!(matches!(
+    //     Cuesheet::parse(
+    //         44100 * 10,
+    //         include_str!("data/cuesheets/BAD-InvalidTrack-4.cue")
+    //     ),
+    //     Err(InvalidCuesheet::InvalidTrack)
+    // ));
+
+    assert!(matches!(
+        Cuesheet::parse(
+            44100 * 10,
+            include_str!("data/cuesheets/BAD-InvalidTrack-5.cue")
+        ),
+        Err(InvalidCuesheet::InvalidTrack)
+    ));
+
+    assert!(matches!(
+        Cuesheet::parse(
+            44100 * 10,
+            include_str!("data/cuesheets/BAD-InvalidTrack-6.cue")
+        ),
+        Err(InvalidCuesheet::InvalidTrack)
+    ));
+
+    assert!(matches!(
+        Cuesheet::parse(
+            44100 * 10,
+            include_str!("data/cuesheets/BAD-InvalidTrack-7.cue")
+        ),
+        Err(InvalidCuesheet::InvalidTrack)
+    ));
+
+    assert!(matches!(
+        Cuesheet::parse(
+            44100 * 10,
+            include_str!("data/cuesheets/BAD-InvalidTrack-8.cue")
+        ),
+        Err(InvalidCuesheet::InvalidTrack)
+    ));
+
+    assert!(matches!(
+        Cuesheet::parse(
+            44100 * 10,
+            include_str!("data/cuesheets/BAD-InvalidTrack-9.cue")
+        ),
+        Err(InvalidCuesheet::InvalidTrack)
+    ));
+
+    assert!(matches!(
+        Cuesheet::parse(
+            44100 * 10,
+            include_str!("data/cuesheets/BAD-TracksOutOfSequence-1.cue")
+        ),
+        Err(InvalidCuesheet::TracksOutOfSequence)
+    ));
+
+    assert!(matches!(
+        Cuesheet::parse(
+            44100 * 10,
+            include_str!("data/cuesheets/BAD-TracksOutOfSequence-2.cue")
+        ),
+        Err(InvalidCuesheet::TracksOutOfSequence)
+    ));
+}

@@ -1,0 +1,2 @@
+FILE "y.wav" WAVE
+  TRACK 01 AUDIO

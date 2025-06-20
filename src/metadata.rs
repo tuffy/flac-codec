@@ -2688,42 +2688,32 @@ impl Cuesheet {
 
         match total_samples.try_into() {
             // if total samples is divisible by 588,
-            // try to parse a CDDA cuesheet before falling back
-            // to a non-CDDA cuesheet
-            Ok(lead_out_offset) => ParsedCuesheet::parse(cuesheet, cdda_catalog)
-                .map(
-                    |ParsedCuesheet {
-                         catalog_number,
-                         tracks,
-                     }| Self::CDDA {
-                        catalog_number,
-                        lead_in_samples: Self::LEAD_IN,
-                        tracks,
-                        lead_out: cuesheet::LeadOutCDDA::new(lead_out_offset),
-                    },
-                )
-                .or_else(|_| {
-                    ParsedCuesheet::parse(cuesheet, non_cdda_catalog).map(
-                        |ParsedCuesheet {
-                             catalog_number,
-                             tracks,
-                         }| Self::NonCDDA {
-                            catalog_number,
-                            tracks,
-                            lead_out: cuesheet::LeadOutNonCDDA::new(total_samples),
-                        },
-                    )
-                }),
-            // if total samples isn't divisible by 588,
-            // only try a non-CDDA cuesheet
-            Err(_) => ParsedCuesheet::parse(cuesheet, non_cdda_catalog).map(
+            // try to parse a CDDA cuesheet
+            Ok(lead_out_offset) => ParsedCuesheet::parse(cuesheet, cdda_catalog).and_then(
                 |ParsedCuesheet {
                      catalog_number,
                      tracks,
-                 }| Self::NonCDDA {
-                    catalog_number,
-                    tracks,
-                    lead_out: cuesheet::LeadOutNonCDDA::new(total_samples),
+                 }| {
+                    Ok(Self::CDDA {
+                        catalog_number,
+                        lead_in_samples: Self::LEAD_IN,
+                        lead_out: cuesheet::LeadOutCDDA::new(tracks.last(), lead_out_offset)?,
+                        tracks,
+                    })
+                },
+            ),
+            // if total samples isn't divisible by 588,
+            // only try a non-CDDA cuesheet
+            Err(_) => ParsedCuesheet::parse(cuesheet, non_cdda_catalog).and_then(
+                |ParsedCuesheet {
+                     catalog_number,
+                     tracks,
+                 }| {
+                    Ok(Self::NonCDDA {
+                        catalog_number,
+                        lead_out: cuesheet::LeadOutNonCDDA::new(tracks.last(), total_samples)?,
+                        tracks,
+                    })
                 },
             ),
         }
@@ -2770,8 +2760,7 @@ impl FromBitStream for Cuesheet {
                         .ok_or(Error::InvalidCuesheetTrackCount)?)
                         .map(|_| r.parse()),
                 )
-                // FIXME - make non-contiguousness a different error
-                .map_err(|_| Error::InvalidCuesheetTrackCount)??,
+                .map_err(|_| Error::TracksOutOfSequence)??,
                 lead_out: r.parse()?,
             }
         } else {
@@ -2788,8 +2777,7 @@ impl FromBitStream for Cuesheet {
                         .ok_or(Error::InvalidCuesheetTrackCount)?)
                         .map(|_| r.parse()),
                 )
-                // FIXME - make non-contiguousness a different error
-                .map_err(|_| Error::InvalidCuesheetTrackCount)??,
+                .map_err(|_| Error::TracksOutOfSequence)??,
                 lead_out: r.parse()?,
             }
         })
@@ -3058,7 +3046,7 @@ pub mod cuesheet {
     /// An offset for CD-DA
     ///
     /// These must be evenly divisible by 588 samples
-    #[derive(Debug, Default, Copy, Clone, Eq, PartialEq)]
+    #[derive(Debug, Default, Copy, Clone, Eq, PartialEq, Ord, PartialOrd)]
     pub struct CDDAOffset {
         offset: u64,
     }
@@ -3534,14 +3522,21 @@ pub mod cuesheet {
 
     impl LeadOutCDDA {
         /// Creates new lead-out track with the given offset
-        pub fn new(offset: CDDAOffset) -> Self {
-            LeadOutCDDA {
-                offset,
-                number: LeadOut,
-                isrc: ISRC::None,
-                non_audio: false,
-                pre_emphasis: false,
-                index_points: (),
+        ///
+        /// Lead-out offset must be contiguous with existing tracks
+        pub fn new(last: Option<&TrackCDDA>, offset: CDDAOffset) -> Result<Self, InvalidCuesheet> {
+            match last {
+                Some(track) if track.index_points.last().offset >= offset => {
+                    Err(InvalidCuesheet::ShortLeadOut)
+                }
+                _ => Ok(LeadOutCDDA {
+                    offset,
+                    number: LeadOut,
+                    isrc: ISRC::None,
+                    non_audio: false,
+                    pre_emphasis: false,
+                    index_points: (),
+                }),
             }
         }
     }
@@ -3595,14 +3590,19 @@ pub mod cuesheet {
 
     impl LeadOutNonCDDA {
         /// Creates new lead-out track with the given offset
-        pub fn new(offset: u64) -> Self {
-            LeadOutNonCDDA {
-                offset,
-                number: LeadOut,
-                isrc: ISRC::None,
-                non_audio: false,
-                pre_emphasis: false,
-                index_points: (),
+        pub fn new(last: Option<&TrackNonCDDA>, offset: u64) -> Result<Self, InvalidCuesheet> {
+            match last {
+                Some(track) if track.index_points.last().offset >= offset => {
+                    Err(InvalidCuesheet::ShortLeadOut)
+                }
+                _ => Ok(LeadOutNonCDDA {
+                    offset,
+                    number: LeadOut,
+                    isrc: ISRC::None,
+                    non_audio: false,
+                    pre_emphasis: false,
+                    index_points: (),
+                }),
             }
         }
     }
@@ -3873,7 +3873,7 @@ where
                         parsed
                             .tracks
                             .try_push(finished.try_into()?)
-                            .map_err(|_| InvalidCuesheet::ExcessiveTracks)?
+                            .map_err(|_| InvalidCuesheet::TracksOutOfSequence)?
                     }
                 }
                 ("INDEX", rest) => {
@@ -3917,7 +3917,7 @@ where
                     wip_track
                         .index_points
                         .try_push(index)
-                        .map_err(|_| InvalidCuesheet::ExcessiveIndexPoints)?;
+                        .map_err(|_| InvalidCuesheet::IndexPointsOutOfSequence)?;
                 }
                 ("ISRC", isrc) => {
                     use cuesheet::ISRC;
@@ -3956,7 +3956,7 @@ where
             parsed
                 .tracks
                 .try_push(finished.try_into()?)
-                .map_err(|_| InvalidCuesheet::ExcessiveTracks)?;
+                .map_err(|_| InvalidCuesheet::TracksOutOfSequence)?;
         }
 
         Ok(ParsedCuesheet {
@@ -4004,8 +4004,12 @@ pub enum InvalidCuesheet {
     NoIndexPoints,
     /// Excessive tracks in cue sheet
     ExcessiveTracks,
-    /// Excessive index points in track
-    ExcessiveIndexPoints,
+    /// INDEX points in track are out of sequence
+    IndexPointsOutOfSequence,
+    /// TRACK points in CUESHEET are out of sequence
+    TracksOutOfSequence,
+    /// Lead-out track is not beyond all track indices
+    ShortLeadOut,
 }
 
 impl std::error::Error for InvalidCuesheet {}
@@ -4032,7 +4036,9 @@ impl std::fmt::Display for InvalidCuesheet {
             Self::InvalidIndexPoint => "invalid INDEX entry".fmt(f),
             Self::NoIndexPoints => "no INDEX points in track".fmt(f),
             Self::ExcessiveTracks => "excessive tracks in CUESHEET".fmt(f),
-            Self::ExcessiveIndexPoints => "excessive index points in TRACK".fmt(f),
+            Self::IndexPointsOutOfSequence => "INDEX points out of sequence".fmt(f),
+            Self::TracksOutOfSequence => "TRACKS out of sequence".fmt(f),
+            Self::ShortLeadOut => "lead-out track not beyond final INDEX point".fmt(f),
         }
     }
 }

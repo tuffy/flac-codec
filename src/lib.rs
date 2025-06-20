@@ -71,6 +71,8 @@ pub enum Error {
     InvalidCatalogNumber,
     /// Invalid CUESHEET ISRC code
     InvalidISRC,
+    /// CUESHEET tracks out of sequence
+    TracksOutOfSequence,
     /// A CDDA CUESHEET offset that does not start on a CD frame boundary
     InvalidCuesheetOffset,
     /// An invalid CDDA CUESHEET track number
@@ -213,6 +215,7 @@ impl std::fmt::Display for Error {
             Self::InvalidSeekTablePoint => "invalid SEEKTABLE point".fmt(f),
             Self::InvalidCatalogNumber => "invalid CUESHEET catalog number".fmt(f),
             Self::InvalidISRC => "invalid CUESHEET track ISRC".fmt(f),
+            Self::TracksOutOfSequence => "CUESHEET tracks out of sequence".fmt(f),
             Self::InvalidCuesheetOffset => "invalid CUESHEET sample offset".fmt(f),
             Self::InvalidCuesheetTrackNumber => "invalid CUESHEET track number".fmt(f),
             Self::InvalidCuesheetIndexPoints => {
