@@ -2505,6 +2505,85 @@ impl Cuesheet {
         matches!(self, Self::CDDA { .. })
     }
 
+    /// Returns total number of tracks in cuesheet
+    pub fn track_count(&self) -> usize {
+        match self {
+            Self::CDDA { tracks, .. } => tracks.len() + 1,
+            Self::NonCDDA { tracks, .. } => tracks.len() + 1,
+        }
+    }
+
+    /// Iterates over all tracks in cuesheet
+    ///
+    /// Tracks are converted into a unified format suitable for display
+    pub fn tracks(
+        &self,
+    ) -> Box<dyn Iterator<Item = cuesheet::Track<u64, Option<u8>, Vec<cuesheet::Index<u64>>>> + '_>
+    {
+        use cuesheet::{Index, Track};
+
+        match self {
+            Self::CDDA {
+                tracks, lead_out, ..
+            } => Box::new(
+                tracks
+                    .iter()
+                    .map(|track| Track {
+                        offset: track.offset.into(),
+                        number: Some(track.number.get()),
+                        isrc: track.isrc.clone(),
+                        non_audio: track.non_audio,
+                        pre_emphasis: track.pre_emphasis,
+                        index_points: track
+                            .index_points
+                            .iter()
+                            .map(|point| Index {
+                                number: point.number,
+                                offset: point.offset.into(),
+                            })
+                            .collect(),
+                    })
+                    .chain(std::iter::once(Track {
+                        offset: lead_out.offset.into(),
+                        number: None,
+                        isrc: lead_out.isrc.clone(),
+                        non_audio: lead_out.non_audio,
+                        pre_emphasis: lead_out.pre_emphasis,
+                        index_points: vec![],
+                    })),
+            ),
+            Self::NonCDDA {
+                tracks, lead_out, ..
+            } => Box::new(
+                tracks
+                    .iter()
+                    .map(|track| Track {
+                        offset: track.offset,
+                        number: Some(track.number.get()),
+                        isrc: track.isrc.clone(),
+                        non_audio: track.non_audio,
+                        pre_emphasis: track.pre_emphasis,
+                        index_points: track
+                            .index_points
+                            .iter()
+                            .map(|point| Index {
+                                number: point.number,
+                                offset: point.offset,
+                            })
+                            .collect(),
+                    })
+                    .chain(std::iter::once(Track {
+                        offset: lead_out.offset,
+                        number: None,
+                        isrc: lead_out.isrc.clone(),
+                        non_audio: lead_out.non_audio,
+                        pre_emphasis: lead_out.pre_emphasis,
+                        index_points: vec![],
+                    })),
+            ),
+        }
+    }
+
     /// Given a filename to use, returns cuesheet data as text
     pub fn display(&self, filename: &str) -> impl std::fmt::Display {
         struct DisplayCuesheet<'c, 'f> {
@@ -3285,7 +3364,7 @@ pub mod cuesheet {
         pub index_points: P,
     }
 
-    impl<O: Adjacent, N: Adjacent> Adjacent for Track<O, N, IndexVec<O>> {
+    impl<const MAX: usize, O: Adjacent, N: Adjacent> Adjacent for Track<O, N, IndexVec<MAX, O>> {
         fn valid_first(&self) -> bool {
             self.offset.valid_first() && self.number.valid_first()
         }
@@ -3297,8 +3376,7 @@ pub mod cuesheet {
     }
 
     /// A CD-DA CUESHEET track
-    // pub type TrackCDDA = Track<CDDAOffset, NonZero<u8>, Contiguous<255, Index<CDDAOffset>>>;
-    pub type TrackCDDA = Track<CDDAOffset, NonZero<u8>, IndexVec<CDDAOffset>>;
+    pub type TrackCDDA = Track<CDDAOffset, NonZero<u8>, IndexVec<100, CDDAOffset>>;
 
     impl FromBitStream for TrackCDDA {
         type Error = Error;
@@ -3352,8 +3430,7 @@ pub mod cuesheet {
     }
 
     /// A non-CD-DA CUESHEET track
-    // pub type TrackNonCDDA = Track<u64, NonZero<u8>, Contiguous<255, Index<u64>>>;
-    pub type TrackNonCDDA = Track<u64, NonZero<u8>, IndexVec<u64>>;
+    pub type TrackNonCDDA = Track<u64, NonZero<u8>, IndexVec<256, u64>>;
 
     impl FromBitStream for TrackNonCDDA {
         type Error = Error;
@@ -3602,15 +3679,26 @@ pub mod cuesheet {
     /// Tracks other than the lead-out track are required
     /// to have at least one index point.  This collection
     /// enforces that restriction.
+    ///
+    /// `MAX` is the maximum number of index points
+    /// this can hold, including the first.
     #[derive(Clone, Debug, Eq, PartialEq)]
-    pub struct IndexVec<O: Adjacent> {
+    pub struct IndexVec<const MAX: usize, O: Adjacent> {
         first: Index<O>,
-        rest: Contiguous<254, Index<O>>,
+        rest: Box<[Index<O>]>,
     }
 
-    impl<O: Adjacent> IndexVec<O> {
+    impl<const MAX: usize, O: Adjacent> IndexVec<MAX, O> {
         /// Returns number of `Index` points in `IndexVec`
+        // This method never returns 0, so cannot be empty,
+        // so it doesn't make sense to implement is_empty()
+        // for it because it would always return false.
+        #[allow(clippy::len_without_is_empty)]
         pub fn len(&self) -> usize {
+            // because we're created from a Contiguous Vec
+            // whose size must be <= usize,
+            // our len is 1 less than usize, so len() + 1
+            // can never overflow
             self.rest.len() + 1
         }
 
@@ -3628,14 +3716,14 @@ pub mod cuesheet {
         }
     }
 
-    impl<O: Adjacent> TryFrom<Contiguous<255, Index<O>>> for IndexVec<O> {
+    impl<const MAX: usize, O: Adjacent> TryFrom<Contiguous<MAX, Index<O>>> for IndexVec<MAX, O> {
         type Error = ();
 
-        fn try_from(Contiguous { mut items }: Contiguous<255, Index<O>>) -> Result<Self, ()> {
-            if items.len() > 0 {
+        fn try_from(Contiguous { mut items }: Contiguous<MAX, Index<O>>) -> Result<Self, ()> {
+            if !items.is_empty() {
                 Ok(Self {
                     first: items.remove(0),
-                    rest: Contiguous { items },
+                    rest: items.into_boxed_slice(),
                 })
             } else {
                 Err(())
@@ -3682,17 +3770,16 @@ pub mod cuesheet {
     }
 }
 
-// type ParsedCuesheetTrack<O> =
-//     cuesheet::Track<O, NonZero<u8>, cuesheet::Contiguous<255, cuesheet::Index<O>>>;
+type ParsedCuesheetTrack<const INDEX_MAX: usize, O> =
+    cuesheet::Track<O, NonZero<u8>, cuesheet::IndexVec<INDEX_MAX, O>>;
 
-type ParsedCuesheetTrack<O> = cuesheet::Track<O, NonZero<u8>, cuesheet::IndexVec<O>>;
-
-struct ParsedCuesheet<const MAX: usize, C, O: cuesheet::Adjacent> {
+struct ParsedCuesheet<const TRACK_MAX: usize, const INDEX_MAX: usize, C, O: cuesheet::Adjacent> {
     catalog_number: C,
-    tracks: cuesheet::Contiguous<MAX, ParsedCuesheetTrack<O>>,
+    tracks: cuesheet::Contiguous<TRACK_MAX, ParsedCuesheetTrack<INDEX_MAX, O>>,
 }
 
-impl<const MAX: usize, C, O> ParsedCuesheet<MAX, C, O>
+impl<const TRACK_MAX: usize, const INDEX_MAX: usize, C, O>
+    ParsedCuesheet<TRACK_MAX, INDEX_MAX, C, O>
 where
     C: Default,
     O: cuesheet::Adjacent
@@ -3706,10 +3793,13 @@ where
         cuesheet: &str,
         parse_catalog: impl Fn(&str) -> Result<C, InvalidCuesheet>,
     ) -> Result<Self, InvalidCuesheet> {
-        type WipTrack<O> =
-            cuesheet::Track<Option<O>, NonZero<u8>, cuesheet::Contiguous<255, cuesheet::Index<O>>>;
+        type WipTrack<const INDEX_MAX: usize, O> = cuesheet::Track<
+            Option<O>,
+            NonZero<u8>,
+            cuesheet::Contiguous<INDEX_MAX, cuesheet::Index<O>>,
+        >;
 
-        impl<O: cuesheet::Adjacent> WipTrack<O> {
+        impl<const INDEX_MAX: usize, O: cuesheet::Adjacent> WipTrack<INDEX_MAX, O> {
             fn new(number: NonZero<u8>) -> Self {
                 Self {
                     offset: None,
@@ -3722,10 +3812,12 @@ where
             }
         }
 
-        impl<O: cuesheet::Adjacent> TryFrom<WipTrack<O>> for ParsedCuesheetTrack<O> {
+        impl<const INDEX_MAX: usize, O: cuesheet::Adjacent> TryFrom<WipTrack<INDEX_MAX, O>>
+            for ParsedCuesheetTrack<INDEX_MAX, O>
+        {
             type Error = InvalidCuesheet;
 
-            fn try_from(track: WipTrack<O>) -> Result<Self, Self::Error> {
+            fn try_from(track: WipTrack<INDEX_MAX, O>) -> Result<Self, Self::Error> {
                 // completed tracks need an offset which
                 // is set by adding the first index point
                 Ok(Self {
@@ -3751,7 +3843,7 @@ where
             }
         }
 
-        let mut wip_track: Option<WipTrack<O>> = None;
+        let mut wip_track: Option<WipTrack<INDEX_MAX, O>> = None;
 
         let mut parsed = ParsedCuesheet {
             catalog_number: None,

@@ -112,67 +112,36 @@ fn display_vorbis_comment(comment: VorbisComment) {
 }
 
 fn display_cuesheet(cuesheet: Cuesheet) {
-    use flac_codec::metadata::cuesheet::{Adjacent, Contiguous, IndexVec, LeadOut, Track};
-
-    fn display_tracks<const MAX: usize, O, N>(
-        tracks: Contiguous<MAX, Track<O, N, IndexVec<O>>>,
-        lead_out: Track<O, LeadOut, ()>,
-    ) where
-        N: std::fmt::Display + Adjacent,
-        O: std::fmt::Display + Adjacent,
-    {
-        let tracks_len = tracks.len();
-        println!("  number of tracks: {}", tracks_len + 1);
-
-        for (num, track) in tracks.into_iter().enumerate() {
-            println!("    track[{num}]");
-            println!("      offset: {}", track.offset);
-            println!("      number: {}", track.number);
-            println!("      ISRC: {}", track.isrc);
-            println!(
-                "      type: {}",
-                if track.non_audio {
-                    "NON-AUDIO"
-                } else {
-                    "AUDIO"
-                }
-            );
-            println!("      pre-emphasis: {}", track.pre_emphasis);
-            println!("      number of index points: {}", track.index_points.len());
-            for (num, point) in track.index_points.iter().enumerate() {
-                println!("        index[{num}]");
-                println!("          offset: {}", point.offset);
-                println!("          number: {}", point.number);
-            }
-        }
-        println!("    track[{}]", tracks_len);
-        println!("      offset: {}", lead_out.offset);
-        println!("      number: (LEAD-OUT)");
-        println!("      ISRC: {}", lead_out.isrc);
-        println!(
-            "      type: {}",
-            if lead_out.non_audio {
-                "NON-AUDIO"
-            } else {
-                "AUDIO"
-            }
-        );
-        println!("      pre-emphasis: {}", lead_out.pre_emphasis);
-    }
-
     println!("  media catalog number: {}", cuesheet.catalog_number(),);
     if let Some(lead_in_samples) = cuesheet.lead_in_samples() {
         println!("  lead-in: {lead_in_samples}");
     }
     println!("  is CDDA: {}", cuesheet.is_cdda());
+    println!("  number of tracks: {}", cuesheet.track_count());
 
-    match cuesheet {
-        Cuesheet::CDDA {
-            tracks, lead_out, ..
-        } => display_tracks(tracks, lead_out),
-        Cuesheet::NonCDDA {
-            tracks, lead_out, ..
-        } => display_tracks(tracks, lead_out),
+    for (num, track) in cuesheet.tracks().enumerate() {
+        println!("    track[{num}]");
+        println!("      offset: {}", track.offset);
+        match track.number {
+            Some(number) => println!("      number: {number}"),
+            None => println!("      number: (LEAD_OUT)"),
+        }
+        println!("      ISRC: {}", track.isrc);
+        println!(
+            "      type: {}",
+            if track.non_audio {
+                "NON-AUDIO"
+            } else {
+                "AUDIO"
+            }
+        );
+        println!("      pre-emphasis: {}", track.pre_emphasis);
+        println!("      number of index points: {}", track.index_points.len());
+        for (num, point) in track.index_points.iter().enumerate() {
+            println!("        index[{num}]");
+            println!("          offset: {}", point.offset);
+            println!("          number: {}", point.number);
+        }
     }
 }
 
