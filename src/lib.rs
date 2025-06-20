@@ -67,22 +67,8 @@ pub enum Error {
     InvalidSeekTableSize,
     /// A SEEKTABLE point whose offset does not increment properly
     InvalidSeekTablePoint,
-    /// A CDDA CUESHEET has invalid catalog number
-    InvalidCatalogNumber,
-    /// Invalid CUESHEET ISRC code
-    InvalidISRC,
-    /// CUESHEET tracks out of sequence
-    TracksOutOfSequence,
-    /// A CDDA CUESHEET offset that does not start on a CD frame boundary
-    InvalidCuesheetOffset,
-    /// An invalid CDDA CUESHEET track number
-    InvalidCuesheetTrackNumber,
-    /// A non-lead-out CUESHEET track containing no index points,
-    /// or a lead-out CUESHEET track containing some index points.
-    InvalidCuesheetIndexPoints,
-    /// A CUESHEET track index point that does not start with 0 or 1,
-    /// or does not increment by 1.
-    InvalidCuesheetIndexPointNum,
+    /// A CUESHEET-specific error
+    Cuesheet(metadata::InvalidCuesheet),
     /// An undefined PICTURE type
     InvalidPictureType,
     /// Multiple 32x32 PNG icons defined
@@ -105,10 +91,6 @@ pub enum Error {
     ExcessiveStringLength,
     /// A `Picture` struct whose data is larger than a `u32`
     ExcessivePictureSize,
-    /// A `Cuesheet` with an invalid number of tracks
-    InvalidCuesheetTrackCount,
-    /// A `CuesheetTrack` with an invalud number of index points
-    InvalidCuesheetIndexPointCount,
     /// A block size less than 15 that's not the last block
     ShortBlock,
     /// A metadata block larger than its 24-bit size field can hold
@@ -188,14 +170,22 @@ pub enum Error {
 }
 
 impl From<std::io::Error> for Error {
+    #[inline]
     fn from(error: std::io::Error) -> Self {
         Self::Io(error)
     }
 }
 
 impl From<std::string::FromUtf8Error> for Error {
+    #[inline]
     fn from(error: std::string::FromUtf8Error) -> Self {
         Self::Utf8(Box::new(error))
+    }
+}
+
+impl From<metadata::InvalidCuesheet> for Error {
+    fn from(error: metadata::InvalidCuesheet) -> Self {
+        Self::Cuesheet(error)
     }
 }
 
@@ -206,6 +196,7 @@ impl std::fmt::Display for Error {
         match self {
             Self::Io(e) => e.fmt(f),
             Self::Utf8(e) => e.fmt(f),
+            Self::Cuesheet(e) => e.fmt(f),
             Self::MissingFlacTag => "missing FLAC tag".fmt(f),
             Self::MissingStreaminfo => "STREAMINFO block not first in file".fmt(f),
             Self::MultipleStreaminfo => "multiple STREAMINFO blocks found in file".fmt(f),
@@ -213,15 +204,6 @@ impl std::fmt::Display for Error {
             Self::MultipleVorbisComment => "multiple VORBIS_COMMENT blocks found in file".fmt(f),
             Self::InvalidSeekTableSize => "invalid SEEKTABLE block size".fmt(f),
             Self::InvalidSeekTablePoint => "invalid SEEKTABLE point".fmt(f),
-            Self::InvalidCatalogNumber => "invalid CUESHEET catalog number".fmt(f),
-            Self::InvalidISRC => "invalid CUESHEET track ISRC".fmt(f),
-            Self::TracksOutOfSequence => "CUESHEET tracks out of sequence".fmt(f),
-            Self::InvalidCuesheetOffset => "invalid CUESHEET sample offset".fmt(f),
-            Self::InvalidCuesheetTrackNumber => "invalid CUESHEET track number".fmt(f),
-            Self::InvalidCuesheetIndexPoints => {
-                "invalid number of CUESHEET track index points".fmt(f)
-            }
-            Self::InvalidCuesheetIndexPointNum => "invalid CUESHEET index point number".fmt(f),
             Self::InvalidPictureType => "reserved PICTURE type".fmt(f),
             Self::MultiplePngIcon => "multiple PNG icons in PICTURE blocks".fmt(f),
             Self::MultipleGeneralIcon => "multiple general file icons in PICTURE blocks".fmt(f),
@@ -232,10 +214,6 @@ impl std::fmt::Display for Error {
             Self::ExcessiveVorbisEntries => "excessive number of VORBIS_COMMENT entries".fmt(f),
             Self::ExcessiveStringLength => "excessive string length".fmt(f),
             Self::ExcessivePictureSize => "excessive PICTURE data size".fmt(f),
-            Self::InvalidCuesheetTrackCount => "invalid number of CUESHEET tracks".fmt(f),
-            Self::InvalidCuesheetIndexPointCount => {
-                "invalid number of CUESHEET track index points".fmt(f)
-            }
             Self::ExcessiveBlockSize => "excessive metadata block size".fmt(f),
             Self::InvalidSyncCode => "invalid frame sync code".fmt(f),
             Self::InvalidBlockSize => "invalid frame block size".fmt(f),

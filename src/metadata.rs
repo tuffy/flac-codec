@@ -2745,10 +2745,10 @@ impl FromBitStream for Cuesheet {
                                 .map(cuesheet::Digit::try_from)
                                 .collect::<Result<Vec<_>, u8>>()
                                 // any of the digits aren't valid ASCII
-                                .map_err(|_| Error::InvalidCatalogNumber)?
+                                .map_err(|_| Error::from(InvalidCuesheet::InvalidCatalogNumber))?
                                 .try_into()
                                 // the number isn't the correct size
-                                .map_err(|_| Error::InvalidCatalogNumber)?,
+                                .map_err(|_| Error::from(InvalidCuesheet::InvalidCatalogNumber))?,
                         ),
                     }
                 },
@@ -2757,10 +2757,10 @@ impl FromBitStream for Cuesheet {
                     (0..track_count
                         .checked_sub(1)
                         .filter(|c| *c <= 99)
-                        .ok_or(Error::InvalidCuesheetTrackCount)?)
+                        .ok_or(Error::from(InvalidCuesheet::NoTracks))?)
                         .map(|_| r.parse()),
                 )
-                .map_err(|_| Error::TracksOutOfSequence)??,
+                .map_err(|_| Error::from(InvalidCuesheet::TracksOutOfSequence))??,
                 lead_out: r.parse()?,
             }
         } else {
@@ -2770,14 +2770,14 @@ impl FromBitStream for Cuesheet {
                     .copied()
                     .map(cuesheet::Digit::try_from)
                     .collect::<Result<Vec<_>, _>>()
-                    .map_err(|_| Error::InvalidCatalogNumber)?,
+                    .map_err(|_| Error::from(InvalidCuesheet::InvalidCatalogNumber))?,
                 tracks: cuesheet::Contiguous::try_collect(
                     (0..track_count
                         .checked_sub(1)
-                        .ok_or(Error::InvalidCuesheetTrackCount)?)
+                        .ok_or(Error::from(InvalidCuesheet::NoTracks))?)
                         .map(|_| r.parse()),
                 )
-                .map_err(|_| Error::TracksOutOfSequence)??,
+                .map_err(|_| Error::from(InvalidCuesheet::TracksOutOfSequence))??,
                 lead_out: r.parse()?,
             }
         })
@@ -3125,7 +3125,7 @@ pub mod cuesheet {
                 offset: r.read_to().map_err(Error::Io).and_then(|o| {
                     ((o % Self::SAMPLES_PER_SECTOR) == 0)
                         .then_some(o)
-                        .ok_or(Error::InvalidCuesheetOffset)
+                        .ok_or(InvalidCuesheet::InvalidCDDAOffset.into())
                 })?,
             })
         }
@@ -3198,7 +3198,7 @@ pub mod cuesheet {
     }
 
     impl FromStr for ISRCString {
-        type Err = Error;
+        type Err = InvalidCuesheet;
 
         fn from_str(s: &str) -> Result<Self, Self::Err> {
             use std::borrow::Cow;
@@ -3220,7 +3220,7 @@ pub mod cuesheet {
                 .and_then(|s| filter_split(s, 2, |c| c.is_ascii_digit()))
                 .and_then(|s| s.chars().all(|c| c.is_ascii_digit()).then_some(()))
                 .map(|()| ISRCString(isrc.into_owned()))
-                .ok_or(Error::InvalidISRC)
+                .ok_or(InvalidCuesheet::InvalidISRC)
         }
     }
 
@@ -3251,10 +3251,9 @@ pub mod cuesheet {
             if isrc.iter().all(|b| *b == 0) {
                 Ok(ISRC::None)
             } else {
-                str::from_utf8(&isrc)
-                    .map_err(|_| Error::InvalidISRC)
-                    .and_then(ISRCString::from_str)
-                    .map(ISRC::String)
+                let s = str::from_utf8(&isrc).map_err(|_| InvalidCuesheet::InvalidISRC)?;
+
+                Ok(ISRC::String(s.parse()?))
             }
         }
     }
@@ -3286,9 +3285,9 @@ pub mod cuesheet {
     }
 
     impl FromStr for ISRC {
-        type Err = Error;
+        type Err = InvalidCuesheet;
 
-        fn from_str(s: &str) -> Result<Self, Error> {
+        fn from_str(s: &str) -> Result<Self, Self::Err> {
             ISRCString::from_str(s).map(ISRC::String)
         }
     }
@@ -3373,10 +3372,9 @@ pub mod cuesheet {
 
         fn from_reader<R: BitRead + ?Sized>(r: &mut R) -> Result<Self, Self::Error> {
             let offset = r.parse()?;
-            let number = r
-                .read_to()
-                .map_err(Error::Io)
-                .and_then(|s| NonZero::new(s).ok_or(Error::InvalidCuesheetTrackNumber))?;
+            let number = r.read_to().map_err(Error::Io).and_then(|s| {
+                NonZero::new(s).ok_or(Error::from(InvalidCuesheet::InvalidIndexPoint))
+            })?;
             let isrc = r.parse()?;
             let non_audio = r.read_bit()?;
             let pre_emphasis = r.read_bit()?;
@@ -3394,9 +3392,9 @@ pub mod cuesheet {
                 // and that they're all in order
                 index_points: IndexVec::try_from(
                     Contiguous::try_collect((0..index_point_count).map(|_| r.parse()))
-                        .map_err(|_| Error::InvalidCuesheetIndexPointCount)??,
+                        .map_err(|_| Error::from(InvalidCuesheet::IndexPointsOutOfSequence))??,
                 )
-                .map_err(|()| Error::InvalidCuesheetIndexPointCount)?,
+                .map_err(|()| Error::from(InvalidCuesheet::IndexPointsOutOfSequence))?,
             })
         }
     }
@@ -3427,10 +3425,9 @@ pub mod cuesheet {
 
         fn from_reader<R: BitRead + ?Sized>(r: &mut R) -> Result<Self, Self::Error> {
             let offset = r.read_to()?;
-            let number = r
-                .read_to()
-                .map_err(Error::Io)
-                .and_then(|s| NonZero::new(s).ok_or(Error::InvalidCuesheetTrackNumber))?;
+            let number = r.read_to().map_err(Error::Io).and_then(|s| {
+                NonZero::new(s).ok_or(Error::from(InvalidCuesheet::InvalidIndexPoint))
+            })?;
             let isrc = r.parse()?;
             let non_audio = r.read_bit()?;
             let pre_emphasis = r.read_bit()?;
@@ -3448,9 +3445,9 @@ pub mod cuesheet {
                 // and that they're all in order
                 index_points: IndexVec::try_from(
                     Contiguous::try_collect((0..index_point_count).map(|_| r.parse()))
-                        .map_err(|_| Error::InvalidCuesheetIndexPointCount)??,
+                        .map_err(|_| Error::from(InvalidCuesheet::IndexPointsOutOfSequence))??,
                 )
-                .map_err(|()| Error::InvalidCuesheetIndexPointCount)?,
+                .map_err(|()| Error::from(InvalidCuesheet::IndexPointsOutOfSequence))?,
             })
         }
     }
@@ -3485,7 +3482,7 @@ pub mod cuesheet {
                 NonZero::new(n)
                     .filter(|n| *n == LeadOut::CDDA)
                     .map(|_| LeadOut)
-                    .ok_or(Error::InvalidCuesheetTrackNumber)
+                    .ok_or(InvalidCuesheet::TracksOutOfSequence.into())
             })?;
             let isrc = r.parse()?;
             let non_audio = r.read_bit()?;
@@ -3500,7 +3497,10 @@ pub mod cuesheet {
                     pre_emphasis,
                     index_points: (),
                 }),
-                _ => Err(Error::InvalidCuesheetIndexPointCount),
+                // because parsing a cuesheet generates a lead-out
+                // automatically, this error can only only occur when
+                // reading from metadata blocks
+                _ => Err(InvalidCuesheet::IndexPointsInLeadout.into()),
             }
         }
     }
@@ -3553,7 +3553,7 @@ pub mod cuesheet {
                 NonZero::new(n)
                     .filter(|n| *n == LeadOut::NON_CDDA)
                     .map(|_| LeadOut)
-                    .ok_or(Error::InvalidCuesheetTrackNumber)
+                    .ok_or(InvalidCuesheet::TracksOutOfSequence.into())
             })?;
             let isrc = r.parse()?;
             let non_audio = r.read_bit()?;
@@ -3568,7 +3568,10 @@ pub mod cuesheet {
                     pre_emphasis,
                     index_points: (),
                 }),
-                _ => Err(Error::InvalidCuesheetIndexPointCount),
+                // because parsing a cuesheet generates a lead-out
+                // automatically, this error can only only occur when
+                // reading from metadata blocks
+                _ => Err(InvalidCuesheet::IndexPointsInLeadout.into()),
             }
         }
     }
@@ -4010,6 +4013,10 @@ pub enum InvalidCuesheet {
     TracksOutOfSequence,
     /// Lead-out track is not beyond all track indices
     ShortLeadOut,
+    /// INDEX points in lead-out TRACK
+    IndexPointsInLeadout,
+    /// Invalid offset for CD-DA CUESHEET
+    InvalidCDDAOffset,
 }
 
 impl std::error::Error for InvalidCuesheet {}
@@ -4039,6 +4046,8 @@ impl std::fmt::Display for InvalidCuesheet {
             Self::IndexPointsOutOfSequence => "INDEX points out of sequence".fmt(f),
             Self::TracksOutOfSequence => "TRACKS out of sequence".fmt(f),
             Self::ShortLeadOut => "lead-out track not beyond final INDEX point".fmt(f),
+            Self::IndexPointsInLeadout => "INDEX points in lead-out TRACK".fmt(f),
+            Self::InvalidCDDAOffset => "invalid offset for CD-DA CUESHEET".fmt(f),
         }
     }
 }

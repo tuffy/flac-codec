@@ -260,7 +260,6 @@ fn test_cuesheets() {
         Err(InvalidCuesheet::IndexPointsOutOfSequence)
     ));
 
-
     assert!(matches!(
         Cuesheet::parse(
             44100 * 10,
@@ -278,10 +277,7 @@ fn test_cuesheets() {
     ));
 
     assert!(matches!(
-        Cuesheet::parse(
-            44100 * 10,
-            include_str!("data/cuesheets/BAD-LateISRC.cue")
-        ),
+        Cuesheet::parse(44100 * 10, include_str!("data/cuesheets/BAD-LateISRC.cue")),
         Err(InvalidCuesheet::LateISRC)
     ));
 
