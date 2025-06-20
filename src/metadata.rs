@@ -3220,13 +3220,14 @@ pub mod cuesheet {
         pub index_points: P,
     }
 
-    impl<O: Adjacent, N: Adjacent, P> Adjacent for Track<O, N, P> {
+    impl<O: Adjacent, N: Adjacent> Adjacent for Track<O, N, IndexVec<O>> {
         fn valid_first(&self) -> bool {
             self.offset.valid_first() && self.number.valid_first()
         }
 
         fn is_next(&self, previous: &Self) -> bool {
-            self.offset.is_next(&previous.offset) && self.number.is_next(&previous.number)
+            self.number.is_next(&previous.number)
+                && self.offset.is_next(&previous.index_points.last().offset)
         }
     }
 
@@ -3551,6 +3552,14 @@ pub mod cuesheet {
         /// Iterates over shared references of all `Index` points
         pub fn iter(&self) -> impl Iterator<Item = &Index<O>> {
             std::iter::once(&self.first).chain(self.rest.iter())
+        }
+
+        /// Returns shared reference to final item
+        ///
+        /// Since `IndexVec` must always contain at least
+        /// one item, this method is infallible
+        pub fn last(&self) -> &Index<O> {
+            self.rest.last().unwrap_or(&self.first)
         }
     }
 
