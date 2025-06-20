@@ -2396,31 +2396,58 @@ pub mod fields {
 /// | 8  | track count | number of cuesheet tracks
 /// | | `tracks` | cuesheet track₀, cuesheet track₁, …
 ///
+/// Although the structure of this block is not particularly
+/// complicated, a CUESHEET block must abide by many rules
+/// in order to be considered valid.  Many of these
+/// rules are encoded into the type system.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum Cuesheet {
     /// A CD-DA Cuesheet, for audio CDs
     CDDA {
         /// Media catalog number in ASCII digits
+        ///
+        /// For CD-DA, if present, this number must
+        /// be exactly 13 ASCII digits followed by all
+        /// 0 bytes.
         catalog_number: Option<[cuesheet::Digit; 13]>,
 
         /// Number of lead-in samples
+        ///
+        /// For CD-DA, this must be at least 2 seconds
+        /// (88200 samples), but may be longer.
+        ///
+        /// Non-CD-DA cuesheets must always use 0 for
+        /// lead-in samples, which is why that variant
+        /// does not have this field.
         lead_in_samples: u64,
 
         /// The cue sheet's non-lead-out tracks
+        ///
+        /// For CD-DA, 0 ≤ track count ≤ 99
         tracks: cuesheet::Contiguous<99, cuesheet::TrackCDDA>,
 
         /// The required lead-out-track
+        ///
+        /// This has a track number of 170 and
+        /// indicates the end of the disc.
         lead_out: cuesheet::LeadOutCDDA,
     },
     /// A Non-CD-DA Cuesheet, for non-audio CDs
     NonCDDA {
         /// Media catalog number in ASCII digits
+        ///
+        /// 0 ≤ catalog number digits < 120
         catalog_number: Vec<cuesheet::Digit>,
 
         /// The cue sheet's non-lead-out tracks
+        ///
+        /// For Non-CD-DA, 0 ≤ track count ≤ 254
         tracks: cuesheet::Contiguous<254, cuesheet::TrackNonCDDA>,
 
         /// The required lead-out-track
+        ///
+        /// This has a track number of 255 and
+        /// indicates the end of the disc.
         lead_out: cuesheet::LeadOutNonCDDA,
     },
 }
@@ -3072,7 +3099,25 @@ pub mod cuesheet {
         pub const NON_CDDA: NonZero<u8> = NonZero::new(255).unwrap();
     }
 
-    /// An ISRC value string matching the format
+    /// An International Standard Recording Code value
+    ///
+    /// These are used to assign a unique identifier
+    /// to sound and music video recordings.
+    ///
+    /// This is a 12 character code which may be
+    /// delimited by optional dashes.
+    ///
+    /// ```text
+    ///  letters     digits
+    ///       ↓↓     ↓↓
+    ///       AA-6Q7-20-00047
+    ///          ↑↑↑    ↑↑↑↑↑
+    /// alphanumeric    digits
+    /// ```
+    ///
+    /// The first five characters are the prefix code.
+    /// The following two digits are the year of reference.
+    /// The final five digits are the designation code.
     #[derive(Debug, Clone, Eq, PartialEq)]
     pub struct ISRCString(String);
 
@@ -3202,9 +3247,22 @@ pub mod cuesheet {
         /// Offset of first index point
         ///
         /// In samples relative to the beginning of the FLAC audio stream.
+        ///
+        /// For CD-DA, the track offset must always be divisible by 588.
+        /// This is because for audio CDs, tracks must always begin
+        /// on CD frame boundaries.  Since each CD frame
+        /// is 1/75th of a second, and CDs have 44,100 samples per second,
+        /// 44100 ÷ 75 = 588.
+        ///
+        /// Non-CD-DA discs have no such restriction.
         pub offset: O,
 
         /// Track number
+        ///
+        /// | Disc Type  | Range                  | Lead-Out Track
+        /// |-----------:|:----------------------:|---------------
+        /// | CD-DA      | 1 ≤ track number ≤ 99  | 170
+        /// | Non-CD-DA  | 1 ≤ track number < 255 | 255
         pub number: N,
 
         /// Track's ISRC
@@ -3217,6 +3275,13 @@ pub mod cuesheet {
         pub pre_emphasis: bool,
 
         /// Track's index points
+        ///
+        /// | Disc Type | Lead-Out Track | Index Points          |
+        /// |----------:|:--------------:|-----------------------|
+        /// | CD-DA     | No             | not more than 100     |
+        /// | CD-DA     | Yes            | 0                     |
+        /// | Non-CD-DA | No             | not more than 255     |
+        /// | Non-CD-DA | Yes            | 0                     |
         pub index_points: P,
     }
 
