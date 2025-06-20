@@ -3923,6 +3923,11 @@ where
                     use cuesheet::ISRC;
 
                     let wip_track = wip_track.as_mut().ok_or(InvalidCuesheet::PrematureISRC)?;
+
+                    if !wip_track.index_points.is_empty() {
+                        return Err(InvalidCuesheet::LateISRC)?;
+                    }
+
                     match &mut wip_track.isrc {
                         track_isrc @ ISRC::None => {
                             *track_isrc = ISRC::String(
@@ -3932,6 +3937,15 @@ where
                             );
                         }
                         ISRC::String(_) => return Err(InvalidCuesheet::MultipleISRC),
+                    }
+                }
+                ("FLAGS", "PRE") => {
+                    let wip_track = wip_track.as_mut().ok_or(InvalidCuesheet::PrematureFlags)?;
+
+                    if !wip_track.index_points.is_empty() {
+                        return Err(InvalidCuesheet::LateFlags)?;
+                    } else {
+                        wip_track.pre_emphasis = true;
                     }
                 }
                 _ => { /*do nothing for now*/ }
@@ -3966,10 +3980,14 @@ pub enum InvalidCuesheet {
     MultipleISRC,
     /// Invalid ISRC number
     InvalidISRC,
-    /// ISRC number found before track
+    /// ISRC number found before TRACK
     PrematureISRC,
     /// ISRC number after INDEX points
     LateISRC,
+    /// FLAGS seen before TRACK
+    PrematureFlags,
+    /// FLAGS seen after INDEX points
+    LateFlags,
     /// ISRC tag missing number
     ISRCMissingNumber,
     /// Unable to parse TRACK field correctly
@@ -4002,6 +4020,8 @@ impl std::fmt::Display for InvalidCuesheet {
             Self::InvalidISRC => "invalid ISRC number found".fmt(f),
             Self::PrematureISRC => "ISRC number found before TRACK".fmt(f),
             Self::LateISRC => "ISRC number found after INDEX points".fmt(f),
+            Self::PrematureFlags => "FLAGS found before TRACK".fmt(f),
+            Self::LateFlags => "FLAGS found after INDEX points".fmt(f),
             Self::ISRCMissingNumber => "ISRC tag missing number".fmt(f),
             Self::InvalidTrack => "invalid TRACK entry".fmt(f),
             Self::NoTracks => "no TRACK entries in cue sheet".fmt(f),
