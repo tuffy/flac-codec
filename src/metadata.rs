@@ -2516,10 +2516,7 @@ impl Cuesheet {
     /// Iterates over all tracks in cuesheet
     ///
     /// Tracks are converted into a unified format suitable for display
-    pub fn tracks(
-        &self,
-    ) -> Box<dyn Iterator<Item = cuesheet::Track<u64, Option<u8>, Vec<cuesheet::Index<u64>>>> + '_>
-    {
+    pub fn tracks(&self) -> Box<dyn Iterator<Item = cuesheet::TrackGeneric> + '_> {
         use cuesheet::{Index, Track};
 
         match self {
@@ -3374,6 +3371,11 @@ pub mod cuesheet {
                 && self.offset.is_next(&previous.index_points.last().offset)
         }
     }
+
+    /// A Generic track suitable for display
+    ///
+    /// The lead-out track has a track number of `None`.
+    pub type TrackGeneric = Track<u64, Option<u8>, Vec<Index<u64>>>;
 
     /// A CD-DA CUESHEET track
     pub type TrackCDDA = Track<CDDAOffset, NonZero<u8>, IndexVec<100, CDDAOffset>>;
