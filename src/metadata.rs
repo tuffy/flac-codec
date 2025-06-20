@@ -2718,7 +2718,6 @@ impl ToBitStream for Cuesheet {
                 w.write_from(*lead_in_samples)?;
                 w.write_bit(true)?; // is CD-DA
                 w.pad(7 + 258 * 8)?;
-                // FIXME - ensure track count <= 99
                 w.write::<8, _>(u8::try_from(tracks.len() + 1).unwrap())?;
                 for track in tracks.iter() {
                     w.build(track)?;
@@ -2741,7 +2740,6 @@ impl ToBitStream for Cuesheet {
                 w.write_from::<u64>(0)?; // non-CDDA cuesheets have no lead-in samples
                 w.write_bit(false)?; // not CD-DA
                 w.pad(7 + 258 * 8)?;
-                // FIXME - ensure track count < 255
                 w.write::<8, _>(u8::try_from(tracks.len() + 1).unwrap())?;
                 for track in tracks.iter() {
                     w.build(track)?;
@@ -3222,7 +3220,21 @@ pub mod cuesheet {
         pub index_points: P,
     }
 
-    impl FromBitStream for Track<CDDAOffset, NonZero<u8>, Contiguous<255, Index<CDDAOffset>>> {
+    impl<O: Adjacent, N: Adjacent, P> Adjacent for Track<O, N, P> {
+        fn valid_first(&self) -> bool {
+            self.offset.valid_first() && self.number.valid_first()
+        }
+
+        fn is_next(&self, previous: &Self) -> bool {
+            self.offset.is_next(&previous.offset) && self.number.is_next(&previous.number)
+        }
+    }
+
+    /// A CD-DA CUESHEET track
+    // pub type TrackCDDA = Track<CDDAOffset, NonZero<u8>, Contiguous<255, Index<CDDAOffset>>>;
+    pub type TrackCDDA = Track<CDDAOffset, NonZero<u8>, IndexVec<CDDAOffset>>;
+
+    impl FromBitStream for TrackCDDA {
         type Error = Error;
 
         fn from_reader<R: BitRead + ?Sized>(r: &mut R) -> Result<Self, Self::Error> {
@@ -3235,24 +3247,27 @@ pub mod cuesheet {
             let non_audio = r.read_bit()?;
             let pre_emphasis = r.read_bit()?;
             r.skip(6 + 13 * 8)?;
-            match r.read_to::<u8>()? {
-                0 => Err(Error::InvalidCuesheetIndexPointCount),
-                index_points => Ok(Self {
-                    offset,
-                    number,
-                    isrc,
-                    non_audio,
-                    pre_emphasis,
-                    index_points: Contiguous::try_collect((0..index_points).map(
-                        |_| r.parse(), // FIXME - make non-contiguousness a different error
-                    ))
-                    .map_err(|_| Error::InvalidCuesheetIndexPointCount)??,
-                }),
-            }
+            let index_point_count = r.read_to::<u8>()?;
+
+            Ok(Self {
+                offset,
+                number,
+                isrc,
+                non_audio,
+                pre_emphasis,
+                // IndexVec guarantees at least 1 index point
+                // Contiguous guarantees there's no more than MAX index points
+                // and that they're all in order
+                index_points: IndexVec::try_from(
+                    Contiguous::try_collect((0..index_point_count).map(|_| r.parse()))
+                        .map_err(|_| Error::InvalidCuesheetIndexPointCount)??,
+                )
+                .map_err(|()| Error::InvalidCuesheetIndexPointCount)?,
+            })
         }
     }
 
-    impl ToBitStream for Track<CDDAOffset, NonZero<u8>, Contiguous<255, Index<CDDAOffset>>> {
+    impl ToBitStream for TrackCDDA {
         type Error = Error;
 
         fn to_writer<W: BitWrite + ?Sized>(&self, w: &mut W) -> Result<(), Self::Error> {
@@ -3262,7 +3277,6 @@ pub mod cuesheet {
             w.write_bit(self.non_audio)?;
             w.write_bit(self.pre_emphasis)?;
             w.pad(6 + 13 * 8)?;
-            // FIXME - ensure index seek point count > 0
             w.write_from::<u8>(self.index_points.len().try_into().unwrap())?;
             for point in self.index_points.iter() {
                 w.build(point)?;
@@ -3271,7 +3285,65 @@ pub mod cuesheet {
         }
     }
 
-    impl FromBitStream for Track<CDDAOffset, LeadOut, ()> {
+    /// A non-CD-DA CUESHEET track
+    // pub type TrackNonCDDA = Track<u64, NonZero<u8>, Contiguous<255, Index<u64>>>;
+    pub type TrackNonCDDA = Track<u64, NonZero<u8>, IndexVec<u64>>;
+
+    impl FromBitStream for TrackNonCDDA {
+        type Error = Error;
+
+        fn from_reader<R: BitRead + ?Sized>(r: &mut R) -> Result<Self, Self::Error> {
+            let offset = r.read_to()?;
+            let number = r
+                .read_to()
+                .map_err(Error::Io)
+                .and_then(|s| NonZero::new(s).ok_or(Error::InvalidCuesheetTrackNumber))?;
+            let isrc = r.parse()?;
+            let non_audio = r.read_bit()?;
+            let pre_emphasis = r.read_bit()?;
+            r.skip(6 + 13 * 8)?;
+            let index_point_count = r.read_to::<u8>()?;
+
+            Ok(Self {
+                offset,
+                number,
+                isrc,
+                non_audio,
+                pre_emphasis,
+                // IndexVec guarantees at least 1 index point
+                // Contiguous guarantees there's no more than MAX index points
+                // and that they're all in order
+                index_points: IndexVec::try_from(
+                    Contiguous::try_collect((0..index_point_count).map(|_| r.parse()))
+                        .map_err(|_| Error::InvalidCuesheetIndexPointCount)??,
+                )
+                .map_err(|()| Error::InvalidCuesheetIndexPointCount)?,
+            })
+        }
+    }
+
+    impl ToBitStream for TrackNonCDDA {
+        type Error = Error;
+
+        fn to_writer<W: BitWrite + ?Sized>(&self, w: &mut W) -> Result<(), Self::Error> {
+            w.write_from(self.offset)?;
+            w.write_from(self.number.get())?;
+            w.build(&self.isrc)?;
+            w.write_bit(self.non_audio)?;
+            w.write_bit(self.pre_emphasis)?;
+            w.pad(6 + 13 * 8)?;
+            w.write_from::<u8>(self.index_points.len().try_into().unwrap())?;
+            for point in self.index_points.iter() {
+                w.build(point)?;
+            }
+            Ok(())
+        }
+    }
+
+    /// A CD-DA CUESHEET lead-out track
+    pub type LeadOutCDDA = Track<CDDAOffset, LeadOut, ()>;
+
+    impl FromBitStream for LeadOutCDDA {
         type Error = Error;
 
         fn from_reader<R: BitRead + ?Sized>(r: &mut R) -> Result<Self, Self::Error> {
@@ -3300,7 +3372,7 @@ pub mod cuesheet {
         }
     }
 
-    impl ToBitStream for Track<CDDAOffset, LeadOut, ()> {
+    impl ToBitStream for LeadOutCDDA {
         type Error = Error;
 
         fn to_writer<W: BitWrite + ?Sized>(&self, w: &mut W) -> Result<(), Self::Error> {
@@ -3315,56 +3387,24 @@ pub mod cuesheet {
         }
     }
 
-    impl FromBitStream for Track<u64, NonZero<u8>, Contiguous<255, Index<u64>>> {
-        type Error = Error;
-
-        fn from_reader<R: BitRead + ?Sized>(r: &mut R) -> Result<Self, Self::Error> {
-            let offset = r.read_to()?;
-            let number = r
-                .read_to()
-                .map_err(Error::Io)
-                .and_then(|s| NonZero::new(s).ok_or(Error::InvalidCuesheetTrackNumber))?;
-            let isrc = r.parse()?;
-            let non_audio = r.read_bit()?;
-            let pre_emphasis = r.read_bit()?;
-            r.skip(6 + 13 * 8)?;
-            match r.read_to::<u8>()? {
-                0 => Err(Error::InvalidCuesheetIndexPointCount),
-                index_points => Ok(Self {
-                    offset,
-                    number,
-                    isrc,
-                    non_audio,
-                    pre_emphasis,
-                    index_points: Contiguous::try_collect((0..index_points).map(
-                        |_| r.parse(), // FIXME - make non-contiguousness a different error
-                    ))
-                    .map_err(|_| Error::InvalidCuesheetIndexPointCount)??,
-                }),
+    impl LeadOutCDDA {
+        /// Creates new lead-out track with the given offset
+        pub fn new(offset: CDDAOffset) -> Self {
+            LeadOutCDDA {
+                offset,
+                number: LeadOut,
+                isrc: ISRC::None,
+                non_audio: false,
+                pre_emphasis: false,
+                index_points: (),
             }
         }
     }
 
-    impl ToBitStream for Track<u64, NonZero<u8>, Contiguous<255, Index<u64>>> {
-        type Error = Error;
+    /// A non-CD-DA CUESHEET lead-out track
+    pub type LeadOutNonCDDA = Track<u64, LeadOut, ()>;
 
-        fn to_writer<W: BitWrite + ?Sized>(&self, w: &mut W) -> Result<(), Self::Error> {
-            w.write_from(self.offset)?;
-            w.write_from(self.number.get())?;
-            w.build(&self.isrc)?;
-            w.write_bit(self.non_audio)?;
-            w.write_bit(self.pre_emphasis)?;
-            w.pad(6 + 13 * 8)?;
-            // FIXME - ensure index seek point count > 0
-            w.write_from::<u8>(self.index_points.len().try_into().unwrap())?;
-            for point in self.index_points.iter() {
-                w.build(point)?;
-            }
-            Ok(())
-        }
-    }
-
-    impl FromBitStream for Track<u64, LeadOut, ()> {
+    impl FromBitStream for LeadOutNonCDDA {
         type Error = Error;
 
         fn from_reader<R: BitRead + ?Sized>(r: &mut R) -> Result<Self, Self::Error> {
@@ -3393,7 +3433,7 @@ pub mod cuesheet {
         }
     }
 
-    impl ToBitStream for Track<u64, LeadOut, ()> {
+    impl ToBitStream for LeadOutNonCDDA {
         type Error = Error;
 
         fn to_writer<W: BitWrite + ?Sized>(&self, w: &mut W) -> Result<(), Self::Error> {
@@ -3407,42 +3447,6 @@ pub mod cuesheet {
             Ok(())
         }
     }
-
-    impl<O: Adjacent, N: Adjacent, P> Adjacent for Track<O, N, P> {
-        fn valid_first(&self) -> bool {
-            self.offset.valid_first() && self.number.valid_first()
-        }
-
-        fn is_next(&self, previous: &Self) -> bool {
-            self.offset.is_next(&previous.offset) && self.number.is_next(&previous.number)
-        }
-    }
-
-    /// A CD-DA CUESHEET track
-    pub type TrackCDDA = Track<CDDAOffset, NonZero<u8>, Contiguous<255, Index<CDDAOffset>>>;
-
-    /// A non-CD-DA CUESHEET track
-    pub type TrackNonCDDA = Track<u64, NonZero<u8>, Contiguous<255, Index<u64>>>;
-
-    /// A CD-DA CUESHEET lead-out track
-    pub type LeadOutCDDA = Track<CDDAOffset, LeadOut, ()>;
-
-    impl LeadOutCDDA {
-        /// Creates new lead-out track with the given offset
-        pub fn new(offset: CDDAOffset) -> Self {
-            LeadOutCDDA {
-                offset,
-                number: LeadOut,
-                isrc: ISRC::None,
-                non_audio: false,
-                pre_emphasis: false,
-                index_points: (),
-            }
-        }
-    }
-
-    /// A non-CD-DA CUESHEET lead-out track
-    pub type LeadOutNonCDDA = Track<u64, LeadOut, ()>;
 
     impl LeadOutNonCDDA {
         /// Creates new lead-out track with the given offset
@@ -3527,6 +3531,44 @@ pub mod cuesheet {
         }
     }
 
+    /// A Vec of Indexes with the given offset type
+    ///
+    /// Tracks other than the lead-out track are required
+    /// to have at least one index point.  This collection
+    /// enforces that restriction.
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    pub struct IndexVec<O: Adjacent> {
+        first: Index<O>,
+        rest: Contiguous<254, Index<O>>,
+    }
+
+    impl<O: Adjacent> IndexVec<O> {
+        /// Returns number of `Index` points in `IndexVec`
+        pub fn len(&self) -> usize {
+            self.rest.len() + 1
+        }
+
+        /// Iterates over shared references of all `Index` points
+        pub fn iter(&self) -> impl Iterator<Item = &Index<O>> {
+            std::iter::once(&self.first).chain(self.rest.iter())
+        }
+    }
+
+    impl<O: Adjacent> TryFrom<Contiguous<255, Index<O>>> for IndexVec<O> {
+        type Error = ();
+
+        fn try_from(Contiguous { mut items }: Contiguous<255, Index<O>>) -> Result<Self, ()> {
+            if items.len() > 0 {
+                Ok(Self {
+                    first: items.remove(0),
+                    rest: Contiguous { items },
+                })
+            } else {
+                Err(())
+            }
+        }
+    }
+
     /// A CUESHEET timestamp in MM:SS:FF format
     #[derive(Copy, Clone)]
     pub struct Timestamp {
@@ -3566,8 +3608,10 @@ pub mod cuesheet {
     }
 }
 
-type ParsedCuesheetTrack<O> =
-    cuesheet::Track<O, NonZero<u8>, cuesheet::Contiguous<255, cuesheet::Index<O>>>;
+// type ParsedCuesheetTrack<O> =
+//     cuesheet::Track<O, NonZero<u8>, cuesheet::Contiguous<255, cuesheet::Index<O>>>;
+
+type ParsedCuesheetTrack<O> = cuesheet::Track<O, NonZero<u8>, cuesheet::IndexVec<O>>;
 
 struct ParsedCuesheet<const MAX: usize, C, O: cuesheet::Adjacent> {
     catalog_number: C,
@@ -3616,7 +3660,10 @@ where
                     isrc: track.isrc,
                     non_audio: track.non_audio,
                     pre_emphasis: track.pre_emphasis,
-                    index_points: track.index_points,
+                    index_points: track
+                        .index_points
+                        .try_into()
+                        .map_err(|()| InvalidCuesheet::NoIndexPoints)?,
                 })
             }
         }

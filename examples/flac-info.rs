@@ -112,10 +112,10 @@ fn display_vorbis_comment(comment: VorbisComment) {
 }
 
 fn display_cuesheet(cuesheet: Cuesheet) {
-    use flac_codec::metadata::cuesheet::{Adjacent, Contiguous, Index, LeadOut, Track};
+    use flac_codec::metadata::cuesheet::{Adjacent, Contiguous, IndexVec, LeadOut, Track};
 
     fn display_tracks<const MAX: usize, O, N>(
-        tracks: Contiguous<MAX, Track<O, N, Contiguous<255, Index<O>>>>,
+        tracks: Contiguous<MAX, Track<O, N, IndexVec<O>>>,
         lead_out: Track<O, LeadOut, ()>,
     ) where
         N: std::fmt::Display + Adjacent,
@@ -139,7 +139,7 @@ fn display_cuesheet(cuesheet: Cuesheet) {
             );
             println!("      pre-emphasis: {}", track.pre_emphasis);
             println!("      number of index points: {}", track.index_points.len());
-            for (num, point) in track.index_points.into_iter().enumerate() {
+            for (num, point) in track.index_points.iter().enumerate() {
                 println!("        index[{num}]");
                 println!("          offset: {}", point.offset);
                 println!("          number: {}", point.number);
