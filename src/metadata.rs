@@ -3506,7 +3506,7 @@ pub mod cuesheet {
 
         fn is_next(&self, previous: &Self) -> bool {
             self.number.is_next(&previous.number)
-                && self.offset.is_next(&previous.index_points.last().offset)
+                && self.offset.is_next(&previous.index_points.last())
         }
     }
 
@@ -3675,7 +3675,7 @@ pub mod cuesheet {
         /// Lead-out offset must be contiguous with existing tracks
         pub fn new(last: Option<&TrackCDDA>, offset: CDDAOffset) -> Result<Self, InvalidCuesheet> {
             match last {
-                Some(track) if track.index_points.last().offset >= offset => {
+                Some(track) if *track.index_points.last() >= offset => {
                     Err(InvalidCuesheet::ShortLeadOut)
                 }
                 _ => Ok(LeadOutCDDA {
@@ -3744,7 +3744,7 @@ pub mod cuesheet {
         /// Creates new lead-out track with the given offset
         pub fn new(last: Option<&TrackNonCDDA>, offset: u64) -> Result<Self, InvalidCuesheet> {
             match last {
-                Some(track) if track.index_points.last().offset >= offset => {
+                Some(track) if *track.index_points.last() >= offset => {
                     Err(InvalidCuesheet::ShortLeadOut)
                 }
                 _ => Ok(LeadOutNonCDDA {
@@ -3892,8 +3892,11 @@ pub mod cuesheet {
         ///
         /// Since `IndexVec` must always contain at least
         /// one item, this method is infallible
-        pub fn last(&self) -> &Index<O> {
-            self.remainder.last().unwrap_or(&self.index_01)
+        pub fn last(&self) -> &O {
+            match self.remainder.last() {
+                Some(Index { offset, .. }) => offset,
+                None => self.start(),
+            }
         }
     }
 
