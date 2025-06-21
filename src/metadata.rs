@@ -3899,6 +3899,11 @@ where
                         // so we set it from this index point's
                         // and set the index point's offset to 0
                         track_offset @ None => {
+                            // the first index of the first track must have an offset of 0
+                            if parsed.tracks.is_empty() && offset.into() != 0 {
+                                return Err(InvalidCuesheet::NonZeroFirstIndex);
+                            }
+
                             *track_offset = Some(offset);
 
                             cuesheet::Index {
@@ -3957,7 +3962,12 @@ where
 
         parsed
             .tracks
-            .try_push(wip_track.take().ok_or(InvalidCuesheet::NoTracks)?.try_into()?)
+            .try_push(
+                wip_track
+                    .take()
+                    .ok_or(InvalidCuesheet::NoTracks)?
+                    .try_into()?,
+            )
             .map_err(|_| InvalidCuesheet::TracksOutOfSequence)?;
 
         Ok(ParsedCuesheet {
@@ -4015,6 +4025,8 @@ pub enum InvalidCuesheet {
     IndexPointsInLeadout,
     /// Invalid offset for CD-DA CUESHEET
     InvalidCDDAOffset,
+    /// first INDEX of first TRACK doesn't have offset of 0
+    NonZeroFirstIndex,
 }
 
 impl std::error::Error for InvalidCuesheet {}
@@ -4046,6 +4058,7 @@ impl std::fmt::Display for InvalidCuesheet {
             Self::ShortLeadOut => "lead-out track not beyond final INDEX point".fmt(f),
             Self::IndexPointsInLeadout => "INDEX points in lead-out TRACK".fmt(f),
             Self::InvalidCDDAOffset => "invalid offset for CD-DA CUESHEET".fmt(f),
+            Self::NonZeroFirstIndex => "first index of first track has non-zero offset".fmt(f),
         }
     }
 }

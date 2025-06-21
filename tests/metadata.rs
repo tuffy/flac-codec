@@ -389,10 +389,15 @@ fn test_cuesheets() {
     ));
 
     assert!(matches!(
+        Cuesheet::parse(44100 * 10, include_str!("data/cuesheets/BAD-NoTracks.cue")),
+        Err(InvalidCuesheet::NoTracks)
+    ));
+
+    assert!(matches!(
         Cuesheet::parse(
             44100 * 10,
-            include_str!("data/cuesheets/BAD-NoTracks.cue")
+            include_str!("data/cuesheets/BAD-NonZeroFirstIndex.cue")
         ),
-        Err(InvalidCuesheet::NoTracks)
+        Err(InvalidCuesheet::NonZeroFirstIndex)
     ));
 }
