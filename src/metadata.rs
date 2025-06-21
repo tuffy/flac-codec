@@ -2661,6 +2661,157 @@ impl Cuesheet {
     ///
     /// This is a simplistic cuesheet parser sufficient
     /// for generating FLAC-compatible CUESHEET metadata blocks.
+    ///
+    /// # Example File
+    ///
+    /// ```text
+    /// FILE "cdimage.wav" WAVE
+    ///   TRACK 01 AUDIO
+    ///     INDEX 01 00:00:00
+    ///   TRACK 02 AUDIO
+    ///     INDEX 00 02:57:52
+    ///     INDEX 01 03:00:02
+    ///   TRACK 03 AUDIO
+    ///     INDEX 00 04:46:17
+    ///     INDEX 01 04:48:64
+    ///   TRACK 04 AUDIO
+    ///     INDEX 00 07:09:01
+    ///     INDEX 01 07:11:49
+    ///   TRACK 05 AUDIO
+    ///     INDEX 00 09:11:47
+    ///     INDEX 01 09:13:54
+    ///   TRACK 06 AUDIO
+    ///     INDEX 00 11:10:13
+    ///     INDEX 01 11:12:51
+    ///   TRACK 07 AUDIO
+    ///     INDEX 00 13:03:74
+    ///     INDEX 01 13:07:19
+    /// ```
+    ///
+    /// `INDEX` points are in the format:
+    ///
+    /// ```text
+    /// minutes      frames
+    ///      ↓↓      ↓↓
+    ///      MM::SS::FF
+    ///          ↑↑
+    ///     seconds
+    /// ```
+    ///
+    /// There are 75 frames per second, and 60 seconds per minute.
+    /// Since CD audio has 44100 channel-independent samples per second,
+    /// the number of channel-independent samples per frame is 588
+    /// (44100 ÷ 75 = 588).
+    ///
+    /// Thus, the sample offset of each `INDEX` point can be calculated like:
+    ///
+    /// samples = ((MM × 60 × 75) + (SS × 75) + FF) × 588
+    ///
+    /// Note that the `INDEX` points are stored in increasing order,
+    /// as a standard single file cue sheet.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use flac_codec::metadata::{Cuesheet, cuesheet::{Track, Index, ISRC}};
+    ///
+    /// let file = "FILE \"cdimage.wav\" WAVE
+    ///   TRACK 01 AUDIO
+    ///     INDEX 01 00:00:00
+    ///   TRACK 02 AUDIO
+    ///     INDEX 00 02:57:52
+    ///     INDEX 01 03:00:02
+    ///   TRACK 03 AUDIO
+    ///     INDEX 00 04:46:17
+    ///     INDEX 01 04:48:64
+    ///   TRACK 04 AUDIO
+    ///     INDEX 00 07:09:01
+    ///     INDEX 01 07:11:49
+    ///   TRACK 05 AUDIO
+    ///     INDEX 00 09:11:47
+    ///     INDEX 01 09:13:54
+    ///   TRACK 06 AUDIO
+    ///     INDEX 00 11:10:13
+    ///     INDEX 01 11:12:51
+    ///   TRACK 07 AUDIO
+    ///     INDEX 00 13:03:74
+    ///     INDEX 01 13:07:19
+    /// ";
+    ///
+    /// let cuesheet = Cuesheet::parse(39731748, file).unwrap();
+    /// assert!(cuesheet.is_cdda());
+    ///
+    /// let mut tracks = cuesheet.tracks();
+    ///
+    /// assert_eq!(
+    ///     tracks.next(),
+    ///     Some(Track {
+    ///         offset: 0,
+    ///         number: Some(01),
+    ///         isrc: ISRC::None,
+    ///         non_audio: false,
+    ///         pre_emphasis: false,
+    ///         index_points: vec![
+    ///             Index { number: 01, offset: 0 },
+    ///         ],
+    ///     }),
+    /// );
+    ///
+    /// assert_eq!(
+    ///     tracks.next(),
+    ///     Some(Track {
+    ///         // track's offset is that of its first index point
+    ///         offset: ((2 * 60 * 75) + (57 * 75) + 52) * 588,
+    ///         number: Some(02),
+    ///         isrc: ISRC::None,
+    ///         non_audio: false,
+    ///         pre_emphasis: false,
+    ///         index_points: vec![
+    ///             // index point offsets are stored relative
+    ///             // to the track's offset
+    ///             Index { number: 00, offset: 0 },
+    ///             Index { number: 01, offset: 175 * 588 }
+    ///         ],
+    ///     }),
+    /// );
+    ///
+    /// assert_eq!(
+    ///     tracks.next(),
+    ///     Some(Track {
+    ///         offset: ((4 * 60 * 75) + (46 * 75) + 17) * 588,
+    ///         number: Some(03),
+    ///         isrc: ISRC::None,
+    ///         non_audio: false,
+    ///         pre_emphasis: false,
+    ///         index_points: vec![
+    ///             Index { number: 00, offset: 0 },
+    ///             Index { number: 01, offset: 197 * 588 }
+    ///         ],
+    ///     }),
+    /// );
+    ///
+    /// // skip over some tracks for brevity
+    /// assert_eq!(tracks.next().and_then(|track| track.number), Some(04));
+    /// assert_eq!(tracks.next().and_then(|track| track.number), Some(05));
+    /// assert_eq!(tracks.next().and_then(|track| track.number), Some(06));
+    /// assert_eq!(tracks.next().and_then(|track| track.number), Some(07));
+    ///
+    /// // the final lead-out track has an offset of the stream's total samples
+    /// // and no index points
+    /// assert_eq!(
+    ///     tracks.next(),
+    ///     Some(Track {
+    ///         offset: 39731748,
+    ///         number: None,
+    ///         isrc: ISRC::None,
+    ///         non_audio: false,
+    ///         pre_emphasis: false,
+    ///         index_points: vec![],
+    ///     }),
+    /// );
+    ///
+    /// assert!(tracks.next().is_none());
+    /// ```
     pub fn parse(total_samples: u64, cuesheet: &str) -> Result<Self, InvalidCuesheet> {
         use cuesheet::Digit;
 
