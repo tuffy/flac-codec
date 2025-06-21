@@ -3544,8 +3544,7 @@ pub mod cuesheet {
                 index_points: IndexVec::try_from(
                     Contiguous::try_collect((0..index_point_count).map(|_| r.parse()))
                         .map_err(|_| Error::from(InvalidCuesheet::IndexPointsOutOfSequence))??,
-                )
-                .map_err(|()| Error::from(InvalidCuesheet::IndexPointsOutOfSequence))?,
+                )?,
             })
         }
     }
@@ -3597,8 +3596,7 @@ pub mod cuesheet {
                 index_points: IndexVec::try_from(
                     Contiguous::try_collect((0..index_point_count).map(|_| r.parse()))
                         .map_err(|_| Error::from(InvalidCuesheet::IndexPointsOutOfSequence))??,
-                )
-                .map_err(|()| Error::from(InvalidCuesheet::IndexPointsOutOfSequence))?,
+                )?,
             })
         }
     }
@@ -3832,16 +3830,23 @@ pub mod cuesheet {
 
     /// A Vec of Indexes with the given offset type
     ///
-    /// Tracks other than the lead-out track are required
-    /// to have at least one index point.  This collection
-    /// enforces that restriction.
+    /// Tracks other than the lead-out are required
+    /// to have at least one `INDEX 01` index point,
+    /// which specifies the beginning of the track.
+    /// An `INDEX 00` pre-gap point is optional.
     ///
     /// `MAX` is the maximum number of index points
     /// this can hold, including the first.
+    /// This is 100 for CD-DA (`00` to `99`, inclusive)
+    /// and 254 for non-CD-DA cuesheets.
     #[derive(Clone, Debug, Eq, PartialEq)]
     pub struct IndexVec<const MAX: usize, O: Adjacent> {
-        first: Index<O>,
-        rest: Box<[Index<O>]>,
+        // pre-gap
+        index_00: Option<Index<O>>,
+        // start of track
+        index_01: Index<O>,
+        // remaining index points
+        remainder: Box<[Index<O>]>,
     }
 
     impl<const MAX: usize, O: Adjacent> IndexVec<MAX, O> {
@@ -3855,12 +3860,32 @@ pub mod cuesheet {
             // whose size must be <= usize,
             // our len is 1 less than usize, so len() + 1
             // can never overflow
-            self.rest.len() + 1
+            usize::from(self.index_00.is_some()) + 1 + self.remainder.len()
         }
 
         /// Iterates over shared references of all `Index` points
         pub fn iter(&self) -> impl Iterator<Item = &Index<O>> {
-            std::iter::once(&self.first).chain(self.rest.iter())
+            self.index_00
+                .iter()
+                .chain(std::iter::once(&self.index_01))
+                .chain(&self.remainder)
+        }
+
+        /// Returns offset of track pre-gap, any
+        ///
+        /// This corresponds to `INDEX 00`
+        pub fn pre_gap(&self) -> Option<&O> {
+            match &self.index_00 {
+                Some(Index { offset, .. }) => Some(offset),
+                None => None,
+            }
+        }
+
+        /// Returns offset of track start
+        ///
+        /// This corresponds to `INDEX 01`
+        pub fn start(&self) -> &O {
+            &self.index_01.offset
         }
 
         /// Returns shared reference to final item
@@ -3868,21 +3893,35 @@ pub mod cuesheet {
         /// Since `IndexVec` must always contain at least
         /// one item, this method is infallible
         pub fn last(&self) -> &Index<O> {
-            self.rest.last().unwrap_or(&self.first)
+            self.remainder.last().unwrap_or(&self.index_01)
         }
     }
 
     impl<const MAX: usize, O: Adjacent> TryFrom<Contiguous<MAX, Index<O>>> for IndexVec<MAX, O> {
-        type Error = ();
+        type Error = InvalidCuesheet;
 
-        fn try_from(Contiguous { mut items }: Contiguous<MAX, Index<O>>) -> Result<Self, ()> {
-            if !items.is_empty() {
-                Ok(Self {
-                    first: items.remove(0),
-                    rest: items.into_boxed_slice(),
-                })
-            } else {
-                Err(())
+        fn try_from(
+            Contiguous { items }: Contiguous<MAX, Index<O>>,
+        ) -> Result<Self, InvalidCuesheet> {
+            use std::collections::VecDeque;
+
+            let mut items: VecDeque<Index<O>> = items.into();
+
+            match items.pop_front().ok_or(InvalidCuesheet::NoIndexPoints)? {
+                index_00 @ Index { number: 0, .. } => Ok(Self {
+                    index_00: Some(index_00),
+                    index_01: items
+                        .pop_front()
+                        .filter(|i| i.number == 1)
+                        .ok_or(InvalidCuesheet::IndexPointsOutOfSequence)?,
+                    remainder: Vec::from(items).into_boxed_slice(),
+                }),
+                index_01 @ Index { number: 1, .. } => Ok(Self {
+                    index_00: None,
+                    index_01,
+                    remainder: Vec::from(items).into_boxed_slice(),
+                }),
+                Index { .. } => Err(InvalidCuesheet::IndexPointsOutOfSequence),
             }
         }
     }
@@ -3982,10 +4021,7 @@ where
                     isrc: track.isrc,
                     non_audio: track.non_audio,
                     pre_emphasis: track.pre_emphasis,
-                    index_points: track
-                        .index_points
-                        .try_into()
-                        .map_err(|()| InvalidCuesheet::NoIndexPoints)?,
+                    index_points: track.index_points.try_into()?,
                 })
             }
         }

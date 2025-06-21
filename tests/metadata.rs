@@ -305,15 +305,13 @@ fn test_cuesheets() {
         Err(InvalidCuesheet::InvalidTrack)
     ));
 
-    // FIXME - all tracks need an index point of 01
-    // (is this in the spec anywhere?)
-    // assert!(matches!(
-    //     Cuesheet::parse(
-    //         44100 * 10,
-    //         include_str!("data/cuesheets/BAD-InvalidTrack-2.cue")
-    //     ),
-    //     Err(InvalidCuesheet::InvalidTrack)
-    // ));
+    assert!(matches!(
+        Cuesheet::parse(
+            44100 * 10,
+            include_str!("data/cuesheets/BAD-InvalidTrack-2.cue")
+        ),
+        Err(InvalidCuesheet::IndexPointsOutOfSequence)
+    ));
 
     assert!(matches!(
         Cuesheet::parse(
@@ -323,14 +321,13 @@ fn test_cuesheets() {
         Err(InvalidCuesheet::InvalidTrack)
     ));
 
-    // FIXME - if there's an INDEX 01, there should be an INDEX 00
-    // assert!(matches!(
-    //     Cuesheet::parse(
-    //         44100 * 10,
-    //         include_str!("data/cuesheets/BAD-InvalidTrack-4.cue")
-    //     ),
-    //     Err(InvalidCuesheet::InvalidTrack)
-    // ));
+    assert!(matches!(
+        Cuesheet::parse(
+            44100 * 10,
+            include_str!("data/cuesheets/BAD-InvalidTrack-4.cue")
+        ),
+        Err(InvalidCuesheet::IndexPointsOutOfSequence)
+    ));
 
     assert!(matches!(
         Cuesheet::parse(
