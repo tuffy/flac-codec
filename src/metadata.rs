@@ -3955,12 +3955,10 @@ where
             }
         }
 
-        if let Some(finished) = wip_track.take() {
-            parsed
-                .tracks
-                .try_push(finished.try_into()?)
-                .map_err(|_| InvalidCuesheet::TracksOutOfSequence)?;
-        }
+        parsed
+            .tracks
+            .try_push(wip_track.take().ok_or(InvalidCuesheet::NoTracks)?.try_into()?)
+            .map_err(|_| InvalidCuesheet::TracksOutOfSequence)?;
 
         Ok(ParsedCuesheet {
             catalog_number: parsed.catalog_number.unwrap_or_default(),

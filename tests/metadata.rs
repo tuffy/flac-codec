@@ -387,4 +387,12 @@ fn test_cuesheets() {
         ),
         Err(InvalidCuesheet::TracksOutOfSequence)
     ));
+
+    assert!(matches!(
+        Cuesheet::parse(
+            44100 * 10,
+            include_str!("data/cuesheets/BAD-NoTracks.cue")
+        ),
+        Err(InvalidCuesheet::NoTracks)
+    ));
 }
