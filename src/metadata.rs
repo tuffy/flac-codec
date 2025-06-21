@@ -2869,6 +2869,120 @@ impl Cuesheet {
             ),
         }
     }
+
+    fn track_offsets(&self) -> Box<dyn Iterator<Item = u64> + '_> {
+        match self {
+            Self::CDDA {
+                tracks, lead_out, ..
+            } => Box::new(
+                tracks
+                    .iter()
+                    .map(|t| u64::from(t.offset + *t.index_points.start()))
+                    .chain(std::iter::once(u64::from(lead_out.offset))),
+            ),
+            Self::NonCDDA {
+                tracks, lead_out, ..
+            } => Box::new(
+                tracks
+                    .iter()
+                    .map(|t| t.offset + t.index_points.start())
+                    .chain(std::iter::once(lead_out.offset)),
+            ),
+        }
+    }
+
+    /// Iterates over track ranges in channel-indepedent samples
+    ///
+    /// Note that the range of each track is from the track
+    /// start to the start of the next track, which is indicated
+    /// by `INDEX 01`.
+    /// It is *not* from the start of the pre-gaps (`INDEX 00`),
+    /// which may not be present.
+    ///
+    /// ```
+    /// use flac_codec::metadata::Cuesheet;
+    ///
+    /// let file = "FILE \"cdimage.wav\" WAVE
+    ///   TRACK 01 AUDIO
+    ///     INDEX 01 00:00:00
+    ///   TRACK 02 AUDIO
+    ///     INDEX 00 02:57:52
+    ///     INDEX 01 03:00:02
+    ///   TRACK 03 AUDIO
+    ///     INDEX 00 04:46:17
+    ///     INDEX 01 04:48:64
+    ///   TRACK 04 AUDIO
+    ///     INDEX 00 07:09:01
+    ///     INDEX 01 07:11:49
+    ///   TRACK 05 AUDIO
+    ///     INDEX 00 09:11:47
+    ///     INDEX 01 09:13:54
+    ///   TRACK 06 AUDIO
+    ///     INDEX 00 11:10:13
+    ///     INDEX 01 11:12:51
+    ///   TRACK 07 AUDIO
+    ///     INDEX 00 13:03:74
+    ///     INDEX 01 13:07:19
+    /// ";
+    ///
+    /// let cuesheet = Cuesheet::parse(39731748, file).unwrap();
+    /// let mut track_ranges = cuesheet.track_sample_ranges();
+    ///
+    /// // 00:00:00 to 03:00:02
+    /// assert_eq!(
+    ///     track_ranges.next(),
+    ///     Some(0..((3 * 60 * 75) + (0 * 75) + 2) * 588)
+    /// );
+    ///
+    /// // 03:00:02 to 04:48:64
+    /// assert_eq!(
+    ///     track_ranges.next(),
+    ///     Some(((3 * 60 * 75) + (0 * 75) + 2) * 588..((4 * 60 * 75) + (48 * 75) + 64) * 588),
+    /// );
+    ///
+    /// // skip a few tracks for brevity
+    /// assert!(track_ranges.next().is_some()); // to 07:11.49
+    /// assert!(track_ranges.next().is_some()); // to 09:13:54
+    /// assert!(track_ranges.next().is_some()); // to 11:12:51
+    /// assert!(track_ranges.next().is_some()); // to 13:07:19
+    ///
+    /// // 13:07:19 to the lead-out
+    /// assert_eq!(
+    ///     track_ranges.next(),
+    ///     Some(((13 * 60 * 75) + (7 * 75) + 19) * 588..39731748),
+    /// );
+    ///
+    /// assert!(track_ranges.next().is_none());
+    /// ```
+    pub fn track_sample_ranges(&self) -> impl Iterator<Item = std::ops::Range<u64>> {
+        self.track_offsets()
+            .zip(self.track_offsets().skip(1))
+            .map(|(s, e)| s..e)
+    }
+
+    /// Iterates over track ranges in bytes
+    ///
+    /// Much like [`Cuesheet::track_sample_ranges`], but takes
+    /// a channel count and bits-per-sample to convert the ranges to bytes.
+    ///
+    /// For CD-DA, those values are 2 and 16, respectively.
+    ///
+    /// # Panics
+    ///
+    /// Panics if either [`channel_count`] or [`bits_per_sample`] are 0
+    pub fn track_byte_ranges(
+        &self,
+        channel_count: u8,
+        bits_per_sample: u32,
+    ) -> impl Iterator<Item = std::ops::Range<u64>> {
+        assert!(channel_count > 0, "channel_count must be > 0");
+        assert!(bits_per_sample > 0, "bits_per_sample > 0");
+
+        let multiplier = u64::from(channel_count) * u64::from(bits_per_sample.div_ceil(8));
+
+        self.track_sample_ranges()
+            .map(move |std::ops::Range { start, end }| start * multiplier..end * multiplier)
+    }
 }
 
 block!(Cuesheet, Cuesheet, true);
