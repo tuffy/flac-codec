@@ -2853,28 +2853,28 @@ impl Cuesheet {
     ///
     /// assert!(tracks.next().is_none());
     /// ```
-    pub fn parse(total_samples: u64, cuesheet: &str) -> Result<Self, InvalidCuesheet> {
+    pub fn parse(total_samples: u64, cuesheet: &str) -> Result<Self, CuesheetError> {
         use cuesheet::Digit;
 
-        fn cdda_catalog(s: &str) -> Result<Option<[Digit; 13]>, InvalidCuesheet> {
+        fn cdda_catalog(s: &str) -> Result<Option<[Digit; 13]>, CuesheetError> {
             s.chars()
                 .map(Digit::try_from)
                 .collect::<Result<Vec<_>, _>>()
                 .and_then(|v| {
                     <[Digit; 13] as TryFrom<Vec<Digit>>>::try_from(v)
-                        .map_err(|_| InvalidCuesheet::InvalidCatalogNumber)
+                        .map_err(|_| CuesheetError::InvalidCatalogNumber)
                 })
                 .map(Some)
         }
 
-        fn non_cdda_catalog(s: &str) -> Result<Vec<Digit>, InvalidCuesheet> {
+        fn non_cdda_catalog(s: &str) -> Result<Vec<Digit>, CuesheetError> {
             s.chars()
                 .map(Digit::try_from)
                 .collect::<Result<Vec<_>, _>>()
                 .and_then(|v| {
                     (v.len() <= Cuesheet::CATALOG_LEN)
                         .then_some(v)
-                        .ok_or(InvalidCuesheet::InvalidCatalogNumber)
+                        .ok_or(CuesheetError::InvalidCatalogNumber)
                 })
         }
 
@@ -3051,10 +3051,10 @@ impl FromBitStream for Cuesheet {
                                 .map(cuesheet::Digit::try_from)
                                 .collect::<Result<Vec<_>, u8>>()
                                 // any of the digits aren't valid ASCII
-                                .map_err(|_| Error::from(InvalidCuesheet::InvalidCatalogNumber))?
+                                .map_err(|_| Error::from(CuesheetError::InvalidCatalogNumber))?
                                 .try_into()
                                 // the number isn't the correct size
-                                .map_err(|_| Error::from(InvalidCuesheet::InvalidCatalogNumber))?,
+                                .map_err(|_| Error::from(CuesheetError::InvalidCatalogNumber))?,
                         ),
                     }
                 },
@@ -3063,10 +3063,10 @@ impl FromBitStream for Cuesheet {
                     (0..track_count
                         .checked_sub(1)
                         .filter(|c| *c <= 99)
-                        .ok_or(Error::from(InvalidCuesheet::NoTracks))?)
+                        .ok_or(Error::from(CuesheetError::NoTracks))?)
                         .map(|_| r.parse()),
                 )
-                .map_err(|_| Error::from(InvalidCuesheet::TracksOutOfSequence))??,
+                .map_err(|_| Error::from(CuesheetError::TracksOutOfSequence))??,
                 lead_out: r.parse()?,
             }
         } else {
@@ -3076,14 +3076,14 @@ impl FromBitStream for Cuesheet {
                     .copied()
                     .map(cuesheet::Digit::try_from)
                     .collect::<Result<Vec<_>, _>>()
-                    .map_err(|_| Error::from(InvalidCuesheet::InvalidCatalogNumber))?,
+                    .map_err(|_| Error::from(CuesheetError::InvalidCatalogNumber))?,
                 tracks: cuesheet::Contiguous::try_collect(
                     (0..track_count
                         .checked_sub(1)
-                        .ok_or(Error::from(InvalidCuesheet::NoTracks))?)
+                        .ok_or(Error::from(CuesheetError::NoTracks))?)
                         .map(|_| r.parse()),
                 )
-                .map_err(|_| Error::from(InvalidCuesheet::TracksOutOfSequence))??,
+                .map_err(|_| Error::from(CuesheetError::TracksOutOfSequence))??,
                 lead_out: r.parse()?,
             }
         })
@@ -3176,8 +3176,8 @@ where
 {
     fn parse(
         cuesheet: &str,
-        parse_catalog: impl Fn(&str) -> Result<C, InvalidCuesheet>,
-    ) -> Result<Self, InvalidCuesheet> {
+        parse_catalog: impl Fn(&str) -> Result<C, CuesheetError>,
+    ) -> Result<Self, CuesheetError> {
         type WipTrack<const INDEX_MAX: usize, O> = cuesheet::Track<
             Option<O>,
             NonZero<u8>,
@@ -3200,13 +3200,13 @@ where
         impl<const INDEX_MAX: usize, O: cuesheet::Adjacent> TryFrom<WipTrack<INDEX_MAX, O>>
             for ParsedCuesheetTrack<INDEX_MAX, O>
         {
-            type Error = InvalidCuesheet;
+            type Error = CuesheetError;
 
             fn try_from(track: WipTrack<INDEX_MAX, O>) -> Result<Self, Self::Error> {
                 // completed tracks need an offset which
                 // is set by adding the first index point
                 Ok(Self {
-                    offset: track.offset.ok_or(InvalidCuesheet::InvalidTrack)?,
+                    offset: track.offset.ok_or(CuesheetError::InvalidTrack)?,
                     number: track.number,
                     isrc: track.isrc,
                     non_audio: track.non_audio,
@@ -3235,9 +3235,9 @@ where
         for line in cuesheet.lines() {
             let line = line.trim();
             match line.split_once(' ').unwrap_or((line, "")) {
-                ("CATALOG", "") => return Err(InvalidCuesheet::CatalogMissingNumber),
+                ("CATALOG", "") => return Err(CuesheetError::CatalogMissingNumber),
                 ("CATALOG", number) => match parsed.catalog_number {
-                    Some(_) => return Err(InvalidCuesheet::MultipleCatalogNumber),
+                    Some(_) => return Err(CuesheetError::MultipleCatalogNumber),
                     ref mut num @ None => {
                         *num = Some(parse_catalog(unquote(number))?);
                     }
@@ -3245,31 +3245,31 @@ where
                 ("TRACK", rest) => {
                     if let Some(finished) = wip_track.replace(WipTrack::new(
                         rest.split_once(' ')
-                            .ok_or(InvalidCuesheet::InvalidTrack)?
+                            .ok_or(CuesheetError::InvalidTrack)?
                             .0
                             .parse()
-                            .map_err(|_| InvalidCuesheet::InvalidTrack)?,
+                            .map_err(|_| CuesheetError::InvalidTrack)?,
                     )) {
                         parsed
                             .tracks
                             .try_push(finished.try_into()?)
-                            .map_err(|_| InvalidCuesheet::TracksOutOfSequence)?
+                            .map_err(|_| CuesheetError::TracksOutOfSequence)?
                     }
                 }
                 ("INDEX", rest) => {
                     let (number, offset) = rest
                         .split_once(' ')
-                        .ok_or(InvalidCuesheet::InvalidIndexPoint)?;
+                        .ok_or(CuesheetError::InvalidIndexPoint)?;
 
                     let number: u8 = number
                         .parse()
-                        .map_err(|_| InvalidCuesheet::InvalidIndexPoint)?;
+                        .map_err(|_| CuesheetError::InvalidIndexPoint)?;
 
                     let offset: O = offset
                         .parse()
-                        .map_err(|_| InvalidCuesheet::InvalidIndexPoint)?;
+                        .map_err(|_| CuesheetError::InvalidIndexPoint)?;
 
-                    let wip_track = wip_track.as_mut().ok_or(InvalidCuesheet::PrematureIndex)?;
+                    let wip_track = wip_track.as_mut().ok_or(CuesheetError::PrematureIndex)?;
 
                     let index = match &mut wip_track.offset {
                         // work-in progress track has no offset,
@@ -3278,7 +3278,7 @@ where
                         track_offset @ None => {
                             // the first index of the first track must have an offset of 0
                             if parsed.tracks.is_empty() && offset.into() != 0 {
-                                return Err(InvalidCuesheet::NonZeroFirstIndex);
+                                return Err(CuesheetError::NonZeroFirstIndex);
                             }
 
                             *track_offset = Some(offset);
@@ -3302,15 +3302,15 @@ where
                     wip_track
                         .index_points
                         .try_push(index)
-                        .map_err(|_| InvalidCuesheet::IndexPointsOutOfSequence)?;
+                        .map_err(|_| CuesheetError::IndexPointsOutOfSequence)?;
                 }
                 ("ISRC", isrc) => {
                     use cuesheet::ISRC;
 
-                    let wip_track = wip_track.as_mut().ok_or(InvalidCuesheet::PrematureISRC)?;
+                    let wip_track = wip_track.as_mut().ok_or(CuesheetError::PrematureISRC)?;
 
                     if !wip_track.index_points.is_empty() {
-                        return Err(InvalidCuesheet::LateISRC)?;
+                        return Err(CuesheetError::LateISRC)?;
                     }
 
                     match &mut wip_track.isrc {
@@ -3318,17 +3318,17 @@ where
                             *track_isrc = ISRC::String(
                                 unquote(isrc)
                                     .parse()
-                                    .map_err(|_| InvalidCuesheet::InvalidISRC)?,
+                                    .map_err(|_| CuesheetError::InvalidISRC)?,
                             );
                         }
-                        ISRC::String(_) => return Err(InvalidCuesheet::MultipleISRC),
+                        ISRC::String(_) => return Err(CuesheetError::MultipleISRC),
                     }
                 }
                 ("FLAGS", "PRE") => {
-                    let wip_track = wip_track.as_mut().ok_or(InvalidCuesheet::PrematureFlags)?;
+                    let wip_track = wip_track.as_mut().ok_or(CuesheetError::PrematureFlags)?;
 
                     if !wip_track.index_points.is_empty() {
-                        return Err(InvalidCuesheet::LateFlags)?;
+                        return Err(CuesheetError::LateFlags)?;
                     } else {
                         wip_track.pre_emphasis = true;
                     }
@@ -3342,10 +3342,10 @@ where
             .try_push(
                 wip_track
                     .take()
-                    .ok_or(InvalidCuesheet::NoTracks)?
+                    .ok_or(CuesheetError::NoTracks)?
                     .try_into()?,
             )
-            .map_err(|_| InvalidCuesheet::TracksOutOfSequence)?;
+            .map_err(|_| CuesheetError::TracksOutOfSequence)?;
 
         Ok(ParsedCuesheet {
             catalog_number: parsed.catalog_number.unwrap_or_default(),
@@ -3357,7 +3357,7 @@ where
 /// An error when trying to parse cue sheet data
 #[derive(Debug)]
 #[non_exhaustive]
-pub enum InvalidCuesheet {
+pub enum CuesheetError {
     /// CATALOG tag missing catalog number
     CatalogMissingNumber,
     /// multiple CATALOG numbers found
@@ -3406,9 +3406,9 @@ pub enum InvalidCuesheet {
     NonZeroFirstIndex,
 }
 
-impl std::error::Error for InvalidCuesheet {}
+impl std::error::Error for CuesheetError {}
 
-impl std::fmt::Display for InvalidCuesheet {
+impl std::fmt::Display for CuesheetError {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
             Self::CatalogMissingNumber => "CATALOG tag missing number".fmt(f),

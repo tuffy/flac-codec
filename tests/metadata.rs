@@ -126,7 +126,7 @@ fn test_write_metadata() {
 
 #[test]
 fn test_cuesheets() {
-    use flac_codec::metadata::{Cuesheet, InvalidCuesheet};
+    use flac_codec::metadata::{Cuesheet, CuesheetError};
 
     assert!(Cuesheet::parse(44100 * 10, include_str!("data/cuesheets/OK-0.cue"),).is_ok());
     assert!(Cuesheet::parse(44100 * 60 * 79, include_str!("data/cuesheets/OK-1.cue"),).is_ok());
@@ -140,7 +140,7 @@ fn test_cuesheets() {
             44100 * 10,
             include_str!("data/cuesheets/BAD-MultipleCatalogNumber.cue")
         ),
-        Err(InvalidCuesheet::MultipleCatalogNumber)
+        Err(CuesheetError::MultipleCatalogNumber)
     ));
 
     assert!(matches!(
@@ -148,7 +148,7 @@ fn test_cuesheets() {
             44100 * 10,
             include_str!("data/cuesheets/BAD-CatalogMissingNumber.cue")
         ),
-        Err(InvalidCuesheet::CatalogMissingNumber)
+        Err(CuesheetError::CatalogMissingNumber)
     ));
 
     assert!(matches!(
@@ -156,7 +156,7 @@ fn test_cuesheets() {
             44100 * 10,
             include_str!("data/cuesheets/BAD-InvalidCatalogNumber-1.cue")
         ),
-        Err(InvalidCuesheet::InvalidCatalogNumber)
+        Err(CuesheetError::InvalidCatalogNumber)
     ));
 
     assert!(matches!(
@@ -164,7 +164,7 @@ fn test_cuesheets() {
             44100 * 10,
             include_str!("data/cuesheets/BAD-InvalidCatalogNumber-2.cue")
         ),
-        Err(InvalidCuesheet::InvalidCatalogNumber)
+        Err(CuesheetError::InvalidCatalogNumber)
     ));
 
     assert!(matches!(
@@ -172,12 +172,12 @@ fn test_cuesheets() {
             44100 * 10,
             include_str!("data/cuesheets/BAD-PrematureFlags.cue")
         ),
-        Err(InvalidCuesheet::PrematureFlags)
+        Err(CuesheetError::PrematureFlags)
     ));
 
     assert!(matches!(
         Cuesheet::parse(44100 * 10, include_str!("data/cuesheets/BAD-LateFlags.cue")),
-        Err(InvalidCuesheet::LateFlags)
+        Err(CuesheetError::LateFlags)
     ));
 
     assert!(matches!(
@@ -185,7 +185,7 @@ fn test_cuesheets() {
             44100 * 10,
             include_str!("data/cuesheets/BAD-PrematureIndex.cue")
         ),
-        Err(InvalidCuesheet::PrematureIndex)
+        Err(CuesheetError::PrematureIndex)
     ));
 
     assert!(matches!(
@@ -193,7 +193,7 @@ fn test_cuesheets() {
             44100 * 10,
             include_str!("data/cuesheets/BAD-InvalidIndexPoint-1.cue")
         ),
-        Err(InvalidCuesheet::InvalidIndexPoint)
+        Err(CuesheetError::InvalidIndexPoint)
     ));
 
     assert!(matches!(
@@ -201,7 +201,7 @@ fn test_cuesheets() {
             44100 * 10,
             include_str!("data/cuesheets/BAD-InvalidIndexPoint-2.cue")
         ),
-        Err(InvalidCuesheet::InvalidIndexPoint)
+        Err(CuesheetError::InvalidIndexPoint)
     ));
 
     assert!(matches!(
@@ -209,7 +209,7 @@ fn test_cuesheets() {
             44100 * 10,
             include_str!("data/cuesheets/BAD-InvalidIndexPoint-3.cue")
         ),
-        Err(InvalidCuesheet::InvalidIndexPoint)
+        Err(CuesheetError::InvalidIndexPoint)
     ));
 
     assert!(matches!(
@@ -217,7 +217,7 @@ fn test_cuesheets() {
             44100 * 10,
             include_str!("data/cuesheets/BAD-InvalidIndexPoint-4.cue")
         ),
-        Err(InvalidCuesheet::InvalidIndexPoint)
+        Err(CuesheetError::InvalidIndexPoint)
     ));
 
     assert!(matches!(
@@ -225,7 +225,7 @@ fn test_cuesheets() {
             44100 * 10,
             include_str!("data/cuesheets/BAD-InvalidIndexPoint-5.cue")
         ),
-        Err(InvalidCuesheet::InvalidIndexPoint)
+        Err(CuesheetError::InvalidIndexPoint)
     ));
 
     assert!(matches!(
@@ -233,7 +233,7 @@ fn test_cuesheets() {
             44100 * 10,
             include_str!("data/cuesheets/BAD-IndexPointsOutOfSequence-1.cue")
         ),
-        Err(InvalidCuesheet::IndexPointsOutOfSequence)
+        Err(CuesheetError::IndexPointsOutOfSequence)
     ));
 
     assert!(matches!(
@@ -241,7 +241,7 @@ fn test_cuesheets() {
             44100 * 10,
             include_str!("data/cuesheets/BAD-IndexPointsOutOfSequence-2.cue")
         ),
-        Err(InvalidCuesheet::IndexPointsOutOfSequence)
+        Err(CuesheetError::IndexPointsOutOfSequence)
     ));
 
     assert!(matches!(
@@ -249,7 +249,7 @@ fn test_cuesheets() {
             44100 * 10,
             include_str!("data/cuesheets/BAD-IndexPointsOutOfSequence-3.cue")
         ),
-        Err(InvalidCuesheet::IndexPointsOutOfSequence)
+        Err(CuesheetError::IndexPointsOutOfSequence)
     ));
 
     assert!(matches!(
@@ -257,7 +257,7 @@ fn test_cuesheets() {
             44100 * 10,
             include_str!("data/cuesheets/BAD-IndexPointsOutOfSequence-4.cue")
         ),
-        Err(InvalidCuesheet::IndexPointsOutOfSequence)
+        Err(CuesheetError::IndexPointsOutOfSequence)
     ));
 
     assert!(matches!(
@@ -265,7 +265,7 @@ fn test_cuesheets() {
             44100 * 10,
             include_str!("data/cuesheets/BAD-MultipleISRC.cue")
         ),
-        Err(InvalidCuesheet::MultipleISRC)
+        Err(CuesheetError::MultipleISRC)
     ));
 
     assert!(matches!(
@@ -273,12 +273,12 @@ fn test_cuesheets() {
             44100 * 10,
             include_str!("data/cuesheets/BAD-PrematureISRC.cue")
         ),
-        Err(InvalidCuesheet::PrematureISRC)
+        Err(CuesheetError::PrematureISRC)
     ));
 
     assert!(matches!(
         Cuesheet::parse(44100 * 10, include_str!("data/cuesheets/BAD-LateISRC.cue")),
-        Err(InvalidCuesheet::LateISRC)
+        Err(CuesheetError::LateISRC)
     ));
 
     assert!(matches!(
@@ -286,7 +286,7 @@ fn test_cuesheets() {
             44100 * 10,
             include_str!("data/cuesheets/BAD-InvalidISRC-1.cue")
         ),
-        Err(InvalidCuesheet::InvalidISRC)
+        Err(CuesheetError::InvalidISRC)
     ));
 
     assert!(matches!(
@@ -294,7 +294,7 @@ fn test_cuesheets() {
             44100 * 10,
             include_str!("data/cuesheets/BAD-InvalidISRC-2.cue")
         ),
-        Err(InvalidCuesheet::InvalidISRC)
+        Err(CuesheetError::InvalidISRC)
     ));
 
     assert!(matches!(
@@ -302,7 +302,7 @@ fn test_cuesheets() {
             44100 * 10,
             include_str!("data/cuesheets/BAD-InvalidTrack-1.cue")
         ),
-        Err(InvalidCuesheet::InvalidTrack)
+        Err(CuesheetError::InvalidTrack)
     ));
 
     assert!(matches!(
@@ -310,7 +310,7 @@ fn test_cuesheets() {
             44100 * 10,
             include_str!("data/cuesheets/BAD-InvalidTrack-2.cue")
         ),
-        Err(InvalidCuesheet::IndexPointsOutOfSequence)
+        Err(CuesheetError::IndexPointsOutOfSequence)
     ));
 
     assert!(matches!(
@@ -318,7 +318,7 @@ fn test_cuesheets() {
             44100 * 10,
             include_str!("data/cuesheets/BAD-InvalidTrack-3.cue")
         ),
-        Err(InvalidCuesheet::InvalidTrack)
+        Err(CuesheetError::InvalidTrack)
     ));
 
     assert!(matches!(
@@ -326,7 +326,7 @@ fn test_cuesheets() {
             44100 * 10,
             include_str!("data/cuesheets/BAD-InvalidTrack-4.cue")
         ),
-        Err(InvalidCuesheet::IndexPointsOutOfSequence)
+        Err(CuesheetError::IndexPointsOutOfSequence)
     ));
 
     assert!(matches!(
@@ -334,7 +334,7 @@ fn test_cuesheets() {
             44100 * 10,
             include_str!("data/cuesheets/BAD-InvalidTrack-5.cue")
         ),
-        Err(InvalidCuesheet::InvalidTrack)
+        Err(CuesheetError::InvalidTrack)
     ));
 
     assert!(matches!(
@@ -342,7 +342,7 @@ fn test_cuesheets() {
             44100 * 10,
             include_str!("data/cuesheets/BAD-InvalidTrack-6.cue")
         ),
-        Err(InvalidCuesheet::InvalidTrack)
+        Err(CuesheetError::InvalidTrack)
     ));
 
     assert!(matches!(
@@ -350,7 +350,7 @@ fn test_cuesheets() {
             44100 * 10,
             include_str!("data/cuesheets/BAD-InvalidTrack-7.cue")
         ),
-        Err(InvalidCuesheet::InvalidTrack)
+        Err(CuesheetError::InvalidTrack)
     ));
 
     assert!(matches!(
@@ -358,7 +358,7 @@ fn test_cuesheets() {
             44100 * 10,
             include_str!("data/cuesheets/BAD-InvalidTrack-8.cue")
         ),
-        Err(InvalidCuesheet::InvalidTrack)
+        Err(CuesheetError::InvalidTrack)
     ));
 
     assert!(matches!(
@@ -366,7 +366,7 @@ fn test_cuesheets() {
             44100 * 10,
             include_str!("data/cuesheets/BAD-InvalidTrack-9.cue")
         ),
-        Err(InvalidCuesheet::InvalidTrack)
+        Err(CuesheetError::InvalidTrack)
     ));
 
     assert!(matches!(
@@ -374,7 +374,7 @@ fn test_cuesheets() {
             44100 * 10,
             include_str!("data/cuesheets/BAD-TracksOutOfSequence-1.cue")
         ),
-        Err(InvalidCuesheet::TracksOutOfSequence)
+        Err(CuesheetError::TracksOutOfSequence)
     ));
 
     assert!(matches!(
@@ -382,12 +382,12 @@ fn test_cuesheets() {
             44100 * 10,
             include_str!("data/cuesheets/BAD-TracksOutOfSequence-2.cue")
         ),
-        Err(InvalidCuesheet::TracksOutOfSequence)
+        Err(CuesheetError::TracksOutOfSequence)
     ));
 
     assert!(matches!(
         Cuesheet::parse(44100 * 10, include_str!("data/cuesheets/BAD-NoTracks.cue")),
-        Err(InvalidCuesheet::NoTracks)
+        Err(CuesheetError::NoTracks)
     ));
 
     assert!(matches!(
@@ -395,6 +395,6 @@ fn test_cuesheets() {
             44100 * 10,
             include_str!("data/cuesheets/BAD-NonZeroFirstIndex.cue")
         ),
-        Err(InvalidCuesheet::NonZeroFirstIndex)
+        Err(CuesheetError::NonZeroFirstIndex)
     ));
 }

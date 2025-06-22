@@ -1,6 +1,6 @@
 
 use crate::Error;
-use crate::metadata::InvalidCuesheet;
+use crate::metadata::CuesheetError;
 use bitstream_io::{BitRead, BitWrite, FromBitStream, ToBitStream};
 use std::num::NonZero;
 use std::str::FromStr;
@@ -51,9 +51,9 @@ impl TryFrom<u8> for Digit {
 }
 
 impl TryFrom<char> for Digit {
-    type Error = InvalidCuesheet;
+    type Error = CuesheetError;
 
-    fn try_from(c: char) -> Result<Digit, InvalidCuesheet> {
+    fn try_from(c: char) -> Result<Digit, CuesheetError> {
         match c {
             '0' => Ok(Self::Digit0),
             '1' => Ok(Self::Digit1),
@@ -65,7 +65,7 @@ impl TryFrom<char> for Digit {
             '7' => Ok(Self::Digit7),
             '8' => Ok(Self::Digit8),
             '9' => Ok(Self::Digit9),
-            _ => Err(InvalidCuesheet::InvalidCatalogNumber),
+            _ => Err(CuesheetError::InvalidCatalogNumber),
         }
     }
 }
@@ -273,7 +273,7 @@ impl FromBitStream for CDDAOffset {
             offset: r.read_to().map_err(Error::Io).and_then(|o| {
                 ((o % Self::SAMPLES_PER_SECTOR) == 0)
                     .then_some(o)
-                    .ok_or(InvalidCuesheet::InvalidCDDAOffset.into())
+                    .ok_or(CuesheetError::InvalidCDDAOffset.into())
             })?,
         })
     }
@@ -346,7 +346,7 @@ impl AsRef<str> for ISRCString {
 }
 
 impl FromStr for ISRCString {
-    type Err = InvalidCuesheet;
+    type Err = CuesheetError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         use std::borrow::Cow;
@@ -368,7 +368,7 @@ impl FromStr for ISRCString {
             .and_then(|s| filter_split(s, 2, |c| c.is_ascii_digit()))
             .and_then(|s| s.chars().all(|c| c.is_ascii_digit()).then_some(()))
             .map(|()| ISRCString(isrc.into_owned()))
-            .ok_or(InvalidCuesheet::InvalidISRC)
+            .ok_or(CuesheetError::InvalidISRC)
     }
 }
 
@@ -399,7 +399,7 @@ impl FromBitStream for ISRC {
         if isrc.iter().all(|b| *b == 0) {
             Ok(ISRC::None)
         } else {
-            let s = str::from_utf8(&isrc).map_err(|_| InvalidCuesheet::InvalidISRC)?;
+            let s = str::from_utf8(&isrc).map_err(|_| CuesheetError::InvalidISRC)?;
 
             Ok(ISRC::String(s.parse()?))
         }
@@ -433,7 +433,7 @@ impl AsRef<str> for ISRC {
 }
 
 impl FromStr for ISRC {
-    type Err = InvalidCuesheet;
+    type Err = CuesheetError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         ISRCString::from_str(s).map(ISRC::String)
@@ -522,7 +522,7 @@ impl FromBitStream for TrackCDDA {
         let number = r
             .read_to()
             .map_err(Error::Io)
-            .and_then(|s| NonZero::new(s).ok_or(Error::from(InvalidCuesheet::InvalidIndexPoint)))?;
+            .and_then(|s| NonZero::new(s).ok_or(Error::from(CuesheetError::InvalidIndexPoint)))?;
         let isrc = r.parse()?;
         let non_audio = r.read_bit()?;
         let pre_emphasis = r.read_bit()?;
@@ -540,7 +540,7 @@ impl FromBitStream for TrackCDDA {
             // and that they're all in order
             index_points: IndexVec::try_from(
                 Contiguous::try_collect((0..index_point_count).map(|_| r.parse()))
-                    .map_err(|_| Error::from(InvalidCuesheet::IndexPointsOutOfSequence))??,
+                    .map_err(|_| Error::from(CuesheetError::IndexPointsOutOfSequence))??,
             )?,
         })
     }
@@ -575,7 +575,7 @@ impl FromBitStream for TrackNonCDDA {
         let number = r
             .read_to()
             .map_err(Error::Io)
-            .and_then(|s| NonZero::new(s).ok_or(Error::from(InvalidCuesheet::InvalidIndexPoint)))?;
+            .and_then(|s| NonZero::new(s).ok_or(Error::from(CuesheetError::InvalidIndexPoint)))?;
         let isrc = r.parse()?;
         let non_audio = r.read_bit()?;
         let pre_emphasis = r.read_bit()?;
@@ -593,7 +593,7 @@ impl FromBitStream for TrackNonCDDA {
             // and that they're all in order
             index_points: IndexVec::try_from(
                 Contiguous::try_collect((0..index_point_count).map(|_| r.parse()))
-                    .map_err(|_| Error::from(InvalidCuesheet::IndexPointsOutOfSequence))??,
+                    .map_err(|_| Error::from(CuesheetError::IndexPointsOutOfSequence))??,
             )?,
         })
     }
@@ -629,7 +629,7 @@ impl FromBitStream for LeadOutCDDA {
             NonZero::new(n)
                 .filter(|n| *n == LeadOut::CDDA)
                 .map(|_| LeadOut)
-                .ok_or(InvalidCuesheet::TracksOutOfSequence.into())
+                .ok_or(CuesheetError::TracksOutOfSequence.into())
         })?;
         let isrc = r.parse()?;
         let non_audio = r.read_bit()?;
@@ -647,7 +647,7 @@ impl FromBitStream for LeadOutCDDA {
             // because parsing a cuesheet generates a lead-out
             // automatically, this error can only only occur when
             // reading from metadata blocks
-            _ => Err(InvalidCuesheet::IndexPointsInLeadout.into()),
+            _ => Err(CuesheetError::IndexPointsInLeadout.into()),
         }
     }
 }
@@ -671,10 +671,10 @@ impl LeadOutCDDA {
     /// Creates new lead-out track with the given offset
     ///
     /// Lead-out offset must be contiguous with existing tracks
-    pub fn new(last: Option<&TrackCDDA>, offset: CDDAOffset) -> Result<Self, InvalidCuesheet> {
+    pub fn new(last: Option<&TrackCDDA>, offset: CDDAOffset) -> Result<Self, CuesheetError> {
         match last {
             Some(track) if *track.index_points.last() >= offset => {
-                Err(InvalidCuesheet::ShortLeadOut)
+                Err(CuesheetError::ShortLeadOut)
             }
             _ => Ok(LeadOutCDDA {
                 offset,
@@ -700,7 +700,7 @@ impl FromBitStream for LeadOutNonCDDA {
             NonZero::new(n)
                 .filter(|n| *n == LeadOut::NON_CDDA)
                 .map(|_| LeadOut)
-                .ok_or(InvalidCuesheet::TracksOutOfSequence.into())
+                .ok_or(CuesheetError::TracksOutOfSequence.into())
         })?;
         let isrc = r.parse()?;
         let non_audio = r.read_bit()?;
@@ -718,7 +718,7 @@ impl FromBitStream for LeadOutNonCDDA {
             // because parsing a cuesheet generates a lead-out
             // automatically, this error can only only occur when
             // reading from metadata blocks
-            _ => Err(InvalidCuesheet::IndexPointsInLeadout.into()),
+            _ => Err(CuesheetError::IndexPointsInLeadout.into()),
         }
     }
 }
@@ -740,10 +740,10 @@ impl ToBitStream for LeadOutNonCDDA {
 
 impl LeadOutNonCDDA {
     /// Creates new lead-out track with the given offset
-    pub fn new(last: Option<&TrackNonCDDA>, offset: u64) -> Result<Self, InvalidCuesheet> {
+    pub fn new(last: Option<&TrackNonCDDA>, offset: u64) -> Result<Self, CuesheetError> {
         match last {
             Some(track) if *track.index_points.last() >= offset => {
-                Err(InvalidCuesheet::ShortLeadOut)
+                Err(CuesheetError::ShortLeadOut)
             }
             _ => Ok(LeadOutNonCDDA {
                 offset,
@@ -899,20 +899,20 @@ impl<const MAX: usize, O: Adjacent> IndexVec<MAX, O> {
 }
 
 impl<const MAX: usize, O: Adjacent> TryFrom<Contiguous<MAX, Index<O>>> for IndexVec<MAX, O> {
-    type Error = InvalidCuesheet;
+    type Error = CuesheetError;
 
-    fn try_from(Contiguous { items }: Contiguous<MAX, Index<O>>) -> Result<Self, InvalidCuesheet> {
+    fn try_from(Contiguous { items }: Contiguous<MAX, Index<O>>) -> Result<Self, CuesheetError> {
         use std::collections::VecDeque;
 
         let mut items: VecDeque<Index<O>> = items.into();
 
-        match items.pop_front().ok_or(InvalidCuesheet::NoIndexPoints)? {
+        match items.pop_front().ok_or(CuesheetError::NoIndexPoints)? {
             index_00 @ Index { number: 0, .. } => Ok(Self {
                 index_00: Some(index_00),
                 index_01: items
                     .pop_front()
                     .filter(|i| i.number == 1)
-                    .ok_or(InvalidCuesheet::IndexPointsOutOfSequence)?,
+                    .ok_or(CuesheetError::IndexPointsOutOfSequence)?,
                 remainder: Vec::from(items).into_boxed_slice(),
             }),
             index_01 @ Index { number: 1, .. } => Ok(Self {
@@ -920,7 +920,7 @@ impl<const MAX: usize, O: Adjacent> TryFrom<Contiguous<MAX, Index<O>>> for Index
                 index_01,
                 remainder: Vec::from(items).into_boxed_slice(),
             }),
-            Index { .. } => Err(InvalidCuesheet::IndexPointsOutOfSequence),
+            Index { .. } => Err(CuesheetError::IndexPointsOutOfSequence),
         }
     }
 }

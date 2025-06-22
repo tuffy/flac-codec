@@ -68,7 +68,7 @@ pub enum Error {
     /// A SEEKTABLE point whose offset does not increment properly
     InvalidSeekTablePoint,
     /// A CUESHEET-specific error
-    Cuesheet(metadata::InvalidCuesheet),
+    Cuesheet(metadata::CuesheetError),
     /// An undefined PICTURE type
     InvalidPictureType,
     /// Multiple 32x32 PNG icons defined
@@ -183,8 +183,8 @@ impl From<std::string::FromUtf8Error> for Error {
     }
 }
 
-impl From<metadata::InvalidCuesheet> for Error {
-    fn from(error: metadata::InvalidCuesheet) -> Self {
+impl From<metadata::CuesheetError> for Error {
+    fn from(error: metadata::CuesheetError) -> Self {
         Self::Cuesheet(error)
     }
 }
