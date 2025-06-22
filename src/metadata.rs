@@ -2590,6 +2590,44 @@ impl Cuesheet {
 
         impl std::fmt::Display for DisplayCuesheet<'_, '_> {
             fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                /// A CUESHEET timestamp in MM:SS:FF format
+                #[derive(Copy, Clone)]
+                pub struct Timestamp {
+                    minutes: u64,
+                    seconds: u8,
+                    frames: u8,
+                }
+
+                impl Timestamp {
+                    const FRAMES_PER_SECOND: u64 = 75;
+                    const SECONDS_PER_MINUTE: u64 = 60;
+                    const SAMPLES_PER_FRAME: u64 = 44100 / 75;
+                }
+
+                impl From<u64> for Timestamp {
+                    fn from(offset: u64) -> Self {
+                        let total_frames = offset / Self::SAMPLES_PER_FRAME;
+
+                        Self {
+                            minutes: (total_frames / Self::FRAMES_PER_SECOND) / Self::SECONDS_PER_MINUTE,
+                            seconds: ((total_frames / Self::FRAMES_PER_SECOND) % Self::SECONDS_PER_MINUTE)
+                                .try_into()
+                                .unwrap(),
+                            frames: (total_frames % Self::FRAMES_PER_SECOND).try_into().unwrap(),
+                        }
+                    }
+                }
+
+                impl std::fmt::Display for Timestamp {
+                    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                        write!(
+                            f,
+                            "{:02}:{:02}:{:02}",
+                            self.minutes, self.seconds, self.frames
+                        )
+                    }
+                }
+
                 writeln!(f, "FILE \"{}\" FLAC", self.filename)?;
 
                 match self.cuesheet {
@@ -2610,7 +2648,7 @@ impl Cuesheet {
                                     f,
                                     "    INDEX {:02} {}",
                                     index.number,
-                                    cuesheet::Timestamp::from(u64::from(
+                                    Timestamp::from(u64::from(
                                         index.offset + track.offset
                                     )),
                                 )?;
@@ -2634,7 +2672,7 @@ impl Cuesheet {
                                     f,
                                     "    INDEX {:02} {}",
                                     index.number,
-                                    cuesheet::Timestamp::from(index.offset + track.offset),
+                                    Timestamp::from(index.offset + track.offset),
                                 )?;
                             }
                         }
@@ -2969,7 +3007,7 @@ impl Cuesheet {
     ///
     /// # Panics
     ///
-    /// Panics if either [`channel_count`] or [`bits_per_sample`] are 0
+    /// Panics if either `channel_count` or `bits_per_sample` are 0
     pub fn track_byte_ranges(
         &self,
         channel_count: u8,
@@ -4043,43 +4081,6 @@ pub mod cuesheet {
         }
     }
 
-    /// A CUESHEET timestamp in MM:SS:FF format
-    #[derive(Copy, Clone)]
-    pub struct Timestamp {
-        minutes: u64,
-        seconds: u8,
-        frames: u8,
-    }
-
-    impl Timestamp {
-        const FRAMES_PER_SECOND: u64 = 75;
-        const SECONDS_PER_MINUTE: u64 = 60;
-        const SAMPLES_PER_FRAME: u64 = 44100 / 75;
-    }
-
-    impl From<u64> for Timestamp {
-        fn from(offset: u64) -> Self {
-            let total_frames = offset / Self::SAMPLES_PER_FRAME;
-
-            Self {
-                minutes: (total_frames / Self::FRAMES_PER_SECOND) / Self::SECONDS_PER_MINUTE,
-                seconds: ((total_frames / Self::FRAMES_PER_SECOND) % Self::SECONDS_PER_MINUTE)
-                    .try_into()
-                    .unwrap(),
-                frames: (total_frames % Self::FRAMES_PER_SECOND).try_into().unwrap(),
-            }
-        }
-    }
-
-    impl std::fmt::Display for Timestamp {
-        fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-            write!(
-                f,
-                "{:02}:{:02}:{:02}",
-                self.minutes, self.seconds, self.frames
-            )
-        }
-    }
 }
 
 type ParsedCuesheetTrack<const INDEX_MAX: usize, O> =
