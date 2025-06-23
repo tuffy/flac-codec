@@ -36,7 +36,7 @@ fn split_flac<P: AsRef<Path>>(source: P) -> Result<(), Error> {
     // (this may come in handy later)
     let source_data = std::fs::read(source.as_ref())?;
 
-    let mut source_reader = SeekableFlacSampleReader::new(Cursor::new(source_data.as_slice()))?;
+    let source_reader = SeekableFlacSampleReader::new(Cursor::new(source_data.as_slice()))?;
 
     let track_ranges = source_reader
         .metadata()
@@ -46,10 +46,45 @@ fn split_flac<P: AsRef<Path>>(source: P) -> Result<(), Error> {
         .zip(1..)
         .collect::<Vec<_>>();
 
+    extract_tracks(track_ranges, source.as_ref(), source_reader)
+}
+
+#[cfg(not(feature = "rayon"))]
+fn extract_tracks<R>(
+    track_ranges: Vec<(std::ops::Range<u64>, u8)>,
+    source: &Path,
+    mut reader: SeekableFlacSampleReader<R>,
+) -> Result<(), Error>
+where
+    R: std::io::Read + std::io::Seek + Clone + Sync,
+{
     track_ranges
         .into_iter()
         .try_for_each(|(sample_range, track_num)| {
-            extract_track(source.as_ref(), track_num, &mut source_reader, sample_range)
+            extract_track(source.as_ref(), track_num, &mut reader, sample_range)
+        })
+}
+
+#[cfg(feature = "rayon")]
+fn extract_tracks<R>(
+    track_ranges: Vec<(std::ops::Range<u64>, u8)>,
+    source: &Path,
+    reader: SeekableFlacSampleReader<R>,
+) -> Result<(), Error>
+where
+    R: std::io::Read + std::io::Seek + Clone + Sync,
+{
+    use rayon::iter::{IntoParallelIterator, ParallelIterator};
+
+    track_ranges
+        .into_par_iter()
+        .try_for_each(|(sample_range, track_num)| {
+            extract_track(
+                source.as_ref(),
+                track_num,
+                &mut reader.clone(),
+                sample_range,
+            )
         })
 }
 
