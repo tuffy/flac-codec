@@ -2020,13 +2020,13 @@ fn correlate_channels<'c>(
             );
 
             match [
-                (ChannelAssignment::LeftSide, left_abs_sum + side_abs_sum),
-                (ChannelAssignment::SideRight, side_abs_sum + right_abs_sum),
-                (ChannelAssignment::MidSide, mid_abs_sum + side_abs_sum),
                 (
                     ChannelAssignment::Independent(Independent::Stereo),
                     left_abs_sum + right_abs_sum,
                 ),
+                (ChannelAssignment::LeftSide, left_abs_sum + side_abs_sum),
+                (ChannelAssignment::SideRight, side_abs_sum + right_abs_sum),
+                (ChannelAssignment::MidSide, mid_abs_sum + side_abs_sum),
             ]
             .into_iter()
             .min_by_key(|(_, total)| *total)
