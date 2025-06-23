@@ -1955,21 +1955,22 @@ where
     Ok(())
 }
 
-struct Correlated<'c> {
+struct Correlated<C> {
     channel_assignment: ChannelAssignment,
-    channels: [CorrelatedChannel<'c>; 2],
+    channels: [C; 2],
 }
 
 struct CorrelatedChannel<'c> {
     samples: &'c [i32],
     bits_per_sample: SignedBitCount<32>,
-    abs_sum: u64,
+    // whether all samples are known to be 0
+    all_0: bool,
 }
 
 impl<'c> CorrelatedChannel<'c> {
     fn independent(bits_per_sample: SignedBitCount<32>, samples: &'c [i32]) -> Self {
         Self {
-            abs_sum: samples.iter().map(|s| u64::from(s.unsigned_abs())).sum(),
+            all_0: samples.iter().all(|s| *s == 0),
             bits_per_sample,
             samples,
         }
@@ -1985,7 +1986,7 @@ fn correlate_channels<'c>(
     }: &'c mut CorrelationCache,
     [left, right]: [&'c [i32]; 2],
     bits_per_sample: SignedBitCount<32>,
-) -> Correlated<'c> {
+) -> Correlated<CorrelatedChannel<'c>> {
     match bits_per_sample.checked_add::<32>(1) {
         Some(difference_bits_per_sample) if options.mid_side => {
             let mut left_abs_sum = 0;
@@ -2039,12 +2040,12 @@ fn correlate_channels<'c>(
                         CorrelatedChannel {
                             samples: left,
                             bits_per_sample,
-                            abs_sum: left_abs_sum,
+                            all_0: left_abs_sum == 0,
                         },
                         CorrelatedChannel {
                             samples: difference_samples,
                             bits_per_sample: difference_bits_per_sample,
-                            abs_sum: side_abs_sum,
+                            all_0: side_abs_sum == 0,
                         },
                     ],
                 },
@@ -2054,12 +2055,12 @@ fn correlate_channels<'c>(
                         CorrelatedChannel {
                             samples: difference_samples,
                             bits_per_sample: difference_bits_per_sample,
-                            abs_sum: side_abs_sum,
+                            all_0: side_abs_sum == 0,
                         },
                         CorrelatedChannel {
                             samples: right,
                             bits_per_sample,
-                            abs_sum: right_abs_sum,
+                            all_0: right_abs_sum == 0,
                         },
                     ],
                 },
@@ -2069,12 +2070,12 @@ fn correlate_channels<'c>(
                         CorrelatedChannel {
                             samples: average_samples,
                             bits_per_sample,
-                            abs_sum: mid_abs_sum,
+                            all_0: mid_abs_sum == 0,
                         },
                         CorrelatedChannel {
                             samples: difference_samples,
                             bits_per_sample: difference_bits_per_sample,
-                            abs_sum: side_abs_sum,
+                            all_0: side_abs_sum == 0,
                         },
                     ],
                 },
@@ -2084,12 +2085,12 @@ fn correlate_channels<'c>(
                         CorrelatedChannel {
                             samples: left,
                             bits_per_sample,
-                            abs_sum: left_abs_sum,
+                            all_0: left_abs_sum == 0,
                         },
                         CorrelatedChannel {
                             samples: right,
                             bits_per_sample,
-                            abs_sum: right_abs_sum,
+                            all_0: right_abs_sum == 0,
                         },
                     ],
                 },
@@ -2132,12 +2133,12 @@ fn correlate_channels<'c>(
                         CorrelatedChannel {
                             samples: left,
                             bits_per_sample,
-                            abs_sum: left_abs_sum,
+                            all_0: left_abs_sum == 0,
                         },
                         CorrelatedChannel {
                             samples: difference_samples,
                             bits_per_sample: difference_bits_per_sample,
-                            abs_sum: side_abs_sum,
+                            all_0: side_abs_sum == 0,
                         },
                     ],
                 },
@@ -2147,12 +2148,12 @@ fn correlate_channels<'c>(
                         CorrelatedChannel {
                             samples: difference_samples,
                             bits_per_sample: difference_bits_per_sample,
-                            abs_sum: side_abs_sum,
+                            all_0: side_abs_sum == 0,
                         },
                         CorrelatedChannel {
                             samples: right,
                             bits_per_sample,
-                            abs_sum: right_abs_sum,
+                            all_0: right_abs_sum == 0,
                         },
                     ],
                 },
@@ -2163,12 +2164,12 @@ fn correlate_channels<'c>(
                         CorrelatedChannel {
                             samples: left,
                             bits_per_sample,
-                            abs_sum: left_abs_sum,
+                            all_0: left_abs_sum == 0,
                         },
                         CorrelatedChannel {
                             samples: right,
                             bits_per_sample,
-                            abs_sum: right_abs_sum,
+                            all_0: right_abs_sum == 0,
                         },
                     ],
                 },
@@ -2203,14 +2204,14 @@ fn encode_subframe<'c>(
     CorrelatedChannel {
         samples: channel,
         bits_per_sample,
-        abs_sum,
+        all_0,
     }: CorrelatedChannel,
 ) -> Result<&'c BitRecorder<u32, BigEndian>, Error> {
     const WASTED_MAX: NonZero<u32> = NonZero::new(32).unwrap();
 
     debug_assert!(!channel.is_empty());
 
-    if abs_sum == 0 {
+    if all_0 {
         // all samples are 0
         constant_output.clear();
         encode_constant_subframe(constant_output, channel[0], bits_per_sample, 0)?;
