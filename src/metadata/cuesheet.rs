@@ -501,7 +501,7 @@ impl<const MAX: usize, O: Adjacent, N: Adjacent> Adjacent for Track<O, N, IndexV
     }
 
     fn is_next(&self, previous: &Self) -> bool {
-        self.number.is_next(&previous.number) && self.offset.is_next(&previous.index_points.last())
+        self.number.is_next(&previous.number) && self.offset.is_next(previous.index_points.last())
     }
 }
 

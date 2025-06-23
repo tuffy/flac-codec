@@ -89,6 +89,23 @@ pub trait FlacSampleRead {
     fn consume(&mut self, amt: usize);
 }
 
+impl<R: FlacSampleRead + ?Sized> FlacSampleRead for &mut R {
+    #[inline]
+    fn read(&mut self, samples: &mut [i32]) -> Result<usize, Error> {
+        (**self).read(samples)
+    }
+
+    #[inline]
+    fn fill_buf(&mut self) -> Result<&[i32], Error> {
+        (**self).fill_buf()
+    }
+
+    #[inline]
+    fn consume(&mut self, amt: usize) {
+        (**self).consume(amt)
+    }
+}
+
 /// A FLAC reader which outputs PCM samples as bytes
 ///
 /// # Example
@@ -892,16 +909,29 @@ impl<R: std::io::Read + std::io::Seek> SeekableFlacSampleReader<R> {
     ///
     /// The sample is relative to the beginning of the stream
     pub fn seek(&mut self, sample: u64) -> Result<(), Error> {
+        let channels: u8 = self.channel_count();
+
+        // actual position, in channel-independent samples
         let mut pos = self.reader.decoder.seek(self.frames_start, sample)?;
 
         // seeking invalidates the current buffer
         self.reader.buf.clear();
 
-        while pos < sample {
+        // needed channel-independent samples
+        while sample > pos {
             let buf = self.reader.fill_buf()?;
-            let to_consume = buf.len().min((sample - pos) as usize);
+
+            // size of buf in channel-independent samples
+            let buf_samples = buf.len() / usize::from(channels);
+
+            // amount of channel-independent samples to consume
+            let to_consume = buf_samples.min((sample - pos).try_into().unwrap());
+
+            // mark samples in buffer as consumed
+            self.reader.consume(to_consume * usize::from(channels));
+
+            // advance current actual position
             pos += to_consume as u64;
-            self.reader.consume(to_consume);
         }
 
         Ok(())
@@ -1247,9 +1277,11 @@ impl<R: std::io::Read> Decoder<R> {
 impl<R: std::io::Seek> Decoder<R> {
     /// Attempts to seek to desired sample number
     ///
+    /// Sample number is indicated in channel-independent samples.
+    ///
     /// Upon success, returns the actual sample number
-    /// the stream is positioned to, which may be less
-    /// than the desired sample.
+    /// the stream is positioned to, in channel-independent samples,
+    /// which may be less than the desired sample.
     ///
     /// # Errors
     ///

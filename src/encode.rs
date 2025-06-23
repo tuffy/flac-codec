@@ -2681,26 +2681,35 @@ impl LpcParameters {
             .max_by(|x, y| x.total_cmp(y))
             .unwrap();
 
-        let shift: u32 = ((u32::from(precision) - 1) as i32 - (l.log2().floor() as i32) - 1)
-            .clamp(0, (1 << 4) - 1)
-            .try_into()
-            .unwrap();
+        if l > 0.0 {
+            let shift: u32 = ((u32::from(precision) - 1) as i32 - ((l.log2().floor()) as i32) - 1)
+                .clamp(0, (1 << 4) - 1)
+                .try_into()
+                .unwrap();
 
-        let mut error = 0.0;
+            let mut error = 0.0;
 
-        Self {
-            order,
-            precision,
-            shift,
-            coefficients: coeffs
-                .into_iter()
-                .map(|lp_coeff| {
-                    let sum: f64 = lp_coeff.mul_add((1 << shift) as f64, error);
-                    let qlp_coeff = (sum.round() as i32).clamp(min_coeff, max_coeff);
-                    error = sum - (qlp_coeff as f64);
-                    qlp_coeff
-                })
-                .collect(),
+            Self {
+                order,
+                precision,
+                shift,
+                coefficients: coeffs
+                    .into_iter()
+                    .map(|lp_coeff| {
+                        let sum: f64 = lp_coeff.mul_add((1 << shift) as f64, error);
+                        let qlp_coeff = (sum.round() as i32).clamp(min_coeff, max_coeff);
+                        error = sum - (qlp_coeff as f64);
+                        qlp_coeff
+                    })
+                    .collect(),
+            }
+        } else {
+            Self {
+                order,
+                precision,
+                shift: 0,
+                coefficients: vec![0; usize::from(order.get())],
+            }
         }
     }
 }
