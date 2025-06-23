@@ -1,4 +1,3 @@
-
 use crate::Error;
 use crate::metadata::CuesheetError;
 use bitstream_io::{BitRead, BitWrite, FromBitStream, ToBitStream};
@@ -673,9 +672,7 @@ impl LeadOutCDDA {
     /// Lead-out offset must be contiguous with existing tracks
     pub fn new(last: Option<&TrackCDDA>, offset: CDDAOffset) -> Result<Self, CuesheetError> {
         match last {
-            Some(track) if *track.index_points.last() >= offset => {
-                Err(CuesheetError::ShortLeadOut)
-            }
+            Some(track) if *track.index_points.last() >= offset => Err(CuesheetError::ShortLeadOut),
             _ => Ok(LeadOutCDDA {
                 offset,
                 number: LeadOut,
@@ -742,9 +739,7 @@ impl LeadOutNonCDDA {
     /// Creates new lead-out track with the given offset
     pub fn new(last: Option<&TrackNonCDDA>, offset: u64) -> Result<Self, CuesheetError> {
         match last {
-            Some(track) if *track.index_points.last() >= offset => {
-                Err(CuesheetError::ShortLeadOut)
-            }
+            Some(track) if *track.index_points.last() >= offset => Err(CuesheetError::ShortLeadOut),
             _ => Ok(LeadOutNonCDDA {
                 offset,
                 number: LeadOut,
