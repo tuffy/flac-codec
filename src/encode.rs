@@ -721,6 +721,7 @@ impl<W: std::io::Write> FlacStreamWriter<W> {
                 seektable_interval: options.seektable_interval,
                 max_lpc_order: options.max_lpc_order,
                 window: options.window,
+                exhaustive_channel_correlation: options.exhaustive_channel_correlation,
             },
             caches: EncodingCaches::default(),
             frame: Frame::default(),
@@ -814,6 +815,32 @@ impl<W: std::io::Write> FlacStreamWriter<W> {
                     CorrelatedChannel::independent(bits_per_sample, channel),
                 )?
                 .playback(&mut bw)?;
+            }
+            [left, right] if self.options.exhaustive_channel_correlation => {
+                let Correlated {
+                    channel_assignment,
+                    channels: [channel_0, channel_1],
+                } = correlate_channels_exhaustive(
+                    &self.options,
+                    &mut self.caches.correlated,
+                    [left, right],
+                    bits_per_sample,
+                )?;
+
+                FrameHeader {
+                    blocking_strategy: false,
+                    frame_number: self.frame_number,
+                    block_size,
+                    sample_rate,
+                    bits_per_sample: header_bits_per_sample,
+                    channel_assignment,
+                }
+                .write_subset(&mut w)?;
+
+                bw = BitWriter::new(w);
+
+                channel_0.playback(&mut bw)?;
+                channel_1.playback(&mut bw)?;
             }
             [left, right] => {
                 let Correlated {
@@ -994,6 +1021,7 @@ pub struct Options {
     seektable_interval: Option<SeekTableInterval>,
     max_lpc_order: Option<NonZero<u8>>,
     window: Window,
+    exhaustive_channel_correlation: bool,
 }
 
 impl Default for Options {
@@ -1025,6 +1053,7 @@ impl Default for Options {
             seektable_interval: Some(SeekTableInterval::default()),
             max_lpc_order: NonZero::new(8),
             window: Window::default(),
+            exhaustive_channel_correlation: true,
         }
     }
 }
@@ -1086,6 +1115,16 @@ impl Options {
     /// The windowing function to use for input samples
     pub fn window(self, window: Window) -> Self {
         Self { window, ..self }
+    }
+
+    /// Whether to calculate the best channel correlation quickly
+    ///
+    /// The default is `false`
+    pub fn fast_channel_correlation(self, fast: bool) -> Self {
+        Self {
+            exhaustive_channel_correlation: !fast,
+            ..self
+        }
     }
 
     /// Updates size of padding block
@@ -1222,6 +1261,7 @@ impl Options {
             mid_side: false,
             max_partition_order: 3,
             max_lpc_order: None,
+            exhaustive_channel_correlation: false,
             ..Self::default()
         }
     }
@@ -1287,6 +1327,7 @@ struct EncoderOptions {
     seektable_interval: Option<SeekTableInterval>,
     max_lpc_order: Option<NonZero<u8>>,
     window: Window,
+    exhaustive_channel_correlation: bool,
 }
 
 /// The method to use for windowing the input signal
@@ -1398,6 +1439,11 @@ struct CorrelationCache {
     average_samples: Vec<i32>,
     // the difference channel samples
     difference_samples: Vec<i32>,
+
+    left_cache: ChannelCache,
+    right_cache: ChannelCache,
+    average_cache: ChannelCache,
+    difference_cache: ChannelCache,
 }
 
 #[derive(Default)]
@@ -1521,6 +1567,7 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
                 seektable_interval: options.seektable_interval,
                 max_lpc_order: options.max_lpc_order,
                 window: options.window,
+                exhaustive_channel_correlation: options.exhaustive_channel_correlation,
             },
             caches: EncodingCaches::default(),
             sample_rate: blocks
@@ -1848,6 +1895,34 @@ where
                 CorrelatedChannel::independent(streaminfo.bits_per_sample, channel),
             )?
             .playback(&mut bw)?;
+        }
+        [left, right] if options.exhaustive_channel_correlation => {
+            let Correlated {
+                channel_assignment,
+                channels: [channel_0, channel_1],
+            } = correlate_channels_exhaustive(
+                options,
+                &mut cache.correlated,
+                [left, right],
+                streaminfo.bits_per_sample,
+            )?;
+
+            FrameHeader {
+                blocking_strategy: false,
+                frame_number: *frame_number,
+                block_size: (frame[0].len() as u16)
+                    .try_into()
+                    .expect("frame cannot be empty"),
+                sample_rate,
+                bits_per_sample: streaminfo.bits_per_sample.into(),
+                channel_assignment,
+            }
+            .write(&mut w, streaminfo)?;
+
+            bw = BitWriter::new(w);
+
+            channel_0.playback(&mut bw)?;
+            channel_1.playback(&mut bw)?;
         }
         [left, right] => {
             let Correlated {
@@ -2186,6 +2261,179 @@ fn correlate_channels<'c>(
                     CorrelatedChannel::independent(bits_per_sample, right),
                 ],
             }
+        }
+    }
+}
+
+fn correlate_channels_exhaustive<'c>(
+    options: &EncoderOptions,
+    CorrelationCache {
+        average_samples,
+        difference_samples,
+        left_cache,
+        right_cache,
+        average_cache,
+        difference_cache,
+        ..
+    }: &'c mut CorrelationCache,
+    [left, right]: [&'c [i32]; 2],
+    bits_per_sample: SignedBitCount<32>,
+) -> Result<Correlated<&'c BitRecorder<u32, BigEndian>>, Error> {
+    let (left_recorder, right_recorder) = try_join(
+        || {
+            encode_subframe(
+                options,
+                left_cache,
+                CorrelatedChannel {
+                    samples: left,
+                    bits_per_sample,
+                    all_0: false,
+                },
+            )
+        },
+        || {
+            encode_subframe(
+                options,
+                right_cache,
+                CorrelatedChannel {
+                    samples: right,
+                    bits_per_sample,
+                    all_0: false,
+                },
+            )
+        },
+    )?;
+
+    match bits_per_sample.checked_add::<32>(1) {
+        Some(difference_bits_per_sample) if options.mid_side => {
+            let (average_recorder, difference_recorder) = try_join(
+                || {
+                    average_samples.clear();
+                    average_samples
+                        .extend(left.iter().zip(right.iter()).map(|(l, r)| (l + r) >> 1));
+                    encode_subframe(
+                        options,
+                        average_cache,
+                        CorrelatedChannel {
+                            samples: average_samples,
+                            bits_per_sample,
+                            all_0: false,
+                        },
+                    )
+                },
+                || {
+                    difference_samples.clear();
+                    difference_samples.extend(left.iter().zip(right).map(|(l, r)| l - r));
+                    encode_subframe(
+                        options,
+                        difference_cache,
+                        CorrelatedChannel {
+                            samples: difference_samples,
+                            bits_per_sample: difference_bits_per_sample,
+                            all_0: false,
+                        },
+                    )
+                },
+            )?;
+
+            match [
+                (
+                    ChannelAssignment::Independent(Independent::Stereo),
+                    left_recorder.written() + right_recorder.written(),
+                ),
+                (
+                    ChannelAssignment::LeftSide,
+                    left_recorder.written() + difference_recorder.written(),
+                ),
+                (
+                    ChannelAssignment::SideRight,
+                    difference_recorder.written() + right_recorder.written(),
+                ),
+                (
+                    ChannelAssignment::MidSide,
+                    average_recorder.written() + difference_recorder.written(),
+                ),
+            ]
+            .into_iter()
+            .min_by_key(|(_, total)| *total)
+            .unwrap()
+            .0
+            {
+                channel_assignment @ ChannelAssignment::LeftSide => Ok(Correlated {
+                    channel_assignment,
+                    channels: [left_recorder, difference_recorder],
+                }),
+                channel_assignment @ ChannelAssignment::SideRight => Ok(Correlated {
+                    channel_assignment,
+                    channels: [difference_recorder, right_recorder],
+                }),
+                channel_assignment @ ChannelAssignment::MidSide => Ok(Correlated {
+                    channel_assignment,
+                    channels: [average_recorder, difference_recorder],
+                }),
+                channel_assignment @ ChannelAssignment::Independent(_) => Ok(Correlated {
+                    channel_assignment,
+                    channels: [left_recorder, right_recorder],
+                }),
+            }
+        }
+        Some(difference_bits_per_sample) => {
+            let difference_recorder = {
+                difference_samples.clear();
+                difference_samples.extend(left.iter().zip(right).map(|(l, r)| l - r));
+                encode_subframe(
+                    options,
+                    difference_cache,
+                    CorrelatedChannel {
+                        samples: difference_samples,
+                        bits_per_sample: difference_bits_per_sample,
+                        all_0: false,
+                    },
+                )?
+            };
+
+            match [
+                (
+                    ChannelAssignment::Independent(Independent::Stereo),
+                    left_recorder.written() + right_recorder.written(),
+                ),
+                (
+                    ChannelAssignment::LeftSide,
+                    left_recorder.written() + difference_recorder.written(),
+                ),
+                (
+                    ChannelAssignment::SideRight,
+                    difference_recorder.written() + right_recorder.written(),
+                ),
+            ]
+            .into_iter()
+            .min_by_key(|(_, total)| *total)
+            .unwrap()
+            .0
+            {
+                channel_assignment @ ChannelAssignment::LeftSide => Ok(Correlated {
+                    channel_assignment,
+                    channels: [left_recorder, difference_recorder],
+                }),
+                channel_assignment @ ChannelAssignment::SideRight => Ok(Correlated {
+                    channel_assignment,
+                    channels: [difference_recorder, right_recorder],
+                }),
+                ChannelAssignment::MidSide => unreachable!(),
+                channel_assignment @ ChannelAssignment::Independent(_) => Ok(Correlated {
+                    channel_assignment,
+                    channels: [left_recorder, right_recorder],
+                }),
+            }
+        }
+        None => {
+            // 32 bps stream, so forego difference channel
+            // and encode them both indepedently
+
+            Ok(Correlated {
+                channel_assignment: ChannelAssignment::Independent(Independent::Stereo),
+                channels: [left_recorder, right_recorder],
+            })
         }
     }
 }
@@ -2999,6 +3247,18 @@ fn write_residuals<W: BitWrite>(
     // TODO - we only support a coding method of 0
     writer.write::<2, u8>(0)?; // coding method
     write_block::<0b1111, W>(options, writer, predictor_order, residuals)
+}
+
+fn try_join<A, B, RA, RB, E>(oper_a: A, oper_b: B) -> Result<(RA, RB), E>
+where
+    A: FnOnce() -> Result<RA, E> + Send,
+    B: FnOnce() -> Result<RB, E> + Send,
+    RA: Send,
+    RB: Send,
+    E: Send,
+{
+    let (a, b) = join(oper_a, oper_b);
+    Ok((a?, b?))
 }
 
 #[cfg(feature = "rayon")]
