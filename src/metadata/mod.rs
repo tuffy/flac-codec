@@ -4111,6 +4111,11 @@ impl BlockList {
             .filter_map(|b| B::try_from_opt_block_mut(b).ok())
     }
 
+    /// Returns `true` if block exists in list
+    pub fn has<B: OptionalMetadataBlock>(&self) -> bool {
+        self.get::<B>().is_some()
+    }
+
     /// Removes all instances of the given metadata block type
     pub fn remove<B: OptionalMetadataBlock>(&mut self) {
         self.blocks.retain(|b| b.block_type() != B::TYPE)
