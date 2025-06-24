@@ -2492,7 +2492,7 @@ fn encode_subframe<'c>(
     fixed_output.clear();
 
     let best = match options.max_lpc_order {
-        Some(max_lpc_order) if channel.len() > usize::from(max_lpc_order.get()) => {
+        Some(max_lpc_order) => {
             lpc_output.clear();
 
             match join(
@@ -2744,7 +2744,7 @@ impl<'w, 'r> LpcSubframeParameters<'w, 'r> {
             windowed,
         }: &'r mut LpcCache,
         channel: &'w [i32],
-    ) -> Result<Self, ResidualOverflow> {
+    ) -> Result<Self, Error> {
         let parameters = LpcParameters::best(
             options,
             bits_per_sample,
@@ -2752,13 +2752,15 @@ impl<'w, 'r> LpcSubframeParameters<'w, 'r> {
             window,
             windowed,
             channel,
-        );
+        )?;
 
-        Self::encode_residuals(&parameters, channel, residuals).map(|(warm_up, residuals)| Self {
-            warm_up,
-            residuals,
-            parameters,
-        })
+        Self::encode_residuals(&parameters, channel, residuals)
+            .map(|(warm_up, residuals)| Self {
+                warm_up,
+                residuals,
+                parameters,
+            })
+            .map_err(|ResidualOverflow| Error::ResidualOverflow)
     }
 
     fn encode_residuals(
@@ -2886,10 +2888,14 @@ impl LpcParameters {
         window: &mut Vec<f64>,
         windowed: &mut Vec<f64>,
         channel: &[i32],
-    ) -> Self {
-        debug_assert!(channel.len() > usize::from(max_lpc_order.get()));
+    ) -> Result<Self, Error> {
+        if channel.len() <= usize::from(max_lpc_order.get()) {
+            // not enough samples in channel to calculate LPC parameters
+            return Err(Error::InsufficientLpcSamples);
+        }
 
         let precision = match channel.len() {
+            // this shouldn't be possible
             0 => panic!("at least one sample required in channel"),
             1..=192 => SignedBitCount::new::<7>(),
             193..=384 => SignedBitCount::new::<8>(),
@@ -2906,17 +2912,22 @@ impl LpcParameters {
             channel
                 .len()
                 .try_into()
+                // this shouldn't be possible
                 .expect("excessive samples for subframe"),
             lp_coefficients(autocorrelate(
                 options.window.apply(window, windowed, channel),
                 max_lpc_order,
             )),
-        );
+        )?;
 
         Self::quantize(order, lp_coeffs, precision)
     }
 
-    fn quantize(order: NonZero<u8>, coeffs: Vec<f64>, precision: SignedBitCount<15>) -> Self {
+    fn quantize(
+        order: NonZero<u8>,
+        coeffs: Vec<f64>,
+        precision: SignedBitCount<15>,
+    ) -> Result<Self, Error> {
         // verified output against reference implementation
 
         debug_assert!(coeffs.len() == usize::from(order.get()));
@@ -2928,38 +2939,31 @@ impl LpcParameters {
             .iter()
             .map(|c| c.abs())
             .max_by(|x, y| x.total_cmp(y))
+            // f64.log2() gives unfortunate results when <= 0.0
+            .filter(|l| *l > 0.0)
+            .ok_or(Error::LpQuantizationError)?;
+
+        let shift: u32 = ((u32::from(precision) - 1) as i32 - ((l.log2().floor()) as i32) - 1)
+            .clamp(0, (1 << 4) - 1)
+            .try_into()
             .unwrap();
 
-        if l > 0.0 {
-            let shift: u32 = ((u32::from(precision) - 1) as i32 - ((l.log2().floor()) as i32) - 1)
-                .clamp(0, (1 << 4) - 1)
-                .try_into()
-                .unwrap();
+        let mut error = 0.0;
 
-            let mut error = 0.0;
-
-            Self {
-                order,
-                precision,
-                shift,
-                coefficients: coeffs
-                    .into_iter()
-                    .map(|lp_coeff| {
-                        let sum: f64 = lp_coeff.mul_add((1 << shift) as f64, error);
-                        let qlp_coeff = (sum.round() as i32).clamp(min_coeff, max_coeff);
-                        error = sum - (qlp_coeff as f64);
-                        qlp_coeff
-                    })
-                    .collect(),
-            }
-        } else {
-            Self {
-                order,
-                precision,
-                shift: 0,
-                coefficients: vec![0; usize::from(order.get())],
-            }
-        }
+        Ok(Self {
+            order,
+            precision,
+            shift,
+            coefficients: coeffs
+                .into_iter()
+                .map(|lp_coeff| {
+                    let sum: f64 = lp_coeff.mul_add((1 << shift) as f64, error);
+                    let qlp_coeff = (sum.round() as i32).clamp(min_coeff, max_coeff);
+                    error = sum - (qlp_coeff as f64);
+                    qlp_coeff
+                })
+                .collect(),
+        })
     }
 }
 
@@ -3058,7 +3062,7 @@ fn estimate_best_order(
     precision: SignedBitCount<15>,
     sample_count: u16,
     coeffs: Vec<LpCoeff>,
-) -> (NonZero<u8>, Vec<f64>) {
+) -> Result<(NonZero<u8>, Vec<f64>), Error> {
     // verified output against reference implementation
 
     debug_assert!(sample_count > 0);
@@ -3082,7 +3086,7 @@ fn estimate_best_order(
         })
         .min_by(|(x, _, _), (y, _, _)| x.total_cmp(y))
         .and_then(|(_, order, coeffs)| Some((NonZero::new(order)?, coeffs)))
-        .expect("coefficient list cannot be empty")
+        .ok_or(Error::NoBestLpcOrder)
 }
 
 fn write_residuals<W: BitWrite>(

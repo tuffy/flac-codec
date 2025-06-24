@@ -149,6 +149,12 @@ pub enum Error {
     InvalidQlpPrecision,
     /// Negative shift value in LPC subframe
     NegativeLpcShift,
+    /// Unable to determine best LPC order
+    NoBestLpcOrder,
+    /// Insufficient samples for LPC subframe
+    InsufficientLpcSamples,
+    /// Error attempting to quantize LP coffiecients
+    LpQuantizationError,
     /// Accumulator overflow in LPC subframe
     AccumulatorOverflow,
     /// Too many samples encountered in stream
@@ -251,6 +257,11 @@ impl std::fmt::Display for Error {
             Self::InvalidLpcOrder => "invalid LPC subframe predictor order".fmt(f),
             Self::InvalidQlpPrecision => "invalid QLP precision bits".fmt(f),
             Self::NegativeLpcShift => "negative shift in LPC subframe".fmt(f),
+            Self::NoBestLpcOrder => "no best LPC order found".fmt(f),
+            Self::InsufficientLpcSamples => {
+                "insufficient samples to calculate LPC parameters".fmt(f)
+            }
+            Self::LpQuantizationError => "error attempt to quantize LP coefficients".fmt(f),
             Self::AccumulatorOverflow => "accumulator overflow in LPC subframe".fmt(f),
             Self::TooManySamples => "more samples in stream than indicated in STREAMINFO".fmt(f),
             Self::ExcessiveTotalSamples => "too many samples requested".fmt(f),
