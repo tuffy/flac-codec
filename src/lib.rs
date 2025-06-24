@@ -153,8 +153,10 @@ pub enum Error {
     NoBestLpcOrder,
     /// Insufficient samples for LPC subframe
     InsufficientLpcSamples,
-    /// Error attempting to quantize LP coffiecients
-    LpQuantizationError,
+    /// LP coefficients are all 0
+    ZeroLpCoefficients,
+    /// Excessive negative shift in LP quantization
+    LpNegativeShiftError,
     /// Accumulator overflow in LPC subframe
     AccumulatorOverflow,
     /// Too many samples encountered in stream
@@ -261,7 +263,8 @@ impl std::fmt::Display for Error {
             Self::InsufficientLpcSamples => {
                 "insufficient samples to calculate LPC parameters".fmt(f)
             }
-            Self::LpQuantizationError => "error attempt to quantize LP coefficients".fmt(f),
+            Self::ZeroLpCoefficients => "LP coefficients are all 0".fmt(f),
+            Self::LpNegativeShiftError => "excessive negative shift in LP quantization".fmt(f),
             Self::AccumulatorOverflow => "accumulator overflow in LPC subframe".fmt(f),
             Self::TooManySamples => "more samples in stream than indicated in STREAMINFO".fmt(f),
             Self::ExcessiveTotalSamples => "too many samples requested".fmt(f),

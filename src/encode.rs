@@ -1351,6 +1351,7 @@ impl Window {
             Self::Rectangle => window.fill(1.0),
             Self::Hann => {
                 // verified output against reference implementation
+                // See: FLAC__window_hann()
 
                 let np =
                     f64::from(u16::try_from(window.len()).expect("window size too large")) - 1.0;
@@ -1361,6 +1362,7 @@ impl Window {
             }
             Self::Tukey(p) => match p {
                 // verified output against reference implementation
+                // See: FLAC__window_tukey()
                 ..=0.0 => {
                     window.fill(1.0);
                 }
@@ -2928,7 +2930,11 @@ impl LpcParameters {
         coeffs: Vec<f64>,
         precision: SignedBitCount<15>,
     ) -> Result<Self, Error> {
+        const MAX_SHIFT: i32 = (1 << 4) - 1;
+        const MIN_SHIFT: i32 = -(1 << 4);
+
         // verified output against reference implementation
+        // See: FLAC__lpc_quantize_coefficients
 
         debug_assert!(coeffs.len() == usize::from(order.get()));
 
@@ -2941,34 +2947,127 @@ impl LpcParameters {
             .max_by(|x, y| x.total_cmp(y))
             // f64.log2() gives unfortunate results when <= 0.0
             .filter(|l| *l > 0.0)
-            .ok_or(Error::LpQuantizationError)?;
-
-        let shift: u32 = ((u32::from(precision) - 1) as i32 - ((l.log2().floor()) as i32) - 1)
-            .clamp(0, (1 << 4) - 1)
-            .try_into()
-            .unwrap();
+            .ok_or(Error::ZeroLpCoefficients)?;
 
         let mut error = 0.0;
 
-        Ok(Self {
-            order,
-            precision,
-            shift,
-            coefficients: coeffs
-                .into_iter()
-                .map(|lp_coeff| {
-                    let sum: f64 = lp_coeff.mul_add((1 << shift) as f64, error);
-                    let qlp_coeff = (sum.round() as i32).clamp(min_coeff, max_coeff);
-                    error = sum - (qlp_coeff as f64);
-                    qlp_coeff
+        match ((u32::from(precision) - 1) as i32 - ((l.log2().floor()) as i32) - 1).min(MAX_SHIFT) {
+            shift @ 0.. => {
+                // normal, positive shift case
+                let shift = shift as u32;
+
+                Ok(Self {
+                    order,
+                    precision,
+                    shift,
+                    coefficients: coeffs
+                        .into_iter()
+                        .map(|lp_coeff| {
+                            let sum: f64 = lp_coeff.mul_add((1 << shift) as f64, error);
+                            let qlp_coeff = (sum.round() as i32).clamp(min_coeff, max_coeff);
+                            error = sum - (qlp_coeff as f64);
+                            qlp_coeff
+                        })
+                        .collect(),
                 })
-                .collect(),
-        })
+            }
+            shift @ MIN_SHIFT..0 => {
+                // unusual negative shift case
+                let shift = -shift as u32;
+
+                Ok(Self {
+                    order,
+                    precision,
+                    shift: 0,
+                    coefficients: coeffs
+                        .into_iter()
+                        .map(|lp_coeff| {
+                            let sum: f64 = (lp_coeff / (1 << shift) as f64) + error;
+                            let qlp_coeff = (sum.round() as i32).clamp(min_coeff, max_coeff);
+                            error = sum - (qlp_coeff as f64);
+                            qlp_coeff
+                        })
+                        .collect(),
+                })
+            }
+            ..MIN_SHIFT => Err(Error::LpNegativeShiftError),
+        }
     }
+}
+
+#[test]
+fn test_quantization() {
+    // test against numbers generated from reference implementation
+
+    let order = NonZero::new(4).unwrap();
+
+    let quantized = LpcParameters::quantize(
+        order,
+        vec![0.797774, -0.045362, -0.050136, -0.054254],
+        SignedBitCount::new::<10>(),
+    )
+    .unwrap();
+
+    assert_eq!(quantized.order, order);
+    assert_eq!(quantized.precision, SignedBitCount::new::<10>());
+    assert_eq!(quantized.shift, 9);
+    assert_eq!(quantized.coefficients, vec![408, -23, -25, -28]);
+
+    // note the relationship between the un-quantized,
+    // floating point parameters and the shift value (9)
+    //
+    // 409 / 2 ** 9 ≈ 0.796875
+    // -23 / 2 ** 9 ≈ -0.044921
+    // -25 / 2 ** 9 ≈ -0.048828
+    // -28 / 2 ** 9 ≈ -0.054687
+    //
+    // we're converting floats to fractions
+
+    let quantized = LpcParameters::quantize(
+        order,
+        vec![-0.054687, -0.953216, -0.027115, 0.033537],
+        SignedBitCount::new::<10>(),
+    )
+    .unwrap();
+
+    assert_eq!(quantized.order, order);
+    assert_eq!(quantized.precision, SignedBitCount::new::<10>());
+    assert_eq!(quantized.shift, 9);
+    assert_eq!(quantized.coefficients, vec![-28, -488, -14, 17]);
+
+    // coefficients should never be all zero, which is bad
+    assert!(matches!(
+        LpcParameters::quantize(order, vec![0.0; 4], SignedBitCount::new::<10>(),),
+        Err(Error::ZeroLpCoefficients)
+    ));
+
+    // negative shifts should also be handled properly
+    let quantized = LpcParameters::quantize(
+        order,
+        vec![-0.1, 0.1, 10000000.0, -0.2],
+        SignedBitCount::new::<10>(),
+    )
+    .unwrap();
+
+    assert_eq!(quantized.order, order);
+    assert_eq!(quantized.precision, SignedBitCount::new::<10>());
+    assert_eq!(quantized.shift, 0);
+    assert_eq!(quantized.coefficients, vec![0, 0, 305, 0]);
+
+    // and massive negative shifts must be an error
+    assert!(matches!(
+        LpcParameters::quantize(
+            order,
+            vec![-0.1, 0.1, 100000000.0, -0.2],
+            SignedBitCount::new::<10>(),
+        ),
+        Err(Error::LpNegativeShiftError)
+    ));
 }
 
 fn autocorrelate(windowed: &[f64], max_lpc_order: NonZero<u8>) -> Vec<f64> {
     // verified output against reference implementation
+    // See: FLAC__lpc_compute_autocorrelation
 
     let mut tail = windowed;
     let mut autocorrelated = Vec::with_capacity(max_lpc_order.get().into());
@@ -3015,6 +3114,7 @@ struct LpCoeff {
 // returns a Vec of (coefficients, error) pairs
 fn lp_coefficients(autocorrelated: Vec<f64>) -> Vec<LpCoeff> {
     // verified output against reference implementation
+    // See: FLAC__lpc_compute_lp_coefficients
 
     match autocorrelated.len() {
         0 | 1 => panic!("must have at least 2 autocorrelation values"),
@@ -3056,6 +3156,77 @@ fn lp_coefficients(autocorrelated: Vec<f64>) -> Vec<LpCoeff> {
     }
 }
 
+#[allow(unused)]
+macro_rules! assert_float_approx {
+    ($a:expr, $b:expr) => {
+        assert!(($a - $b).abs() < 1.0e-6);
+    };
+}
+
+#[test]
+fn test_lp_coefficients_1() {
+    // test against numbers generated from reference implementation
+
+    let lp_coeffs = lp_coefficients(vec![55.0, 40.0, 26.0, 14.0, 5.0]);
+
+    assert_eq!(lp_coeffs.len(), 4);
+
+    assert_float_approx!(lp_coeffs[0].error, 25.909091);
+    assert_float_approx!(lp_coeffs[1].error, 25.540351);
+    assert_float_approx!(lp_coeffs[2].error, 25.316142);
+    assert_float_approx!(lp_coeffs[3].error, 25.241623);
+
+    assert_eq!(lp_coeffs[0].coeffs.len(), 1);
+    assert_float_approx!(lp_coeffs[0].coeffs[0], 0.727273);
+
+    assert_eq!(lp_coeffs[1].coeffs.len(), 2);
+    assert_float_approx!(lp_coeffs[1].coeffs[0], 0.814035);
+    assert_float_approx!(lp_coeffs[1].coeffs[1], -0.119298);
+
+    assert_eq!(lp_coeffs[2].coeffs.len(), 3);
+    assert_float_approx!(lp_coeffs[2].coeffs[0], 0.802858);
+    assert_float_approx!(lp_coeffs[2].coeffs[1], -0.043028);
+    assert_float_approx!(lp_coeffs[2].coeffs[2], -0.093694);
+
+    assert_eq!(lp_coeffs[3].coeffs.len(), 4);
+    assert_float_approx!(lp_coeffs[3].coeffs[0], 0.797774);
+    assert_float_approx!(lp_coeffs[3].coeffs[1], -0.045362);
+    assert_float_approx!(lp_coeffs[3].coeffs[2], -0.050136);
+    assert_float_approx!(lp_coeffs[3].coeffs[3], -0.054254);
+}
+
+#[test]
+fn test_lp_coefficients_2() {
+    // test against numbers generated from reference implementation
+
+    let lp_coeffs = lp_coefficients(vec![51408.0, 49792.0, 45304.0, 38466.0, 29914.0]);
+
+    assert_eq!(lp_coeffs.len(), 4);
+
+    assert_float_approx!(lp_coeffs[0].error, 3181.201369);
+    assert_float_approx!(lp_coeffs[1].error, 495.815931);
+    assert_float_approx!(lp_coeffs[2].error, 495.161449);
+    assert_float_approx!(lp_coeffs[3].error, 494.604514);
+
+    assert_eq!(lp_coeffs[0].coeffs.len(), 1);
+    assert_float_approx!(lp_coeffs[0].coeffs[0], 0.968565);
+
+    assert_eq!(lp_coeffs[1].coeffs.len(), 2);
+    assert_float_approx!(lp_coeffs[1].coeffs[0], 1.858456);
+    assert_float_approx!(lp_coeffs[1].coeffs[1], -0.918772);
+
+    assert_eq!(lp_coeffs[2].coeffs.len(), 3);
+    assert_float_approx!(lp_coeffs[2].coeffs[0], 1.891837);
+    assert_float_approx!(lp_coeffs[2].coeffs[1], -0.986293);
+    assert_float_approx!(lp_coeffs[2].coeffs[2], 0.036332);
+
+    assert_eq!(lp_coeffs[3].coeffs.len(), 4);
+    assert_float_approx!(lp_coeffs[3].coeffs[0], 1.890618);
+    assert_float_approx!(lp_coeffs[3].coeffs[1], -0.953216);
+    assert_float_approx!(lp_coeffs[3].coeffs[2], -0.027115);
+    assert_float_approx!(lp_coeffs[3].coeffs[3], 0.033537);
+}
+
 // returns (order, coeffs) pair
 fn estimate_best_order(
     bits_per_sample: SignedBitCount<32>,
@@ -3064,6 +3235,8 @@ fn estimate_best_order(
     coeffs: Vec<LpCoeff>,
 ) -> Result<(NonZero<u8>, Vec<f64>), Error> {
     // verified output against reference implementation
+    // See: FLAC__lpc_compute_best_order  and
+    // See: FLAC__lpc_compute_expected_bits_per_residual_sample_with_error_scale
 
     debug_assert!(sample_count > 0);
 
@@ -3088,6 +3261,11 @@ fn estimate_best_order(
         .and_then(|(_, order, coeffs)| Some((NonZero::new(order)?, coeffs)))
         .ok_or(Error::NoBestLpcOrder)
 }
+
+// #[test]
+// fn test_estimate_best_order() {
+//     assert!(false);
+// }
 
 fn write_residuals<W: BitWrite>(
     options: &EncoderOptions,
