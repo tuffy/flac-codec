@@ -1537,9 +1537,7 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
                 .contains(&sample_rate)
                 .then_some(sample_rate)
                 .ok_or(Error::InvalidSampleRate)?,
-            bits_per_sample: bits_per_sample
-                .try_into()
-                .map_err(|_| Error::InvalidBitsPerSample)?,
+            bits_per_sample,
             channels: (1..=8)
                 .contains(&channels)
                 .then_some(channels)
