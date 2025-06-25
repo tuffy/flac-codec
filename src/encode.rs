@@ -735,6 +735,7 @@ impl<W: std::io::Write> FlacStreamWriter<W> {
                 max_lpc_order: options.max_lpc_order,
                 window: options.window,
                 exhaustive_channel_correlation: options.exhaustive_channel_correlation,
+                use_rice2: false,
             },
             caches: EncodingCaches::default(),
             frame: Frame::default(),
@@ -773,6 +774,8 @@ impl<W: std::io::Write> FlacStreamWriter<W> {
         } else if !(1..=8).contains(&channels) {
             return Err(Error::ExcessiveChannels);
         }
+
+        self.options.use_rice2 = u32::from(bits_per_sample) > 16;
 
         self.frame
             .resize(bits_per_sample.into(), channels.into(), 0);
@@ -1341,6 +1344,7 @@ struct EncoderOptions {
     max_lpc_order: Option<NonZero<u8>>,
     window: Window,
     exhaustive_channel_correlation: bool,
+    use_rice2: bool,
 }
 
 /// The method to use for windowing the input signal
@@ -1518,7 +1522,7 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
         mut writer: W,
         options: Options,
         sample_rate: u32,
-        bits_per_sample: impl TryInto<SignedBitCount<32>>,
+        bits_per_sample: SignedBitCount<32>,
         channels: u8,
         total_samples: Option<NonZero<u64>>,
     ) -> Result<Self, Error> {
@@ -1583,6 +1587,7 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
                 max_lpc_order: options.max_lpc_order,
                 window: options.window,
                 exhaustive_channel_correlation: options.exhaustive_channel_correlation,
+                use_rice2: u32::from(bits_per_sample) > 16,
             },
             caches: EncodingCaches::default(),
             sample_rate: blocks
@@ -3550,15 +3555,21 @@ fn write_residuals<W: BitWrite>(
 
     let block_size = predictor_order + residuals.len();
 
-    match try_reduce_rice(best_partitions(options, block_size, residuals)) {
-        CodingMethod::Rice(partitions) => {
-            writer.write::<2, u8>(0)?; // coding method 0
-            write_partitions(writer, partitions)
+    if options.use_rice2 {
+        match try_reduce_rice(best_partitions(options, block_size, residuals)) {
+            CodingMethod::Rice(partitions) => {
+                writer.write::<2, u8>(0)?; // coding method 0
+                write_partitions(writer, partitions)
+            }
+            CodingMethod::Rice2(partitions) => {
+                writer.write::<2, u8>(1)?; // coding method 1
+                write_partitions(writer, partitions)
+            }
         }
-        CodingMethod::Rice2(partitions) => {
-            writer.write::<2, u8>(1)?; // coding method 1
-            write_partitions(writer, partitions)
-        }
+    } else {
+        let partitions = best_partitions::<0b1111>(options, block_size, residuals);
+        writer.write::<2, u8>(0)?; // coding method 0
+        write_partitions(writer, partitions)
     }
 }
 
