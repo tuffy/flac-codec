@@ -24,6 +24,19 @@ use std::num::NonZero;
 use std::path::Path;
 
 const MAX_CHANNELS: usize = 8;
+// maximum number of LPC coefficients
+const MAX_LPC_COEFFS: usize = 32;
+
+// Invent a vec!-like macro that the official crate lacks
+macro_rules! arrayvec {
+    ( $( $x:expr ),* ) => {
+        {
+            let mut v = ArrayVec::default();
+            $( v.push($x); )*
+            v
+        }
+    }
+}
 
 /// A FLAC writer which accepts samples as bytes
 ///
@@ -2825,7 +2838,7 @@ fn test_residual_encoding_1() {
             order: NonZero::new(2).unwrap(),
             precision: SignedBitCount::new::<7>(),
             shift: 5,
-            coefficients: vec![59, -30],
+            coefficients: arrayvec![59, -30],
         },
         &samples,
         &mut actual_residuals,
@@ -2854,7 +2867,7 @@ fn test_residual_encoding_2() {
             order: NonZero::new(2).unwrap(),
             precision: SignedBitCount::new::<7>(),
             shift: 5,
-            coefficients: vec![58, -29],
+            coefficients: arrayvec![58, -29],
         },
         &samples,
         &mut actual_residuals,
@@ -2870,7 +2883,7 @@ struct LpcParameters {
     order: NonZero<u8>,
     precision: SignedBitCount<15>,
     shift: u32,
-    coefficients: Vec<i32>,
+    coefficients: ArrayVec<i32, MAX_LPC_COEFFS>,
 }
 
 // There isn't any particular *best* way to determine
@@ -2927,7 +2940,7 @@ impl LpcParameters {
 
     fn quantize(
         order: NonZero<u8>,
-        coeffs: Vec<f64>,
+        coeffs: ArrayVec<f64, MAX_LPC_COEFFS>,
         precision: SignedBitCount<15>,
     ) -> Result<Self, Error> {
         const MAX_SHIFT: i32 = (1 << 4) - 1;
@@ -3003,7 +3016,7 @@ fn test_quantization() {
 
     let quantized = LpcParameters::quantize(
         order,
-        vec![0.797774, -0.045362, -0.050136, -0.054254],
+        arrayvec![0.797774, -0.045362, -0.050136, -0.054254],
         SignedBitCount::new::<10>(),
     )
     .unwrap();
@@ -3011,7 +3024,7 @@ fn test_quantization() {
     assert_eq!(quantized.order, order);
     assert_eq!(quantized.precision, SignedBitCount::new::<10>());
     assert_eq!(quantized.shift, 9);
-    assert_eq!(quantized.coefficients, vec![408, -23, -25, -28]);
+    assert_eq!(quantized.coefficients, arrayvec![408, -23, -25, -28]);
 
     // note the relationship between the un-quantized,
     // floating point parameters and the shift value (9)
@@ -3025,7 +3038,7 @@ fn test_quantization() {
 
     let quantized = LpcParameters::quantize(
         order,
-        vec![-0.054687, -0.953216, -0.027115, 0.033537],
+        arrayvec![-0.054687, -0.953216, -0.027115, 0.033537],
         SignedBitCount::new::<10>(),
     )
     .unwrap();
@@ -3033,18 +3046,22 @@ fn test_quantization() {
     assert_eq!(quantized.order, order);
     assert_eq!(quantized.precision, SignedBitCount::new::<10>());
     assert_eq!(quantized.shift, 9);
-    assert_eq!(quantized.coefficients, vec![-28, -488, -14, 17]);
+    assert_eq!(quantized.coefficients, arrayvec![-28, -488, -14, 17]);
 
     // coefficients should never be all zero, which is bad
     assert!(matches!(
-        LpcParameters::quantize(order, vec![0.0; 4], SignedBitCount::new::<10>(),),
+        LpcParameters::quantize(
+            order,
+            arrayvec![0.0, 0.0, 0.0, 0.0],
+            SignedBitCount::new::<10>(),
+        ),
         Err(Error::ZeroLpCoefficients)
     ));
 
     // negative shifts should also be handled properly
     let quantized = LpcParameters::quantize(
         order,
-        vec![-0.1, 0.1, 10000000.0, -0.2],
+        arrayvec![-0.1, 0.1, 10000000.0, -0.2],
         SignedBitCount::new::<10>(),
     )
     .unwrap();
@@ -3052,25 +3069,31 @@ fn test_quantization() {
     assert_eq!(quantized.order, order);
     assert_eq!(quantized.precision, SignedBitCount::new::<10>());
     assert_eq!(quantized.shift, 0);
-    assert_eq!(quantized.coefficients, vec![0, 0, 305, 0]);
+    assert_eq!(quantized.coefficients, arrayvec![0, 0, 305, 0]);
 
     // and massive negative shifts must be an error
     assert!(matches!(
         LpcParameters::quantize(
             order,
-            vec![-0.1, 0.1, 100000000.0, -0.2],
+            arrayvec![-0.1, 0.1, 100000000.0, -0.2],
             SignedBitCount::new::<10>(),
         ),
         Err(Error::LpNegativeShiftError)
     ));
 }
 
-fn autocorrelate(windowed: &[f64], max_lpc_order: NonZero<u8>) -> Vec<f64> {
+fn autocorrelate(
+    windowed: &[f64],
+    max_lpc_order: NonZero<u8>,
+) -> ArrayVec<f64, { MAX_LPC_COEFFS + 1 }> {
     // verified output against reference implementation
     // See: FLAC__lpc_compute_autocorrelation
 
+    debug_assert!(usize::from(max_lpc_order.get()) < MAX_LPC_COEFFS);
+
     let mut tail = windowed;
-    let mut autocorrelated = Vec::with_capacity(max_lpc_order.get().into());
+    // let mut autocorrelated = Vec::with_capacity(max_lpc_order.get().into());
+    let mut autocorrelated = ArrayVec::default();
 
     for _ in 0..=max_lpc_order.get() {
         if tail.is_empty() {
@@ -3086,11 +3109,16 @@ fn autocorrelate(windowed: &[f64], max_lpc_order: NonZero<u8>) -> Vec<f64> {
 
 #[test]
 fn test_autocorrelation() {
-    assert_eq!(autocorrelate(&[1.0], NonZero::new(1).unwrap()), &[1.0],);
+    // test against numbers generated from reference implementation
+
+    assert_eq!(
+        autocorrelate(&[1.0], NonZero::new(1).unwrap()),
+        arrayvec![1.0]
+    );
 
     assert_eq!(
         autocorrelate(&[1.0, 2.0, 3.0, 4.0, 5.0], NonZero::new(4).unwrap()),
-        &[55.0, 40.0, 26.0, 14.0, 5.0],
+        arrayvec![55.0, 40.0, 26.0, 14.0, 5.0],
     );
 
     assert_eq!(
@@ -3101,18 +3129,20 @@ fn test_autocorrelation() {
             ],
             NonZero::new(4).unwrap()
         ),
-        &[51408.0, 49792.0, 45304.0, 38466.0, 29914.0],
+        arrayvec![51408.0, 49792.0, 45304.0, 38466.0, 29914.0],
     )
 }
 
 #[derive(Debug)]
 struct LpCoeff {
-    coeffs: Vec<f64>,
+    coeffs: ArrayVec<f64, MAX_LPC_COEFFS>,
     error: f64,
 }
 
 // returns a Vec of (coefficients, error) pairs
-fn lp_coefficients(autocorrelated: Vec<f64>) -> Vec<LpCoeff> {
+fn lp_coefficients(
+    autocorrelated: ArrayVec<f64, { MAX_LPC_COEFFS + 1 }>,
+) -> ArrayVec<LpCoeff, MAX_LPC_COEFFS> {
     // verified output against reference implementation
     // See: FLAC__lpc_compute_lp_coefficients
 
@@ -3120,8 +3150,8 @@ fn lp_coefficients(autocorrelated: Vec<f64>) -> Vec<LpCoeff> {
         0 | 1 => panic!("must have at least 2 autocorrelation values"),
         _ => {
             let k = autocorrelated[1] / autocorrelated[0];
-            let mut lp_coefficients = vec![LpCoeff {
-                coeffs: vec![k],
+            let mut lp_coefficients = arrayvec![LpCoeff {
+                coeffs: arrayvec![k],
                 error: autocorrelated[0] * (1.0 - k.powi(2)),
             }];
 
@@ -3167,7 +3197,7 @@ macro_rules! assert_float_approx {
 fn test_lp_coefficients_1() {
     // test against numbers generated from reference implementation
 
-    let lp_coeffs = lp_coefficients(vec![55.0, 40.0, 26.0, 14.0, 5.0]);
+    let lp_coeffs = lp_coefficients(arrayvec![55.0, 40.0, 26.0, 14.0, 5.0]);
 
     assert_eq!(lp_coeffs.len(), 4);
 
@@ -3199,7 +3229,7 @@ fn test_lp_coefficients_1() {
 fn test_lp_coefficients_2() {
     // test against numbers generated from reference implementation
 
-    let lp_coeffs = lp_coefficients(vec![51408.0, 49792.0, 45304.0, 38466.0, 29914.0]);
+    let lp_coeffs = lp_coefficients(arrayvec![51408.0, 49792.0, 45304.0, 38466.0, 29914.0]);
 
     assert_eq!(lp_coeffs.len(), 4);
 
@@ -3227,13 +3257,14 @@ fn test_lp_coefficients_2() {
     assert_float_approx!(lp_coeffs[3].coeffs[3], 0.033537);
 }
 
-// returns (order, coeffs) pair
+// Uses the error in the LP coefficients to determine the best order
+// and returns that order along with the stripped-out coefficients
 fn estimate_best_order(
     bits_per_sample: SignedBitCount<32>,
     precision: SignedBitCount<15>,
     sample_count: u16,
-    coeffs: Vec<LpCoeff>,
-) -> Result<(NonZero<u8>, Vec<f64>), Error> {
+    coeffs: ArrayVec<LpCoeff, MAX_LPC_COEFFS>,
+) -> Result<(NonZero<u8>, ArrayVec<f64, MAX_LPC_COEFFS>), Error> {
     // verified output against reference implementation
     // See: FLAC__lpc_compute_best_order  and
     // See: FLAC__lpc_compute_expected_bits_per_residual_sample_with_error_scale
@@ -3249,12 +3280,15 @@ fn estimate_best_order(
         .map(|(LpCoeff { coeffs, error }, order)| {
             let header_bits =
                 u32::from(order) * (u32::from(bits_per_sample) + u32::from(precision));
+
             let bits_per_residual =
                 (error * error_scale).ln() / (2.0 * std::f64::consts::LN_2).max(0.0);
+
             let subframe_bits = bits_per_residual.mul_add(
                 f64::from(sample_count - u16::from(order)),
                 f64::from(header_bits),
             );
+
             (subframe_bits, order, coeffs)
         })
         .min_by(|(x, _, _), (y, _, _)| x.total_cmp(y))
