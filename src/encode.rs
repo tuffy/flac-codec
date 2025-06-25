@@ -3188,13 +3188,11 @@ fn lp_coefficients(
 
 #[allow(unused)]
 macro_rules! assert_float_approx {
-    ($a:expr, $b:expr) => {
-        {
-            let a = $a;
-            let b = $b;
-            assert!((a - b).abs() < 1.0e-6, "{a} != {b}");
-        }
-    };
+    ($a:expr, $b:expr) => {{
+        let a = $a;
+        let b = $b;
+        assert!((a - b).abs() < 1.0e-6, "{a} != {b}");
+    }};
 }
 
 #[test]
@@ -3360,7 +3358,7 @@ fn write_residuals<W: BitWrite>(
     residuals: &[i32],
 ) -> Result<(), Error> {
     use crate::stream::ResidualPartitionHeader;
-    use bitstream_io::BitCount;
+    use bitstream_io::{BitCount, ToBitStream};
 
     const MAX_PARTITIONS: usize = 64;
 
@@ -3440,6 +3438,37 @@ fn write_residuals<W: BitWrite>(
         }
     }
 
+    impl<const RICE_MAX: u32> ToBitStream for Partition<'_, RICE_MAX> {
+        type Error = std::io::Error;
+
+        #[inline]
+        fn to_writer<W: BitWrite + ?Sized>(&self, w: &mut W) -> Result<(), Self::Error> {
+            w.build(&self.header)?;
+            match self.header {
+                ResidualPartitionHeader::Standard { rice } => {
+                    let mask = rice.mask_lsb();
+
+                    self.residuals.iter().try_for_each(|s| {
+                        let (msb, lsb) = mask(if s.is_negative() {
+                            ((-*s as u32 - 1) << 1) + 1
+                        } else {
+                            (*s as u32) << 1
+                        });
+                        w.write_unary::<1>(msb)?;
+                        w.write_checked(lsb)
+                    })?;
+                }
+                ResidualPartitionHeader::Escaped { escape_size } => {
+                    self.residuals
+                        .iter()
+                        .try_for_each(|s| w.write_signed_counted(escape_size, *s))?;
+                }
+                ResidualPartitionHeader::Constant => { /* nothing left to do */ }
+            }
+            Ok(())
+        }
+    }
+
     fn best_partitions<'r, const RICE_MAX: u32>(
         options: &EncoderOptions,
         block_size: usize,
@@ -3473,48 +3502,24 @@ fn write_residuals<W: BitWrite>(
             })
     }
 
-    fn write_block<const RICE_MAX: u32, W: BitWrite>(
-        options: &EncoderOptions,
+    fn write_partitions<const RICE_MAX: u32, W: BitWrite>(
         writer: &mut W,
-        predictor_order: usize,
-        residuals: &[i32],
+        partitions: ArrayVec<Partition<'_, RICE_MAX>, MAX_PARTITIONS>,
     ) -> Result<(), Error> {
-        let block_size = predictor_order + residuals.len();
-
-        let partitions = best_partitions::<RICE_MAX>(options, block_size, residuals);
-
         writer.write::<4, u32>(partitions.len().ilog2())?; // partition order
-
-        for Partition { header, residuals } in partitions {
-            writer.build(&header)?;
-            match header {
-                ResidualPartitionHeader::Standard { rice } => {
-                    let mask = rice.mask_lsb();
-
-                    residuals.iter().try_for_each(|s| {
-                        let (msb, lsb) = mask(if s.is_negative() {
-                            ((-*s as u32 - 1) << 1) + 1
-                        } else {
-                            (*s as u32) << 1
-                        });
-                        writer.write_unary::<1>(msb)?;
-                        writer.write_checked(lsb)
-                    })?;
-                }
-                ResidualPartitionHeader::Escaped { escape_size } => {
-                    residuals
-                        .iter()
-                        .try_for_each(|s| writer.write_signed_counted(escape_size, *s))?;
-                }
-                ResidualPartitionHeader::Constant => { /* nothing left to do */ }
-            }
+        for partition in partitions {
+            writer.build(&partition)?;
         }
         Ok(())
     }
 
-    // TODO - we only support a coding method of 0
-    writer.write::<2, u8>(0)?; // coding method
-    write_block::<0b1111, W>(options, writer, predictor_order, residuals)
+    let block_size = predictor_order + residuals.len();
+
+    // TODO - support RICE2 coding method, if necessary
+    let partitions = best_partitions::<0b1111>(options, block_size, residuals);
+
+    writer.write::<2, u8>(0)?;  // coding method 0
+    write_partitions(writer, partitions)
 }
 
 fn try_join<A, B, RA, RB, E>(oper_a: A, oper_b: B) -> Result<(RA, RB), E>
