@@ -1567,7 +1567,7 @@ impl ToBitStream for SubframeHeaderType {
 }
 
 /// A FLAC residual partition header
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum ResidualPartitionHeader<const RICE_MAX: u32> {
     /// Standard, un-escaped partition
     Standard {

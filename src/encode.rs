@@ -3513,13 +3513,53 @@ fn write_residuals<W: BitWrite>(
         Ok(())
     }
 
+    #[inline]
+    fn try_shrink_header<const RICE_MAX: u32, const RICE_NEW_MAX: u32>(
+        header: ResidualPartitionHeader<RICE_MAX>,
+    ) -> Option<ResidualPartitionHeader<RICE_NEW_MAX>> {
+        Some(match header {
+            ResidualPartitionHeader::Standard { rice } => ResidualPartitionHeader::Standard {
+                rice: rice.try_map(|r| (r < RICE_NEW_MAX).then_some(r))?,
+            },
+            ResidualPartitionHeader::Escaped { escape_size } => {
+                ResidualPartitionHeader::Escaped { escape_size }
+            }
+            ResidualPartitionHeader::Constant => ResidualPartitionHeader::Constant,
+        })
+    }
+
+    enum CodingMethod<'p> {
+        Rice(ArrayVec<Partition<'p, 0b1111>, MAX_PARTITIONS>),
+        Rice2(ArrayVec<Partition<'p, 0b11111>, MAX_PARTITIONS>),
+    }
+
+    fn try_reduce_rice(
+        partitions: ArrayVec<Partition<'_, 0b11111>, MAX_PARTITIONS>,
+    ) -> CodingMethod {
+        match partitions
+            .iter()
+            .map(|Partition { header, residuals }| {
+                try_shrink_header(*header).map(|header| Partition { header, residuals })
+            })
+            .collect()
+        {
+            Some(partitions) => CodingMethod::Rice(partitions),
+            None => CodingMethod::Rice2(partitions),
+        }
+    }
+
     let block_size = predictor_order + residuals.len();
 
-    // TODO - support RICE2 coding method, if necessary
-    let partitions = best_partitions::<0b1111>(options, block_size, residuals);
-
-    writer.write::<2, u8>(0)?;  // coding method 0
-    write_partitions(writer, partitions)
+    match try_reduce_rice(best_partitions(options, block_size, residuals)) {
+        CodingMethod::Rice(partitions) => {
+            writer.write::<2, u8>(0)?; // coding method 0
+            write_partitions(writer, partitions)
+        }
+        CodingMethod::Rice2(partitions) => {
+            writer.write::<2, u8>(1)?; // coding method 1
+            write_partitions(writer, partitions)
+        }
+    }
 }
 
 fn try_join<A, B, RA, RB, E>(oper_a: A, oper_b: B) -> Result<(RA, RB), E>
