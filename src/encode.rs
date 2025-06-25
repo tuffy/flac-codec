@@ -2921,7 +2921,7 @@ impl LpcParameters {
             4609.. => SignedBitCount::new::<13>(),
         };
 
-        let (order, lp_coeffs) = estimate_best_order(
+        let (order, lp_coeffs) = compute_best_order(
             bits_per_sample,
             precision,
             channel
@@ -3189,7 +3189,11 @@ fn lp_coefficients(
 #[allow(unused)]
 macro_rules! assert_float_approx {
     ($a:expr, $b:expr) => {
-        assert!(($a - $b).abs() < 1.0e-6);
+        {
+            let a = $a;
+            let b = $b;
+            assert!((a - b).abs() < 1.0e-6, "{a} != {b}");
+        }
     };
 }
 
@@ -3257,18 +3261,13 @@ fn test_lp_coefficients_2() {
     assert_float_approx!(lp_coeffs[3].coeffs[3], 0.033537);
 }
 
-// Uses the error in the LP coefficients to determine the best order
-// and returns that order along with the stripped-out coefficients
-fn estimate_best_order(
+// Returns (bits, order, coeffients) tuples
+fn subframe_bits_by_order(
     bits_per_sample: SignedBitCount<32>,
     precision: SignedBitCount<15>,
     sample_count: u16,
     coeffs: ArrayVec<LpCoeff, MAX_LPC_COEFFS>,
-) -> Result<(NonZero<u8>, ArrayVec<f64, MAX_LPC_COEFFS>), Error> {
-    // verified output against reference implementation
-    // See: FLAC__lpc_compute_best_order  and
-    // See: FLAC__lpc_compute_expected_bits_per_residual_sample_with_error_scale
-
+) -> impl Iterator<Item = (f64, u8, ArrayVec<f64, MAX_LPC_COEFFS>)> {
     debug_assert!(sample_count > 0);
 
     let error_scale = 0.5 / f64::from(sample_count);
@@ -3277,7 +3276,7 @@ fn estimate_best_order(
         .into_iter()
         .take_while(|coeffs| coeffs.error > 0.0)
         .zip(1..)
-        .map(|(LpCoeff { coeffs, error }, order)| {
+        .map(move |(LpCoeff { coeffs, error }, order)| {
             let header_bits =
                 u32::from(order) * (u32::from(bits_per_sample) + u32::from(precision));
 
@@ -3291,15 +3290,68 @@ fn estimate_best_order(
 
             (subframe_bits, order, coeffs)
         })
+}
+
+// Uses the error in the LP coefficients to determine the best order
+// and returns that order along with the stripped-out coefficients
+fn compute_best_order(
+    bits_per_sample: SignedBitCount<32>,
+    precision: SignedBitCount<15>,
+    sample_count: u16,
+    coeffs: ArrayVec<LpCoeff, MAX_LPC_COEFFS>,
+) -> Result<(NonZero<u8>, ArrayVec<f64, MAX_LPC_COEFFS>), Error> {
+    // verified output against reference implementation
+    // See: FLAC__lpc_compute_best_order  and
+    // See: FLAC__lpc_compute_expected_bits_per_residual_sample_with_error_scale
+
+    subframe_bits_by_order(bits_per_sample, precision, sample_count, coeffs)
         .min_by(|(x, _, _), (y, _, _)| x.total_cmp(y))
         .and_then(|(_, order, coeffs)| Some((NonZero::new(order)?, coeffs)))
         .ok_or(Error::NoBestLpcOrder)
 }
 
-// #[test]
-// fn test_estimate_best_order() {
-//     assert!(false);
-// }
+#[test]
+fn test_compute_best_order() {
+    // test against numbers generated from reference implementation
+
+    let mut bits = subframe_bits_by_order(
+        SignedBitCount::new::<16>(),
+        SignedBitCount::new::<5>(),
+        20,
+        [3181.201369, 495.815931, 495.161449, 494.604514]
+            .into_iter()
+            .map(|error| LpCoeff {
+                coeffs: ArrayVec::default(),
+                error,
+            })
+            .collect(),
+    )
+    .map(|t| t.0);
+
+    assert_float_approx!(bits.next().unwrap(), 80.977565);
+    assert_float_approx!(bits.next().unwrap(), 74.685594);
+    assert_float_approx!(bits.next().unwrap(), 93.853530);
+    assert_float_approx!(bits.next().unwrap(), 113.025628);
+
+    let mut bits = subframe_bits_by_order(
+        SignedBitCount::new::<16>(),
+        SignedBitCount::new::<10>(),
+        4096,
+        [15000.0, 25000.0, 20000.0, 30000.0]
+            .into_iter()
+            .map(|error| LpCoeff {
+                coeffs: ArrayVec::default(),
+                error,
+            })
+            .collect(),
+    )
+    .map(|t| t.0);
+
+    assert_float_approx!(bits.next().unwrap(), 1812.801817);
+    assert_float_approx!(bits.next().unwrap(), 3346.934051);
+    assert_float_approx!(bits.next().unwrap(), 2713.303385);
+    assert_float_approx!(bits.next().unwrap(), 3935.492805);
+}
 
 fn write_residuals<W: BitWrite>(
     options: &EncoderOptions,
