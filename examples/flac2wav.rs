@@ -6,6 +6,7 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+use std::ffi::OsString;
 use std::path::Path;
 
 fn main() {
@@ -19,11 +20,21 @@ fn main() {
     }
 }
 
-fn flac2wav<P: AsRef<Path>>(flacs: &[P]) -> Result<(), Error> {
+#[cfg(not(feature = "rayon"))]
+fn flac2wav(flacs: &[OsString]) -> Result<(), Error> {
     for flac in flacs {
         convert_flac(flac.as_ref())?;
     }
     Ok(())
+}
+
+#[cfg(feature = "rayon")]
+fn flac2wav(flacs: &[OsString]) -> Result<(), Error> {
+    use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
+
+    flacs
+        .par_iter()
+        .try_for_each(|flac| convert_flac(flac.as_ref()))
 }
 
 fn convert_flac(flac: &Path) -> Result<(), Error> {
