@@ -35,6 +35,15 @@ pub trait Metadata {
     /// From 1 to 8
     fn channel_count(&self) -> u8;
 
+    /// Returns channel mask
+    ///
+    /// This uses the channel mask defined
+    /// in the Vorbis comment, if found, or defaults
+    /// to FLAC's default channel assignment if not
+    fn channel_mask(&self) -> ChannelMask {
+        ChannelMask::from_channels(self.channel_count())
+    }
+
     /// Returns sample rate, in Hz
     fn sample_rate(&self) -> u32;
 
@@ -4187,6 +4196,14 @@ impl Metadata for BlockList {
         self.streaminfo.channels.get()
     }
 
+    fn channel_mask(&self) -> ChannelMask {
+        use fields::CHANNEL_MASK;
+
+        self.get::<VorbisComment>()
+            .and_then(|c| c.get(CHANNEL_MASK).and_then(|m| m.parse().ok()))
+            .unwrap_or(ChannelMask::from_channels(self.channel_count()))
+    }
+
     fn sample_rate(&self) -> u32 {
         self.streaminfo.sample_rate
     }
@@ -4335,5 +4352,215 @@ mod private {
         fn try_from_opt_block_mut(
             block: &mut OptionalBlock,
         ) -> Result<&mut Self, &mut OptionalBlock>;
+    }
+}
+
+/// The channel mask
+///
+/// This field is used to communicate that the channels
+/// in the file differ from FLAC's default channel assignment
+/// definitions.
+#[derive(Copy, Clone, Debug, Default)]
+pub struct ChannelMask {
+    mask: u32,
+}
+
+impl ChannelMask {
+    /// Iterates over all the mask's defined channels
+    pub fn channels(&self) -> impl Iterator<Item = Channel> {
+        [
+            Channel::FrontLeft,
+            Channel::FrontRight,
+            Channel::FrontCenter,
+            Channel::Lfe,
+            Channel::BackLeft,
+            Channel::BackRight,
+            Channel::FrontLeftOfCenter,
+            Channel::FrontRightOfCenter,
+            Channel::BackCenter,
+            Channel::SideLeft,
+            Channel::SideRight,
+            Channel::TopCenter,
+            Channel::TopFrontLeft,
+            Channel::TopFrontCenter,
+            Channel::TopFrontRight,
+            Channel::TopRearLeft,
+            Channel::TopRearCenter,
+            Channel::TopRearRight,
+        ]
+        .into_iter()
+        .filter(|channel| (*channel as u32 & self.mask) != 0)
+    }
+
+    fn from_channels(channels: u8) -> Self {
+        match channels {
+            1 => Self {
+                mask: Channel::FrontCenter as u32,
+            },
+            2 => Self {
+                mask: Channel::FrontLeft as u32 | Channel::FrontRight as u32,
+            },
+            3 => Self {
+                mask: Channel::FrontLeft as u32
+                    | Channel::FrontRight as u32
+                    | Channel::FrontCenter as u32,
+            },
+            4 => Self {
+                mask: Channel::FrontLeft as u32
+                    | Channel::FrontRight as u32
+                    | Channel::BackLeft as u32
+                    | Channel::BackRight as u32,
+            },
+            5 => Self {
+                mask: Channel::FrontLeft as u32
+                    | Channel::FrontRight as u32
+                    | Channel::FrontCenter as u32
+                    | Channel::BackLeft as u32
+                    | Channel::BackRight as u32,
+            },
+            6 => Self {
+                mask: Channel::FrontLeft as u32
+                    | Channel::FrontRight as u32
+                    | Channel::FrontCenter as u32
+                    | Channel::Lfe as u32
+                    | Channel::BackLeft as u32
+                    | Channel::BackRight as u32,
+            },
+            7 => Self {
+                mask: Channel::FrontLeft as u32
+                    | Channel::FrontRight as u32
+                    | Channel::FrontCenter as u32
+                    | Channel::Lfe as u32
+                    | Channel::BackCenter as u32
+                    | Channel::SideLeft as u32
+                    | Channel::SideRight as u32,
+            },
+            8 => Self {
+                mask: Channel::FrontLeft as u32
+                    | Channel::FrontRight as u32
+                    | Channel::FrontCenter as u32
+                    | Channel::Lfe as u32
+                    | Channel::BackLeft as u32
+                    | Channel::BackRight as u32
+                    | Channel::SideLeft as u32
+                    | Channel::SideRight as u32,
+            },
+            // FLAC files are limited to 1-8 channels
+            _ => panic!("undefined channel count"),
+        }
+    }
+}
+
+impl std::str::FromStr for ChannelMask {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.split_once('x').ok_or(())? {
+            ("0", hex) => u32::from_str_radix(hex, 16)
+                .map(|mask| ChannelMask { mask })
+                .map_err(|_| ()),
+            _ => Err(()),
+        }
+    }
+}
+
+impl std::fmt::Display for ChannelMask {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "0x{:04x}", self.mask)
+    }
+}
+
+impl From<ChannelMask> for u32 {
+    fn from(mask: ChannelMask) -> u32 {
+        mask.mask
+    }
+}
+
+impl From<u32> for ChannelMask {
+    fn from(mask: u32) -> ChannelMask {
+        ChannelMask { mask }
+    }
+}
+
+/// An individual channel mask channel
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub enum Channel {
+    /// Front left channel
+    FrontLeft = 0b1,
+
+    /// Front right channel
+    FrontRight = 0b10,
+
+    /// Front center channel
+    FrontCenter = 0b100,
+
+    /// Low-frequency effects (LFE) channel
+    Lfe = 0b1000,
+
+    /// Back left channel
+    BackLeft = 0b10000,
+
+    /// Back right channel
+    BackRight = 0b100000,
+
+    /// Front left of center channel
+    FrontLeftOfCenter = 0b1000000,
+
+    /// Front right of center channel
+    FrontRightOfCenter = 0b10000000,
+
+    /// Back center channel
+    BackCenter = 0b100000000,
+
+    /// Side left channel
+    SideLeft = 0b1000000000,
+
+    /// Side right channel
+    SideRight = 0b10000000000,
+
+    /// Top center channel
+    TopCenter = 0b100000000000,
+
+    /// Top front left channel
+    TopFrontLeft = 0b1000000000000,
+
+    /// Top front center channel
+    TopFrontCenter = 0b10000000000000,
+
+    /// Top front right channel
+    TopFrontRight = 0b100000000000000,
+
+    /// Top rear left channel
+    TopRearLeft = 0b1000000000000000,
+
+    /// Top rear center channel
+    TopRearCenter = 0b10000000000000000,
+
+    /// Top rear right channel
+    TopRearRight = 0b100000000000000000,
+}
+
+impl std::fmt::Display for Channel {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            Self::FrontLeft => "front left".fmt(f),
+            Self::FrontRight => "front right".fmt(f),
+            Self::FrontCenter => "front center".fmt(f),
+            Self::Lfe => "LFE".fmt(f),
+            Self::BackLeft => "back left".fmt(f),
+            Self::BackRight => "back right".fmt(f),
+            Self::FrontLeftOfCenter => "front left of center".fmt(f),
+            Self::FrontRightOfCenter => "front right of center".fmt(f),
+            Self::BackCenter => "back center".fmt(f),
+            Self::SideLeft => "side left".fmt(f),
+            Self::SideRight => "side right".fmt(f),
+            Self::TopCenter => "top center".fmt(f),
+            Self::TopFrontLeft => "top front left".fmt(f),
+            Self::TopFrontCenter => "top front center".fmt(f),
+            Self::TopFrontRight => "top front right".fmt(f),
+            Self::TopRearLeft => "top rear left".fmt(f),
+            Self::TopRearCenter => "top rear center".fmt(f),
+            Self::TopRearRight => "top rear right".fmt(f),
+        }
     }
 }

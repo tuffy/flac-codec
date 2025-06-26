@@ -10,7 +10,7 @@
 
 use crate::Error;
 use crate::audio::Frame;
-use crate::metadata::{BlockList, SeekTable};
+use crate::metadata::{BlockList, ChannelMask, SeekTable};
 use bitstream_io::{BitRead, SignedBitCount};
 use std::collections::VecDeque;
 use std::fs::File;
@@ -207,6 +207,11 @@ impl<R: std::io::Read, E: crate::byteorder::Endianness> Metadata for FlacReader<
     }
 
     #[inline]
+    fn channel_mask(&self) -> ChannelMask {
+        self.decoder.channel_mask()
+    }
+
+    #[inline]
     fn sample_rate(&self) -> u32 {
         self.decoder.sample_rate()
     }
@@ -376,6 +381,11 @@ impl<R: std::io::Read> Metadata for FlacSampleReader<R> {
     #[inline]
     fn channel_count(&self) -> u8 {
         self.decoder.channel_count().get()
+    }
+
+    #[inline]
+    fn channel_mask(&self) -> ChannelMask {
+        self.decoder.channel_mask()
     }
 
     #[inline]
@@ -653,6 +663,11 @@ impl<R: std::io::Read, E: crate::byteorder::Endianness> Metadata for SeekableFla
         self.reader.channel_count()
     }
 
+    #[inline]
+    fn channel_mask(&self) -> ChannelMask {
+        self.reader.channel_mask()
+    }
+
     fn sample_rate(&self) -> u32 {
         self.reader.sample_rate()
     }
@@ -868,6 +883,10 @@ impl SeekableFlacSampleReader<BufReader<File>> {
 impl<R: std::io::Read> Metadata for SeekableFlacSampleReader<R> {
     fn channel_count(&self) -> u8 {
         self.reader.channel_count()
+    }
+
+    fn channel_mask(&self) -> ChannelMask {
+        self.reader.channel_mask()
     }
 
     fn sample_rate(&self) -> u32 {
@@ -1189,6 +1208,10 @@ impl<R: std::io::Read> Decoder<R> {
     /// From 1 to 8
     fn channel_count(&self) -> NonZero<u8> {
         self.blocks.streaminfo().channels
+    }
+
+    fn channel_mask(&self) -> ChannelMask {
+        self.blocks.channel_mask()
     }
 
     /// Returns sample rate, in Hz

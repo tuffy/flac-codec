@@ -2009,6 +2009,10 @@ impl<R> crate::metadata::Metadata for FrameIterator<R> {
         self.blocks.streaminfo().channels.get()
     }
 
+    fn channel_mask(&self) -> crate::metadata::ChannelMask {
+        self.blocks.channel_mask()
+    }
+
     fn sample_rate(&self) -> u32 {
         self.blocks.streaminfo().sample_rate
     }
