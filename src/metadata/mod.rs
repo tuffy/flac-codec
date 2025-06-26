@@ -1719,6 +1719,14 @@ pub struct Application {
     pub data: Vec<u8>,
 }
 
+impl Application {
+    /// Application ID for RIFF chunk storage
+    pub const RIFF: u32 = 0x72696666;
+
+    /// Application ID for AIFF chunk storage
+    pub const AIFF: u32 = 0x61696666;
+}
+
 block!(Application, Application, true);
 optional_block!(Application, Application);
 
@@ -4415,16 +4423,16 @@ impl ChannelMask {
                 mask: Channel::FrontLeft as u32
                     | Channel::FrontRight as u32
                     | Channel::FrontCenter as u32
-                    | Channel::BackLeft as u32
-                    | Channel::BackRight as u32,
+                    | Channel::SideLeft as u32
+                    | Channel::SideRight as u32,
             },
             6 => Self {
                 mask: Channel::FrontLeft as u32
                     | Channel::FrontRight as u32
                     | Channel::FrontCenter as u32
                     | Channel::Lfe as u32
-                    | Channel::BackLeft as u32
-                    | Channel::BackRight as u32,
+                    | Channel::SideLeft as u32
+                    | Channel::SideRight as u32,
             },
             7 => Self {
                 mask: Channel::FrontLeft as u32
