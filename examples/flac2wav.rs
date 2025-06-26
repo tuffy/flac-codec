@@ -79,6 +79,9 @@ fn convert_flac(flac: &Path) -> Result<(), Error> {
                 .checked_add(data_size)
                 .ok_or(Error::FlacTooLarge)?;
 
+            // FIXME - pad out odd-sized chunks
+            // (this can happen with 8-bit samples)
+
             let mut wav = ByteWriter::endian(wav, LittleEndian);
             wav.write_bytes(b"RIFF")?;
             wav.write(whole_size)?;
