@@ -1526,6 +1526,8 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
         channels: u8,
         total_samples: Option<NonZero<u64>>,
     ) -> Result<Self, Error> {
+        use crate::metadata::OptionalBlockType;
+
         let mut blocks = options.metadata;
 
         *blocks.streaminfo_mut() = Streaminfo {
@@ -1573,6 +1575,17 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
         }
 
         let start = writer.stream_position()?;
+
+        // sort blocks to put more relevant items at the front
+        blocks.sort_by(|block| match block {
+            OptionalBlockType::VorbisComment => 0,
+            OptionalBlockType::SeekTable => 1,
+            OptionalBlockType::Picture => 2,
+            OptionalBlockType::Application => 3,
+            OptionalBlockType::Cuesheet => 4,
+            OptionalBlockType::Padding => 5,
+        });
+
         write_blocks(writer.by_ref(), blocks.blocks())?;
 
         Ok(Self {

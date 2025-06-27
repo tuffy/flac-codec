@@ -317,6 +317,39 @@ impl ToBitStream for BlockType {
     }
 }
 
+/// A block type for optional FLAC metadata blocks
+///
+/// This is a subset of [`BlockType`] which contains
+/// no STREAMINFO, which is a required block.
+#[derive(Copy, Clone, Debug, Ord, PartialOrd, Eq, PartialEq)]
+pub enum OptionalBlockType {
+    /// The PADDING block
+    Padding = 1,
+    /// The APPLICATION block
+    Application = 2,
+    /// The SEEKTABLE block
+    SeekTable = 3,
+    /// The VORBIS_COMMENT block
+    VorbisComment = 4,
+    /// The CUESHEET block
+    Cuesheet = 5,
+    /// The PICTURE block
+    Picture = 6,
+}
+
+impl From<OptionalBlockType> for BlockType {
+    fn from(block: OptionalBlockType) -> Self {
+        match block {
+            OptionalBlockType::Padding => Self::Padding,
+            OptionalBlockType::Application => Self::Application,
+            OptionalBlockType::SeekTable => Self::SeekTable,
+            OptionalBlockType::VorbisComment => Self::VorbisComment,
+            OptionalBlockType::Cuesheet => Self::Cuesheet,
+            OptionalBlockType::Picture => Self::Picture,
+        }
+    }
+}
+
 /// A 24-bit block size value, with safeguards against overflow
 #[derive(Debug, Default, Copy, Clone, Eq, PartialEq, Ord, PartialOrd)]
 pub struct BlockSize(u32);
@@ -1298,7 +1331,7 @@ impl ToBitStreamUsing for Block {
 }
 
 /// A shared reference to a metadata block
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum BlockRef<'b> {
     /// The STREAMINFO block
     Streaminfo(&'b Streaminfo),
@@ -1400,7 +1433,9 @@ macro_rules! block {
 
 macro_rules! optional_block {
     ($t:ty, $v:ident) => {
-        impl OptionalMetadataBlock for $t {}
+        impl OptionalMetadataBlock for $t {
+            const OPTIONAL_TYPE: OptionalBlockType = OptionalBlockType::$v;
+        }
 
         impl private::OptionalMetadataBlock for $t {
             fn try_from_opt_block(
@@ -4197,6 +4232,89 @@ impl BlockList {
             }
         }
     }
+
+    /// Sorts optional metadata blocks by block type
+    ///
+    /// The function converts the type to some key which is
+    /// used for ordering blocks from smallest to largest.
+    ///
+    /// The order of blocks of the same type is preserved.
+    /// This is an important consideration for APPLICATION
+    /// metadata blocks, which may contain foreign metadata
+    /// chunks that must be re-applied in the same order.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use flac_codec::metadata::{
+    ///     BlockList, Streaminfo, Application, Padding, AsBlockRef,
+    ///     OptionalBlockType,
+    /// };
+    ///
+    /// // build a BlockList with a dummy Streaminfo
+    /// let streaminfo = Streaminfo {
+    ///     minimum_block_size: 0,
+    ///     maximum_block_size: 0,
+    ///     minimum_frame_size: None,
+    ///     maximum_frame_size: None,
+    ///     sample_rate: 44100,
+    ///     channels: 1u8.try_into().unwrap(),
+    ///     bits_per_sample: 16u32.try_into().unwrap(),
+    ///     total_samples: None,
+    ///     md5: None,
+    /// };
+    ///
+    /// let mut blocklist = BlockList::new(streaminfo.clone());
+    ///
+    /// // add some blocks
+    /// let application_1 = Application {
+    ///     id: 0x1234,
+    ///     data: vec![0x01, 0x02, 0x03, 0x04],
+    /// };
+    /// blocklist.insert(application_1.clone());
+    ///
+    /// let padding = Padding {
+    ///     size: 10u32.try_into().unwrap(),
+    /// };
+    /// blocklist.insert(padding.clone());
+    ///
+    /// let application_2 = Application {
+    ///     id: 0x6789,
+    ///     data: vec![0x06, 0x07, 0x08, 0x09],
+    /// };
+    /// blocklist.insert(application_2.clone());
+    ///
+    /// // check their inital order
+    /// let mut iter = blocklist.blocks();
+    /// assert_eq!(iter.next(), Some(streaminfo.as_block_ref()));
+    /// assert_eq!(iter.next(), Some(application_1.as_block_ref()));
+    /// assert_eq!(iter.next(), Some(padding.as_block_ref()));
+    /// assert_eq!(iter.next(), Some(application_2.as_block_ref()));
+    /// assert_eq!(iter.next(), None);
+    /// drop(iter);
+    ///
+    /// // sort the blocks to put padding last
+    /// blocklist.sort_by(|t| match t {
+    ///     OptionalBlockType::Application => 0,
+    ///     OptionalBlockType::SeekTable => 1,
+    ///     OptionalBlockType::VorbisComment => 2,
+    ///     OptionalBlockType::Cuesheet => 3,
+    ///     OptionalBlockType::Picture => 4,
+    ///     OptionalBlockType::Padding => 5,
+    /// });
+    ///
+    /// // re-check their new order
+    /// let mut iter = blocklist.blocks();
+    /// assert_eq!(iter.next(), Some(streaminfo.as_block_ref()));
+    /// assert_eq!(iter.next(), Some(application_1.as_block_ref()));
+    /// assert_eq!(iter.next(), Some(application_2.as_block_ref()));
+    /// assert_eq!(iter.next(), Some(padding.as_block_ref()));
+    /// assert_eq!(iter.next(), None);
+    /// ```
+    pub fn sort_by<O: Ord>(&mut self, f: impl Fn(OptionalBlockType) -> O) {
+        self.blocks
+            .sort_by_key(|block| f(block.optional_block_type()));
+    }
 }
 
 impl Metadata for BlockList {
@@ -4281,12 +4399,15 @@ impl IntoIterator for BlockList {
 /// A type of FLAC metadata block which is not required
 ///
 /// The STREAMINFO block is required.  All others are optional.
-pub trait OptionalMetadataBlock: MetadataBlock + private::OptionalMetadataBlock {}
+pub trait OptionalMetadataBlock: MetadataBlock + private::OptionalMetadataBlock {
+    /// Our optional block type
+    const OPTIONAL_TYPE: OptionalBlockType;
+}
 
 mod private {
     use super::{
-        Application, AsBlockRef, Block, BlockRef, BlockType, Cuesheet, Padding, Picture, SeekTable,
-        Streaminfo, VorbisComment,
+        Application, AsBlockRef, Block, BlockRef, BlockType, Cuesheet, OptionalBlockType, Padding,
+        Picture, SeekTable, Streaminfo, VorbisComment,
     };
 
     #[derive(Clone, Debug)]
@@ -4308,6 +4429,17 @@ mod private {
                 Self::VorbisComment(_) => BlockType::VorbisComment,
                 Self::Cuesheet(_) => BlockType::Cuesheet,
                 Self::Picture(_) => BlockType::Picture,
+            }
+        }
+
+        pub fn optional_block_type(&self) -> OptionalBlockType {
+            match self {
+                Self::Padding(_) => OptionalBlockType::Padding,
+                Self::Application(_) => OptionalBlockType::Application,
+                Self::SeekTable(_) => OptionalBlockType::SeekTable,
+                Self::VorbisComment(_) => OptionalBlockType::VorbisComment,
+                Self::Cuesheet(_) => OptionalBlockType::Cuesheet,
+                Self::Picture(_) => OptionalBlockType::Picture,
             }
         }
     }
