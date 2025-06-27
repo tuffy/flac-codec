@@ -30,7 +30,7 @@ fn wav2flac(wavs: &[OsString]) -> Result<(), Error> {
 fn convert_wav(wav: &Path) -> Result<(), Error> {
     use bitstream_io::{ByteRead, ByteReader};
     use flac_codec::byteorder::LittleEndian;
-    use flac_codec::encode::{FlacWriter, Options};
+    use flac_codec::encode::{FlacByteWriter, Options};
     use std::fs::File;
     use std::io::{BufReader, Read};
 
@@ -70,7 +70,7 @@ fn convert_wav(wav: &Path) -> Result<(), Error> {
                 // "data" chunk must come after "fmt " chunk
                 let fmt = fmt.ok_or(Error::InvalidWave)?;
 
-                let mut flac: FlacWriter<_, LittleEndian> = FlacWriter::create(
+                let mut flac: FlacByteWriter<_, LittleEndian> = FlacByteWriter::create(
                     &flac_path,
                     match fmt.channel_mask() {
                         None => Options::default(),

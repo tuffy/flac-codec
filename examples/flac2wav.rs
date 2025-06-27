@@ -40,7 +40,7 @@ fn flac2wav(flacs: &[OsString]) -> Result<(), Error> {
 fn convert_flac(flac: &Path) -> Result<(), Error> {
     use bitstream_io::{ByteWrite, ByteWriter, ToByteStream};
     use flac_codec::byteorder::LittleEndian;
-    use flac_codec::decode::FlacReader;
+    use flac_codec::decode::FlacByteReader;
     use flac_codec::metadata::Metadata;
     use std::fs::File;
     use std::io::BufWriter;
@@ -51,7 +51,7 @@ fn convert_flac(flac: &Path) -> Result<(), Error> {
         return Ok(());
     }
 
-    let mut flac = FlacReader::open(flac, LittleEndian)?;
+    let mut flac = FlacByteReader::open(flac, LittleEndian)?;
     let wav = File::create_new(&wav_path).map(BufWriter::new)?;
 
     let fmt = Fmt::new(&flac);

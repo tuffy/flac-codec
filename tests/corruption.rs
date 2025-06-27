@@ -1,7 +1,7 @@
 #[test]
 fn test_file_corruption() {
     use flac_codec::byteorder::LittleEndian;
-    use flac_codec::decode::FlacReader;
+    use flac_codec::decode::FlacByteReader;
     use std::io::{copy, sink};
 
     // ensure test file is okay
@@ -9,7 +9,7 @@ fn test_file_corruption() {
 
     assert!(
         copy(
-            &mut FlacReader::endian(&flac[..], LittleEndian).unwrap(),
+            &mut FlacByteReader::endian(&flac[..], LittleEndian).unwrap(),
             &mut sink()
         )
         .is_ok()
@@ -26,7 +26,7 @@ fn test_file_corruption() {
 
         assert!(
             copy(
-                &mut FlacReader::endian(&flac[..], LittleEndian).unwrap(),
+                &mut FlacByteReader::endian(&flac[..], LittleEndian).unwrap(),
                 &mut sink()
             )
             .is_err()

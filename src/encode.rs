@@ -45,14 +45,14 @@ macro_rules! arrayvec {
 /// ```
 /// use flac_codec::{
 ///     byteorder::LittleEndian,
-///     encode::{FlacWriter, Options},
-///     decode::{FlacReader, Metadata},
+///     encode::{FlacByteWriter, Options},
+///     decode::{FlacByteReader, Metadata},
 /// };
 /// use std::io::{Cursor, Read, Seek, Write};
 ///
 /// let mut flac = Cursor::new(vec![]);  // a FLAC file in memory
 ///
-/// let mut writer = FlacWriter::endian(
+/// let mut writer = FlacByteWriter::endian(
 ///     &mut flac,           // our wrapped writer
 ///     LittleEndian,        // .wav-style byte order
 ///     Options::default(),  // default encoding options
@@ -72,7 +72,7 @@ macro_rules! arrayvec {
 /// flac.rewind().unwrap();
 ///
 /// // open reader around written FLAC file
-/// let mut reader = FlacReader::endian(flac, LittleEndian).unwrap();
+/// let mut reader = FlacByteReader::endian(flac, LittleEndian).unwrap();
 ///
 /// // read 2000 bytes
 /// let mut read_bytes = vec![];
@@ -86,7 +86,7 @@ macro_rules! arrayvec {
 /// // ensure input and output matches
 /// assert_eq!(read_bytes, written_bytes);
 /// ```
-pub struct FlacWriter<W: std::io::Write + std::io::Seek, E: crate::byteorder::Endianness> {
+pub struct FlacByteWriter<W: std::io::Write + std::io::Seek, E: crate::byteorder::Endianness> {
     // the wrapped encoder
     encoder: Encoder<W>,
     // bytes that make up a partial FLAC frame
@@ -105,7 +105,7 @@ pub struct FlacWriter<W: std::io::Write + std::io::Seek, E: crate::byteorder::En
     endianness: std::marker::PhantomData<E>,
 }
 
-impl<W: std::io::Write + std::io::Seek, E: crate::byteorder::Endianness> FlacWriter<W, E> {
+impl<W: std::io::Write + std::io::Seek, E: crate::byteorder::Endianness> FlacByteWriter<W, E> {
     /// Creates new FLAC writer with the given parameters
     ///
     /// The writer should be positioned at the start of the file.
@@ -272,7 +272,7 @@ impl<W: std::io::Write + std::io::Seek, E: crate::byteorder::Endianness> FlacWri
     }
 }
 
-impl<E: crate::byteorder::Endianness> FlacWriter<BufWriter<File>, E> {
+impl<E: crate::byteorder::Endianness> FlacByteWriter<BufWriter<File>, E> {
     /// Creates new FLAC file at the given path
     ///
     /// `sample_rate` must be between 0 (for non-audio streams) and 2²⁰.
@@ -299,7 +299,7 @@ impl<E: crate::byteorder::Endianness> FlacWriter<BufWriter<File>, E> {
         channels: u8,
         total_bytes: Option<u64>,
     ) -> Result<Self, Error> {
-        FlacWriter::new(
+        FlacByteWriter::new(
             BufWriter::new(options.create(path)?),
             options,
             sample_rate,
@@ -333,7 +333,7 @@ impl<E: crate::byteorder::Endianness> FlacWriter<BufWriter<File>, E> {
 }
 
 impl<W: std::io::Write + std::io::Seek, E: crate::byteorder::Endianness> std::io::Write
-    for FlacWriter<W, E>
+    for FlacByteWriter<W, E>
 {
     /// Writes a set of sample bytes to the FLAC file
     ///
@@ -381,7 +381,9 @@ impl<W: std::io::Write + std::io::Seek, E: crate::byteorder::Endianness> std::io
     }
 }
 
-impl<W: std::io::Write + std::io::Seek, E: crate::byteorder::Endianness> Drop for FlacWriter<W, E> {
+impl<W: std::io::Write + std::io::Seek, E: crate::byteorder::Endianness> Drop
+    for FlacByteWriter<W, E>
+{
     fn drop(&mut self) {
         let _ = self.finalize_inner();
     }

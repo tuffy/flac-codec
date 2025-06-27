@@ -1,7 +1,7 @@
 use flac_codec::{
     byteorder::LittleEndian,
-    decode::{FlacReader, FlacSampleRead, FlacSampleReader},
-    encode::{FlacSampleWriter, FlacWriter, Options},
+    decode::{FlacByteReader, FlacSampleRead, FlacSampleReader},
+    encode::{FlacByteWriter, FlacSampleWriter, Options},
 };
 use std::io::{Cursor, Read, Seek, Write};
 
@@ -37,7 +37,7 @@ fn test_small_files() {
         assert_eq!(
             std::io::copy(
                 &mut samples,
-                &mut FlacWriter::endian(
+                &mut FlacByteWriter::endian(
                     &mut flac,
                     LittleEndian,
                     Options::fast()
@@ -62,7 +62,7 @@ fn test_small_files() {
 
         assert_eq!(
             std::io::copy(
-                &mut FlacReader::endian(flac, LittleEndian).unwrap(),
+                &mut FlacByteReader::endian(flac, LittleEndian).unwrap(),
                 &mut output,
             )
             .unwrap(),
@@ -87,7 +87,7 @@ fn test_blocksize_variations() {
             assert_eq!(
                 std::io::copy(
                     &mut samples,
-                    &mut FlacWriter::endian(
+                    &mut FlacByteWriter::endian(
                         &mut flac,
                         LittleEndian,
                         Options::best()
@@ -113,7 +113,7 @@ fn test_blocksize_variations() {
 
             assert_eq!(
                 std::io::copy(
-                    &mut FlacReader::endian(flac, LittleEndian).unwrap(),
+                    &mut FlacByteReader::endian(flac, LittleEndian).unwrap(),
                     &mut output,
                 )
                 .unwrap(),
@@ -136,7 +136,7 @@ fn test_fractional() {
         assert_eq!(
             std::io::copy(
                 &mut slice,
-                &mut FlacWriter::endian(
+                &mut FlacByteWriter::endian(
                     &mut flac,
                     LittleEndian,
                     Options::default()
@@ -160,7 +160,7 @@ fn test_fractional() {
 
         assert_eq!(
             std::io::copy(
-                &mut FlacReader::endian(flac, LittleEndian).unwrap(),
+                &mut FlacByteReader::endian(flac, LittleEndian).unwrap(),
                 &mut output,
             )
             .unwrap(),
@@ -396,7 +396,7 @@ fn test_roundtrip() {
         let mut flac = Cursor::new(vec![]);
 
         assert!(
-            FlacWriter::endian(
+            FlacByteWriter::endian(
                 &mut flac,
                 LittleEndian,
                 Options::default().no_padding(),
@@ -416,7 +416,7 @@ fn test_roundtrip() {
 
         assert!(
             std::io::copy(
-                &mut FlacReader::endian(flac, LittleEndian).unwrap(),
+                &mut FlacByteReader::endian(flac, LittleEndian).unwrap(),
                 &mut output,
             )
             .is_ok(),
@@ -583,7 +583,7 @@ fn test_full_scale_deflection() {
     for Samples { bps, bytes, iters } in all {
         let mut flac = Cursor::new(vec![]);
 
-        let mut w = FlacWriter::endian(
+        let mut w = FlacByteWriter::endian(
             &mut flac,
             LittleEndian,
             Options::default().no_padding(),
@@ -601,7 +601,7 @@ fn test_full_scale_deflection() {
         assert!(w.finalize().is_ok());
         assert!(flac.rewind().is_ok());
 
-        let mut r = FlacReader::endian(flac, LittleEndian).unwrap();
+        let mut r = FlacByteReader::endian(flac, LittleEndian).unwrap();
         let mut buf = vec![];
         buf.resize(bytes.len(), 0);
 
@@ -624,7 +624,7 @@ fn test_wasted_bits() {
     let mut flac = Cursor::new(vec![]);
 
     assert!(
-        FlacWriter::endian(
+        FlacByteWriter::endian(
             &mut flac,
             LittleEndian,
             Options::default().no_padding(),
@@ -645,7 +645,7 @@ fn test_wasted_bits() {
     // ensure file round-trips properly
     assert!(
         std::io::copy(
-            &mut FlacReader::endian(&mut flac, LittleEndian).unwrap(),
+            &mut FlacByteReader::endian(&mut flac, LittleEndian).unwrap(),
             &mut output,
         )
         .is_ok(),
@@ -978,7 +978,7 @@ fn test_noise(channels: u8, bits_per_sample: u32) {
             let mut flac = Cursor::new(vec![]);
 
             assert!(
-                FlacWriter::endian(
+                FlacByteWriter::endian(
                     &mut flac,
                     LittleEndian,
                     {
@@ -1010,7 +1010,7 @@ fn test_noise(channels: u8, bits_per_sample: u32) {
             // ensure file round-trips properly
             assert!(
                 std::io::copy(
-                    &mut FlacReader::endian(&mut flac, LittleEndian).unwrap(),
+                    &mut FlacByteReader::endian(&mut flac, LittleEndian).unwrap(),
                     &mut output,
                 )
                 .is_ok(),

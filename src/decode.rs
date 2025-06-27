@@ -131,14 +131,14 @@ impl<R: FlacSampleRead + ?Sized> FlacSampleRead for &mut R {
 /// ```
 /// use flac_codec::{
 ///     byteorder::LittleEndian,
-///     encode::{FlacWriter, Options},
-///     decode::{FlacReader, Metadata},
+///     encode::{FlacByteWriter, Options},
+///     decode::{FlacByteReader, Metadata},
 /// };
 /// use std::io::{Cursor, Read, Seek, Write};
 ///
 /// let mut flac = Cursor::new(vec![]);  // a FLAC file in memory
 ///
-/// let mut writer = FlacWriter::endian(
+/// let mut writer = FlacByteWriter::endian(
 ///     &mut flac,           // our wrapped writer
 ///     LittleEndian,        // .wav-style byte order
 ///     Options::default(),  // default encoding options
@@ -158,7 +158,7 @@ impl<R: FlacSampleRead + ?Sized> FlacSampleRead for &mut R {
 /// flac.rewind().unwrap();
 ///
 /// // open reader around written FLAC file
-/// let mut reader = FlacReader::endian(flac, LittleEndian).unwrap();
+/// let mut reader = FlacByteReader::endian(flac, LittleEndian).unwrap();
 ///
 /// // read 2000 bytes
 /// let mut read_bytes = vec![];
@@ -173,7 +173,7 @@ impl<R: FlacSampleRead + ?Sized> FlacSampleRead for &mut R {
 /// assert_eq!(read_bytes, written_bytes);
 /// ```
 #[derive(Clone)]
-pub struct FlacReader<R, E> {
+pub struct FlacByteReader<R, E> {
     // the wrapped decoder
     decoder: Decoder<R>,
     // decoded byte buffer
@@ -182,13 +182,13 @@ pub struct FlacReader<R, E> {
     endianness: std::marker::PhantomData<E>,
 }
 
-impl<R: std::io::Read, E: crate::byteorder::Endianness> FlacReader<R, E> {
+impl<R: std::io::Read, E: crate::byteorder::Endianness> FlacByteReader<R, E> {
     /// Opens new FLAC reader which wraps the given reader
     ///
     /// The reader must be positioned at the start of the
     /// FLAC stream.  If the file has non-FLAC data
     /// at the beginning (such as ID3v2 tags), one
-    /// should skip such data before initializing a `FlacReader`.
+    /// should skip such data before initializing a `FlacByteReader`.
     #[inline]
     pub fn new(mut reader: R) -> Result<Self, Error> {
         let blocklist = BlockList::read(reader.by_ref())?;
@@ -205,7 +205,7 @@ impl<R: std::io::Read, E: crate::byteorder::Endianness> FlacReader<R, E> {
     /// The reader must be positioned at the start of the
     /// FLAC stream.  If the file has non-FLAC data
     /// at the beginning (such as ID3v2 tags), one
-    /// should skip such data before initializing a `FlacReader`.
+    /// should skip such data before initializing a `FlacByteReader`.
     #[inline]
     pub fn endian(reader: R, _endian: E) -> Result<Self, Error> {
         Self::new(reader)
@@ -218,7 +218,7 @@ impl<R: std::io::Read, E: crate::byteorder::Endianness> FlacReader<R, E> {
     }
 }
 
-impl<R: std::io::Read, E: crate::byteorder::Endianness> Metadata for FlacReader<R, E> {
+impl<R: std::io::Read, E: crate::byteorder::Endianness> Metadata for FlacByteReader<R, E> {
     #[inline]
     fn channel_count(&self) -> u8 {
         self.decoder.channel_count().get()
@@ -250,15 +250,15 @@ impl<R: std::io::Read, E: crate::byteorder::Endianness> Metadata for FlacReader<
     }
 }
 
-impl<E: crate::byteorder::Endianness> FlacReader<BufReader<File>, E> {
+impl<E: crate::byteorder::Endianness> FlacByteReader<BufReader<File>, E> {
     /// Opens FLAC file from the given path
     #[inline]
     pub fn open<P: AsRef<Path>>(path: P, _endianness: E) -> Result<Self, Error> {
-        FlacReader::new(BufReader::new(File::open(path.as_ref())?))
+        FlacByteReader::new(BufReader::new(File::open(path.as_ref())?))
     }
 }
 
-impl<R: std::io::Read, E: crate::byteorder::Endianness> std::io::Read for FlacReader<R, E> {
+impl<R: std::io::Read, E: crate::byteorder::Endianness> std::io::Read for FlacByteReader<R, E> {
     /// Reads samples to the given buffer as bytes in our stream's endianness
     ///
     /// Returned samples are interleaved by channel, like:
@@ -284,7 +284,7 @@ impl<R: std::io::Read, E: crate::byteorder::Endianness> std::io::Read for FlacRe
     }
 }
 
-impl<R: std::io::Read, E: crate::byteorder::Endianness> std::io::BufRead for FlacReader<R, E> {
+impl<R: std::io::Read, E: crate::byteorder::Endianness> std::io::BufRead for FlacByteReader<R, E> {
     /// Reads samples to the given buffer as bytes in our stream's endianness
     ///
     /// Returned samples are interleaved by channel, like:
@@ -369,7 +369,7 @@ impl<R: std::io::Read> FlacSampleReader<R> {
     /// The reader must be positioned at the start of the
     /// FLAC stream.  If the file has non-FLAC data
     /// at the beginning (such as ID3v2 tags), one
-    /// should skip such data before initializing a `FlacReader`.
+    /// should skip such data before initializing a `FlacByteReader`.
     #[inline]
     pub fn new(mut reader: R) -> Result<Self, Error> {
         let blocklist = BlockList::read(reader.by_ref())?;
@@ -575,14 +575,14 @@ impl<R: std::io::Read> Iterator for FlacSampleIterator<R> {
 /// ```
 /// use flac_codec::{
 ///     byteorder::LittleEndian,
-///     encode::{FlacWriter, Options},
-///     decode::SeekableFlacReader,
+///     encode::{FlacByteWriter, Options},
+///     decode::SeekableFlacByteReader,
 /// };
 /// use std::io::{Cursor, Read, Seek, SeekFrom, Write};
 ///
 /// let mut flac = Cursor::new(vec![]);  // a FLAC file in memory
 ///
-/// let mut writer = FlacWriter::endian(
+/// let mut writer = FlacByteWriter::endian(
 ///     &mut flac,           // our wrapped writer
 ///     LittleEndian,        // .wav-style byte order
 ///     Options::default(),  // default encoding options
@@ -602,7 +602,7 @@ impl<R: std::io::Read> Iterator for FlacSampleIterator<R> {
 /// flac.rewind().unwrap();
 ///
 /// // open reader around written FLAC file
-/// let mut reader = SeekableFlacReader::endian(flac, LittleEndian).unwrap();
+/// let mut reader = SeekableFlacByteReader::endian(flac, LittleEndian).unwrap();
 ///
 /// // read 2000 bytes
 /// let mut read_bytes_1 = vec![];
@@ -623,20 +623,22 @@ impl<R: std::io::Read> Iterator for FlacSampleIterator<R> {
 /// assert!(written_bytes.ends_with(&read_bytes_2));
 /// ```
 #[derive(Clone)]
-pub struct SeekableFlacReader<R, E> {
+pub struct SeekableFlacByteReader<R, E> {
     // our wrapped FLAC reader
-    reader: FlacReader<R, E>,
+    reader: FlacByteReader<R, E>,
     // start of first frame from known start of stream
     frames_start: u64,
 }
 
-impl<R: std::io::Read + std::io::Seek, E: crate::byteorder::Endianness> SeekableFlacReader<R, E> {
+impl<R: std::io::Read + std::io::Seek, E: crate::byteorder::Endianness>
+    SeekableFlacByteReader<R, E>
+{
     /// Opens new seekable FLAC reader which wraps the given reader
     ///
     /// The reader must be positioned at the start of the
     /// FLAC stream.  If the file has non-FLAC data
     /// at the beginning (such as ID3v2 tags), one
-    /// should skip such data before initializing a `FlacReader`.
+    /// should skip such data before initializing a `FlacByteReader`.
     #[inline]
     pub fn new(mut reader: R) -> Result<Self, Error> {
         let blocklist = BlockList::read(reader.by_ref())?;
@@ -644,7 +646,7 @@ impl<R: std::io::Read + std::io::Seek, E: crate::byteorder::Endianness> Seekable
 
         Ok(Self {
             frames_start,
-            reader: FlacReader {
+            reader: FlacByteReader {
                 decoder: Decoder::new(reader, blocklist),
                 buf: VecDeque::default(),
                 endianness: std::marker::PhantomData,
@@ -657,7 +659,7 @@ impl<R: std::io::Read + std::io::Seek, E: crate::byteorder::Endianness> Seekable
     /// The reader must be positioned at the start of the
     /// FLAC stream.  If the file has non-FLAC data
     /// at the beginning (such as ID3v2 tags), one
-    /// should skip such data before initializing a `FlacReader`.
+    /// should skip such data before initializing a `FlacByteReader`.
     #[inline]
     pub fn endian(reader: R, _endian: E) -> Result<Self, Error> {
         Self::new(reader)
@@ -670,15 +672,17 @@ impl<R: std::io::Read + std::io::Seek, E: crate::byteorder::Endianness> Seekable
     }
 }
 
-impl<E: crate::byteorder::Endianness> SeekableFlacReader<BufReader<File>, E> {
+impl<E: crate::byteorder::Endianness> SeekableFlacByteReader<BufReader<File>, E> {
     /// Opens seekable FLAC file from the given path
     #[inline]
     pub fn open<P: AsRef<Path>>(path: P, _endianness: E) -> Result<Self, Error> {
-        SeekableFlacReader::new(BufReader::new(File::open(path.as_ref())?))
+        SeekableFlacByteReader::new(BufReader::new(File::open(path.as_ref())?))
     }
 }
 
-impl<R: std::io::Read, E: crate::byteorder::Endianness> std::io::Read for SeekableFlacReader<R, E> {
+impl<R: std::io::Read, E: crate::byteorder::Endianness> std::io::Read
+    for SeekableFlacByteReader<R, E>
+{
     #[inline]
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         self.reader.read(buf)
@@ -686,7 +690,7 @@ impl<R: std::io::Read, E: crate::byteorder::Endianness> std::io::Read for Seekab
 }
 
 impl<R: std::io::Read, E: crate::byteorder::Endianness> std::io::BufRead
-    for SeekableFlacReader<R, E>
+    for SeekableFlacByteReader<R, E>
 {
     #[inline]
     fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
@@ -698,7 +702,7 @@ impl<R: std::io::Read, E: crate::byteorder::Endianness> std::io::BufRead
     }
 }
 
-impl<R: std::io::Read, E: crate::byteorder::Endianness> Metadata for SeekableFlacReader<R, E> {
+impl<R: std::io::Read, E: crate::byteorder::Endianness> Metadata for SeekableFlacByteReader<R, E> {
     fn channel_count(&self) -> u8 {
         self.reader.channel_count()
     }
@@ -726,12 +730,12 @@ impl<R: std::io::Read, E: crate::byteorder::Endianness> Metadata for SeekableFla
 }
 
 impl<R: std::io::Read + std::io::Seek, E: crate::byteorder::Endianness> std::io::Seek
-    for SeekableFlacReader<R, E>
+    for SeekableFlacByteReader<R, E>
 {
     fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
         use std::cmp::Ordering;
 
-        let FlacReader { decoder, buf, .. } = &mut self.reader;
+        let FlacByteReader { decoder, buf, .. } = &mut self.reader;
 
         let streaminfo = decoder.blocks.streaminfo();
 
@@ -1198,7 +1202,7 @@ pub fn verify<P: AsRef<Path>>(p: P) -> Result<Verified, Error> {
 pub fn verify_reader<R: std::io::Read>(r: R) -> Result<Verified, Error> {
     use crate::byteorder::LittleEndian;
 
-    let mut r = FlacReader::endian(r, LittleEndian)?;
+    let mut r = FlacByteReader::endian(r, LittleEndian)?;
     match r.md5().cloned() {
         Some(flac_md5) => {
             let mut output_md5 = md5::Context::new();
