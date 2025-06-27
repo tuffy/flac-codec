@@ -1,0 +1,35 @@
+#[test]
+fn test_file_corruption() {
+    use flac_codec::byteorder::LittleEndian;
+    use flac_codec::decode::FlacReader;
+    use std::io::{copy, sink};
+
+    // ensure test file is okay
+    let flac = include_bytes!("data/sine.flac");
+
+    assert!(
+        copy(
+            &mut FlacReader::endian(&flac[..], LittleEndian).unwrap(),
+            &mut sink()
+        )
+        .is_ok()
+    );
+
+    // try swapping some random bits outside the metadata block area
+    // (flipping a bit somewhere in a PADDING block might not be
+    // noticed, for instance)
+    let valid_range = 136..flac.len();
+
+    for _ in 0..100 {
+        let mut flac: Vec<u8> = Vec::from(flac);
+        flac[fastrand::usize(valid_range.clone())] ^= 1 << fastrand::u32(0..8);
+
+        assert!(
+            copy(
+                &mut FlacReader::endian(&flac[..], LittleEndian).unwrap(),
+                &mut sink()
+            )
+            .is_err()
+        );
+    }
+}
