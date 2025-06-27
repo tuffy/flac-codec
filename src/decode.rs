@@ -524,6 +524,28 @@ pub struct FlacSampleIterator<R> {
     reader: FlacSampleReader<R>,
 }
 
+impl<R: std::io::Read> Metadata for FlacSampleIterator<R> {
+    fn channel_count(&self) -> u8 {
+        self.reader.channel_count()
+    }
+
+    fn sample_rate(&self) -> u32 {
+        self.reader.sample_rate()
+    }
+
+    fn bits_per_sample(&self) -> u32 {
+        self.reader.bits_per_sample()
+    }
+
+    fn total_samples(&self) -> Option<u64> {
+        self.reader.total_samples()
+    }
+
+    fn md5(&self) -> Option<&[u8; 16]> {
+        self.reader.md5()
+    }
+}
+
 impl<R: std::io::Read> Iterator for FlacSampleIterator<R> {
     type Item = Result<i32, Error>;
 
