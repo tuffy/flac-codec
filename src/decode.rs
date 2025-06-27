@@ -87,6 +87,24 @@ pub trait FlacSampleRead {
     /// May panic if attempting to consume more bytes
     /// than are available in the buffer.
     fn consume(&mut self, amt: usize);
+
+    /// Reads all samples from source FLAC, placing them in `buf`
+    ///
+    /// If successful, returns the total number of samples read
+    fn read_to_end(&mut self, buf: &mut Vec<i32>) -> Result<usize, Error> {
+        let mut amt_read = 0;
+        loop {
+            match self.fill_buf()? {
+                [] => break Ok(amt_read),
+                decoded => {
+                    let decoded_len = decoded.len();
+                    buf.extend_from_slice(decoded);
+                    amt_read += decoded_len;
+                    self.consume(decoded_len);
+                }
+            }
+        }
+    }
 }
 
 impl<R: FlacSampleRead + ?Sized> FlacSampleRead for &mut R {
@@ -941,16 +959,22 @@ impl<R: std::io::Read + std::io::Seek> SeekableFlacSampleReader<R> {
             let buf = self.reader.fill_buf()?;
 
             // size of buf in channel-independent samples
-            let buf_samples = buf.len() / usize::from(channels);
+            match buf.len() / usize::from(channels) {
+                0 => {
+                    // read beyond end of stream
+                    return Err(Error::InvalidSeek);
+                }
+                buf_samples => {
+                    // amount of channel-independent samples to consume
+                    let to_consume = buf_samples.min((sample - pos).try_into().unwrap());
 
-            // amount of channel-independent samples to consume
-            let to_consume = buf_samples.min((sample - pos).try_into().unwrap());
+                    // mark samples in buffer as consumed
+                    self.reader.consume(to_consume * usize::from(channels));
 
-            // mark samples in buffer as consumed
-            self.reader.consume(to_consume * usize::from(channels));
-
-            // advance current actual position
-            pos += to_consume as u64;
+                    // advance current actual position
+                    pos += to_consume as u64;
+                }
+            }
         }
 
         Ok(())
