@@ -1625,8 +1625,12 @@ impl<const RICE_MAX: u32> ToBitStream for ResidualPartitionHeader<RICE_MAX> {
 /// a CRC-16 checksum over all the data in the frame.
 ///
 /// ```text
-/// ┌──────────────┬───────────┬┄┄┄┄┄┄┄┄┄┄┄┬┄┄┄┬────────┐
-/// │ Frame Header │ Subframe₀ │ Subframe₁ ┆ … ┆ CRC-16 │
+/// ┌──────────┬────────┬┄┄┄┄┄┄┄┄┬┄┄┄┬────────┬┄┄┄┄┄┄┄┄┬┄┄┄╮
+/// │ FLAC Tag │ Block₀ │ Block₁ ┆ … ┆ Frame₀ │ Frame₁ ┆ … ┆ FLAC File
+/// └──────────┴────────┴┄┄┄┄┄┄┄┄┴┄┄┄┼────────┼┄┄┄┄┄┄┄┄┴┄┄┄╯
+/// ╭────────────────────────────────╯        ╰─────────╮
+/// ├──────────────┬───────────┬┄┄┄┄┄┄┄┄┄┄┄┬┄┄┄┬────────┤
+/// │ Frame Header │ Subframe₀ │ Subframe₁ ┆ … ┆ CRC-16 │    FLAC Frame
 /// └──────────────┴───────────┴┄┄┄┄┄┄┄┄┄┄┄┴┄┄┄┴────────┘
 /// ```
 ///

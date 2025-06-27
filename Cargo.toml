@@ -15,6 +15,7 @@ rust-version = "1.87"
 bitstream-io = "4.3"
 arrayvec = "0.7"
 md5 = "0.7"
+# Rayon only used for FLAC encoding
 rayon = { version = "1.10", optional = true }
 
 [dev-dependencies]

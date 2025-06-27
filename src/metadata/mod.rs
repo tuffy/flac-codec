@@ -10,6 +10,31 @@
 //!
 //! Many items are capitalized simply because they were capitalized
 //! in the original FLAC format documentation.
+//!
+//! # Metadata Blocks
+//!
+//! FLAC supports seven different metadata block types
+//!
+//! | Block Type | Purpose |
+//! |-----------:|---------|
+//! | [STREAMINFO](`Streaminfo`) | stream information such as sample rate, channel count, etc. |
+//! | [PADDING](`Padding`) | empty data which can easily be resized as needed |
+//! | [APPLICATION](`Application`) | application-specific data such as foreign RIFF WAVE chunks |
+//! | [SEEKTABLE](`SeekTable`) | to allow for more efficient seeking within a FLAC file |
+//! | [VORBIS_COMMENT](`VorbisComment`) | textual metadata such as track title, artist name, album name, etc. |
+//! | [CUESHEET](`Cuesheet`) | the original disc's layout, for CD images |
+//! | [PICTURE](`Picture`) | embedded image files such as cover art |
+//!
+//! # Quick Shortcuts
+//!
+//! | Need To | Qty             | From/To | Try       |
+//! |--------:|----------------:|---------|-----------|
+//! | read    | one block       | disk    | [`block`] |
+//! | read    | one block       | reader  | [`read_block`] |
+//! | read    | multiple blocks | disk    | [`BlockList::open`] |
+//! | read    | multiple blocks | reader  | [`BlockList::read`] or [`read_blocks`] |
+//! | write   | any blocks      | disk    | [`update`]      |
+//! | write   | any blocks      | writer  | [`update_file`] |
 
 use crate::Error;
 use bitstream_io::{
@@ -757,6 +782,8 @@ where
 
 /// Returns first instance of the given block from the given path
 ///
+/// See the [`read_block`] for additional information.
+///
 /// # Errors
 ///
 /// Returns any error from opening the path, or from reading
@@ -1230,6 +1257,16 @@ where
 /// Any possible FLAC metadata block
 ///
 /// Each block consists of a [`BlockHeader`] followed by the block's contents.
+///
+/// ```text
+/// ┌──────────┬────────┬┄┄┄┄┄┄┄┄┬┄┄┄┬────────┬┄┄┄┄┄┄┄┄┬┄┄┄╮
+/// │ FLAC Tag │ Block₀ │ Block₁ ┆ … ┆ Frame₀ │ Frame₁ ┆ … ┆ FLAC File
+/// └──────────┼────────┼┄┄┄┄┄┄┄┄┴┄┄┄┴────────┴┄┄┄┄┄┄┄┄┴┄┄┄╯
+/// ╭──────────╯        ╰────────────────────────╮
+/// ├──────────────┬─────────────────────────────┤
+/// │ Block Header │     Metadata Block Data     │           Metadata Block
+/// └──────────────┴─────────────────────────────┘
+/// ```
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum Block {
     /// The STREAMINFO block
@@ -2043,7 +2080,9 @@ impl ToBitStream for SeekPoint {
 /// with a field name followed by value,
 /// such as:
 ///
-/// "TITLE=Track Title"
+/// ```text
+/// TITLE=Track Title
+/// ```
 ///
 /// Field names are case-insensitive and
 /// may occur multiple times within the same comment
@@ -2403,6 +2442,21 @@ pub mod fields {
 
     /// Name of the collection the current work belongs to
     pub const ALBUM: &str = "ALBUM";
+
+    /// The work's original composer
+    pub const COMPOSER: &str = "COMPOSER";
+
+    /// The performance's conductor
+    pub const CONDUCTOR: &str = "CONDUCTOR";
+
+    /// The current work's performer(s)
+    pub const PERFORMER: &str = "PERFORMER";
+
+    /// The album's publisher
+    pub const PUBLISHER: &str = "PUBLISHER";
+
+    /// The album's catalog number
+    pub const CATALOG: &str = "CATALOG";
 
     /// Release date of work
     pub const DATE: &str = "DATE";
@@ -3597,6 +3651,17 @@ optional_block!(Picture, Picture);
 impl Picture {
     /// Attempt to create a new PICTURE block from raw image data
     ///
+    /// Currently supported image types for this method are:
+    ///
+    /// - JPEG
+    /// - PNG
+    /// - GIF
+    ///
+    /// Any type of image data may be placed in a PICTURE block,
+    /// but the user may have to use external crates
+    /// to determine their proper image metrics
+    /// to build a block from.
+    ///
     /// # Errors
     ///
     /// Returns an error if some problem occurs reading
@@ -4500,6 +4565,27 @@ mod private {
 /// This field is used to communicate that the channels
 /// in the file differ from FLAC's default channel assignment
 /// definitions.
+///
+/// It is generally used for multi-channel audio
+/// and stored within the [`VorbisComment`] metadata block
+/// as the [`fields::CHANNEL_MASK`] field.
+///
+/// # Example
+///
+/// ```
+/// use flac_codec::metadata::{ChannelMask, Channel};
+///
+/// let mask = "0x003F".parse::<ChannelMask>().unwrap();
+///
+/// let mut channels = mask.channels();
+/// assert_eq!(channels.next(), Some(Channel::FrontLeft));
+/// assert_eq!(channels.next(), Some(Channel::FrontRight));
+/// assert_eq!(channels.next(), Some(Channel::FrontCenter));
+/// assert_eq!(channels.next(), Some(Channel::Lfe));
+/// assert_eq!(channels.next(), Some(Channel::BackLeft));
+/// assert_eq!(channels.next(), Some(Channel::BackRight));
+/// assert_eq!(channels.next(), None);
+/// ```
 #[derive(Copy, Clone, Debug, Default)]
 pub struct ChannelMask {
     mask: u32,

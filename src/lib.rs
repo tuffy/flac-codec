@@ -9,29 +9,34 @@
 //! A library for reading, writing, and editing the metadata
 //! of FLAC-formatted audio files.
 //!
-//! ## FLAC Format Layout
+//! # What Is FLAC?
 //!
-//! In order to understand the layout of this crate, it may be
-//! helpful to understand the layout of the FLAC format itself.
-//! A FLAC file begins with a 4 byte `fLaC` tag
-//! (bytes `[0x66, 0x4c, 0x61, 0x43]`) and is followed
-//! by one or more metadata blocks.
-//! Metadata blocks contain information about the file
-//! like stream parameters, textual information, the
-//! seek table, etc.
-//! The metadata blocks are then followed by one or more
-//! frames containing audio data.
-//! A typical FLAC file contains only a handful of
-//! metadata blocks, but hundreds of frames.
+//! FLAC is the **F**ree **L**ossless **A**udio **C**odec,
+//! a popular audio codec which losslessly compresses audio
+//! such that the original data can always be restored.
 //!
-//! Metadata blocks are detailed in the [`metadata`] module,
-//! while frames are detailed in [`stream`].
+//! Its notable qualities include:
 //!
-//! ```text
-//! ┌──────────┬────────┬┄┄┄┄┄┄┄┄┬┄┄┄┬────────┬┄┄┄┄┄┄┄┄┬┄┄┄╮
-//! │ FLAC Tag │ Block₀ │ Block₁ ┆ … ┆ Frame₀ │ Frame₁ ┆ … ┆
-//! └──────────┴────────┴┄┄┄┄┄┄┄┄┴┄┄┄┴────────┴┄┄┄┄┄┄┄┄┴┄┄┄╯
-//! ```
+//! - Broad support on a wide array of players and devices
+//! - A design that allows for extremely fast decoding speed
+//! - Metadata support for text and images (e.g. cover artwork)
+//! - Data integrity checks including checksummed input and hashed output
+//!
+//! # What Can This Crate Do?
+//!
+//! Intended to provide comprehensive support for the FLAC format,
+//! this crate allows the user to:
+//!
+//! - Read and edit FLAC file metadata, via the [`metadata`] module
+//! - Decode FLAC files to PCM samples or bytes, via the [`decode`] module
+//! - Verify FLAC files for correctness via the [`decode::verify`] function
+//! - Encode FLAC files from PCM samples or bytes, via the [`encode`] module
+//! - Analyze the raw structure of FLAC frames, via the [`stream`] module
+//!
+//! It is based heavily on the
+//! [official FLAC specification (RFC 9639)](https://datatracker.ietf.org/doc/rfc9639/)
+//! and verified against the
+//! [reference implementation](https://www.xiph.org/flac/index.html).
 
 #![warn(missing_docs)]
 #![forbid(unsafe_code)]
