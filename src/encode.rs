@@ -750,7 +750,7 @@ impl<W: std::io::Write> FlacStreamWriter<W> {
     /// Samples are interleaved by channel, like:
     /// [left₀ , right₀ , left₁ , right₁ , left₂ , right₂ , …]
     ///
-    /// This write a whole FLAC frame to the output stream on each call.
+    /// This writes a whole FLAC frame to the output stream on each call.
     ///
     /// # Errors
     ///
@@ -943,7 +943,7 @@ impl<W: std::io::Write> FlacStreamWriter<W> {
     /// Samples are interleaved by channel, like:
     /// [left₀ , right₀ , left₁ , right₁ , left₂ , right₂ , …]
     ///
-    /// This write a whole FLAC frame to the output stream on each call.
+    /// This writes a whole FLAC frame to the output stream on each call.
     ///
     /// # Errors
     ///
