@@ -6,7 +6,6 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use flac_codec::metadata::Application;
 use std::ffi::OsString;
 use std::path::Path;
 
@@ -29,10 +28,11 @@ fn wav2flac(wavs: &[OsString]) -> Result<(), Error> {
 }
 
 fn convert_wav(wav: &Path) -> Result<(), Error> {
-    use bitstream_io::{ByteRead, ByteReader, LittleEndian};
+    use bitstream_io::{ByteRead, ByteReader};
+    use flac_codec::byteorder::LittleEndian;
     use flac_codec::encode::{FlacWriter, Options};
     use std::fs::File;
-    use std::io::{BufReader, Read, Seek, SeekFrom};
+    use std::io::{BufReader, Read};
 
     let flac_path = wav.with_extension("flac");
     if flac_path.exists() {
@@ -40,132 +40,69 @@ fn convert_wav(wav: &Path) -> Result<(), Error> {
         return Ok(());
     }
 
-    let mut wav = ByteReader::endian(BufReader::new(File::open(wav)?), LittleEndian);
-    let mut fmt_chunk = None;
-    let mut data_offset = None;
-    let mut data_size = None;
+    let mut wav = ByteReader::endian(BufReader::new(File::open(wav)?), bitstream_io::LittleEndian);
 
-    let file_header = wav.parse::<FileHeader>()?;
-
-    let mut chunks = vec![Chunk::Header(file_header)];
-
-    let mut remaining_bytes = file_header
-        .file_size
-        .checked_sub(4)
-        .ok_or(Error::InvalidWave)?;
-
-    while remaining_bytes > 0 {
-        let chunk_header = wav.parse::<Header>()?;
-        remaining_bytes = remaining_bytes.checked_sub(8).ok_or(Error::InvalidWave)?;
-
-        match chunk_header.id {
-            // "fmt " chunk
-            [0x66, 0x6d, 0x74, 0x20] => {
-                if fmt_chunk.is_some() {
-                    // multiple "fmt " chunks is invalid
-                    return Err(Error::InvalidWave);
-                } else {
-                    let fmt = wav.parse::<Fmt>()?;
-                    chunks.push(Chunk::Fmt(fmt.clone()));
-                    fmt_chunk = Some(fmt);
-                }
-            }
-            // "data" chunk
-            [0x64, 0x61, 0x74, 0x61] => {
-                if fmt_chunk.is_none() || data_offset.is_some() {
-                    // multiple "data" chunks is invalid
-                    return Err(Error::InvalidWave);
-                } else {
-                    chunks.push(Chunk::Data {
-                        header: chunk_header,
-                    });
-
-                    data_offset = Some(wav.reader().stream_position()?);
-
-                    data_size = Some(chunk_header.size);
-                    // the data chunk could potentially be very large,
-                    // so seek over it instead of using a skip
-                    wav.reader()
-                        .seek(SeekFrom::Current(chunk_header.size.into()))?;
-                }
-            }
-            // other foreign chunks
-            _ => {
-                let mut chunk_data = vec![0; chunk_header.size.try_into().unwrap()];
-                wav.read_bytes(&mut chunk_data)?;
-                chunks.push(Chunk::Foreign {
-                    header: chunk_header,
-                    data: chunk_data,
-                });
-            }
-        }
-
-        remaining_bytes = remaining_bytes
-            .checked_sub(chunk_header.size)
-            .ok_or(Error::InvalidWave)?;
-
-        if chunk_header.size % 2 == 1 {
-            wav.skip(1)?;
-            remaining_bytes = remaining_bytes.checked_sub(1).ok_or(Error::InvalidWave)?;
-        }
+    // "RIFF"
+    if wav.parse::<Header>()?.id != [0x52, 0x49, 0x46, 0x46] {
+        return Err(Error::InvalidWave);
+    }
+    // "WAVE"
+    if wav.read::<[u8; 4]>()? != [0x57, 0x41, 0x56, 0x45] {
+        return Err(Error::InvalidWave);
     }
 
-    // we've gone through all the chunks, now to write the FLAC itself
-    // (which is relatively easy, by comparison)
+    let mut fmt = None;
 
-    // these must be present in a valid RIFF WAVE file
-    let fmt_chunk = fmt_chunk.ok_or(Error::InvalidWave)?;
-    let data_offset = data_offset.ok_or(Error::InvalidWave)?;
-    let data_size = data_size.ok_or(Error::InvalidWave)?;
+    loop {
+        match wav.parse::<Header>()? {
+            // "fmt " chunk
+            Header {
+                id: [0x66, 0x6d, 0x74, 0x20],
+                ..
+            } => {
+                fmt = Some(wav.parse::<Fmt>()?);
+            }
+            // "data" chunk
+            Header {
+                id: [0x64, 0x61, 0x74, 0x61],
+                size,
+            } => {
+                // "data" chunk must come after "fmt " chunk
+                let fmt = fmt.ok_or(Error::InvalidWave)?;
 
-    if !chunks.iter().any(|c| c.is_foreign()) {
-        // write a plain FLAC file
-        let mut flac: FlacWriter<_, flac_codec::byteorder::LittleEndian> = FlacWriter::create(
-            &flac_path,
-            Options::default(),
-            fmt_chunk.sample_rate(),
-            fmt_chunk.bits_per_sample().into(),
-            fmt_chunk
-                .channels()
-                .try_into()
-                .map_err(|_| Error::ExcessiveChannels)?,
-            Some(data_size.into()),
-        )?;
+                let mut flac: FlacWriter<_, LittleEndian> = FlacWriter::create(
+                    &flac_path,
+                    match fmt.channel_mask() {
+                        None => Options::default(),
+                        Some(channel_mask) => {
+                            use flac_codec::metadata::{ChannelMask, fields::CHANNEL_MASK};
 
-        wav.reader().seek(SeekFrom::Start(data_offset))?;
+                            Options::default().tag(CHANNEL_MASK, ChannelMask::from(channel_mask))
+                        }
+                    },
+                    fmt.sample_rate(),
+                    fmt.bits_per_sample().into(),
+                    fmt.channels()
+                        .try_into()
+                        .map_err(|_| Error::ExcessiveChannels)?,
+                    Some(size.into()),
+                )?;
 
-        std::io::copy(wav.reader(), &mut flac)?;
+                std::io::copy(&mut wav.reader().take(size.into()), &mut flac)?;
 
-        flac.finalize().map_err(Error::Flac).inspect(|_| {
-            println!("* Wrote: {}", flac_path.display());
-        })
-    } else {
-        // write a FLAC file populated with foreign chunks
-        let mut options = Options::default();
-
-        for chunk in chunks {
-            options = options.application(chunk.into());
+                break flac
+                    .finalize()
+                    .inspect(|_| {
+                        println!("* Wrote: {}", flac_path.display());
+                    })
+                    .map_err(Error::Flac);
+            }
+            // skip other chunks
+            Header { size, .. } => {
+                // chunks must end on even byte boundaries
+                wav.skip(size + if size % 2 == 1 { 1 } else { 0 })?;
+            }
         }
-
-        let mut flac: FlacWriter<_, flac_codec::byteorder::LittleEndian> = FlacWriter::create(
-            &flac_path,
-            options,
-            fmt_chunk.sample_rate(),
-            fmt_chunk.bits_per_sample().into(),
-            fmt_chunk
-                .channels()
-                .try_into()
-                .map_err(|_| Error::ExcessiveChannels)?,
-            Some(data_size.into()),
-        )?;
-
-        wav.reader().seek(SeekFrom::Start(data_offset))?;
-
-        std::io::copy(&mut wav.reader().take(data_size.into()), &mut flac)?;
-
-        flac.finalize().map_err(Error::Flac).inspect(|_| {
-            println!("* Wrote: {}", flac_path.display());
-        })
     }
 }
 
@@ -189,83 +126,18 @@ impl bitstream_io::FromByteStream for Header {
     }
 }
 
-impl bitstream_io::ToByteStream for Header {
-    type Error = std::io::Error;
-
-    fn to_writer<W>(&self, w: &mut W) -> Result<(), Self::Error>
-    where
-        W: bitstream_io::ByteWrite + ?Sized,
-    {
-        w.write(self.id)?;
-        w.write(self.size)?;
-        Ok(())
-    }
-}
-
-#[derive(Copy, Clone, Debug)]
-struct FileHeader {
-    file_size: u32,
-}
-
-impl bitstream_io::FromByteStream for FileHeader {
-    type Error = Error;
-
-    fn from_reader<R>(r: &mut R) -> Result<Self, Self::Error>
-    where
-        R: bitstream_io::ByteRead + ?Sized,
-    {
-        let file_size = match r.parse::<Header>()? {
-            Header {
-                // RIFF identifier
-                id: [0x52, 0x49, 0x46, 0x46],
-                size,
-            } => Ok(size),
-            _ => Err(Error::InvalidWave),
-        }?;
-
-        // WAVE identifier
-        if r.read::<[u8; 4]>()? == [0x57, 0x41, 0x56, 0x45] {
-            Ok(Self { file_size })
-        } else {
-            Err(Error::InvalidWave)
-        }
-    }
-}
-
-impl bitstream_io::ToByteStream for FileHeader {
-    type Error = std::io::Error;
-
-    fn to_writer<W>(&self, w: &mut W) -> Result<(), Self::Error>
-    where
-        W: bitstream_io::ByteWrite + ?Sized,
-    {
-        w.build(&Header {
-            id: [0x52, 0x49, 0x46, 0x46],
-            size: self.file_size,
-        })?;
-        w.write([0x57, 0x41, 0x56, 0x45])?;
-        Ok(())
-    }
-}
-
 #[derive(Clone, Debug)]
 enum Fmt {
     Standard {
         channels: u16,
         sample_rate: u32,
-        data_rate: u32,
-        data_block_size: u16,
         bits_per_sample: u16,
     },
     Extensible {
         channels: u16,
         sample_rate: u32,
-        data_rate: u32,
-        data_block_size: u16,
         bits_per_sample: u16,
-        valid_bits: u16,
         channel_mask: u32,
-        sub_format: [u8; 16],
     },
 }
 
@@ -294,6 +166,13 @@ impl Fmt {
             } => *bits_per_sample,
         }
     }
+
+    fn channel_mask(&self) -> Option<u32> {
+        match self {
+            Self::Standard { .. } => None,
+            Self::Extensible { channel_mask, .. } => Some(*channel_mask),
+        }
+    }
 }
 
 impl bitstream_io::FromByteStream for Fmt {
@@ -304,18 +183,22 @@ impl bitstream_io::FromByteStream for Fmt {
         R: bitstream_io::ByteRead + ?Sized,
     {
         match r.read::<u16>()? {
-            0x0001 => Ok(Self::Standard {
-                channels: r.read()?,
-                sample_rate: r.read()?,
-                data_rate: r.read()?,
-                data_block_size: r.read()?,
-                bits_per_sample: r.read()?,
-            }),
+            0x0001 => {
+                let channels = r.read()?;
+                let sample_rate = r.read()?;
+                let _data_rate = r.read::<u32>()?;
+                let _data_block_size = r.read::<u16>()?;
+                Ok(Self::Standard {
+                    channels,
+                    sample_rate,
+                    bits_per_sample: r.read()?,
+                })
+            }
             0xFFFE => {
                 let channels = r.read()?;
                 let sample_rate = r.read()?;
-                let data_rate = r.read()?;
-                let data_block_size = r.read()?;
+                let _data_rate = r.read::<u32>()?;
+                let _data_block_size = r.read::<u16>()?;
                 let bits_per_sample = r.read()?;
 
                 // extension size should be 22 bytes
@@ -323,134 +206,18 @@ impl bitstream_io::FromByteStream for Fmt {
                     return Err(Error::InvalidWave);
                 }
 
+                let _valid_bits = r.read::<u16>()?;
+                let channel_mask = r.read()?;
+                let _sub_format = r.read::<[u8; 16]>()?;
+
                 Ok(Self::Extensible {
                     channels,
                     sample_rate,
-                    data_rate,
-                    data_block_size,
                     bits_per_sample,
-                    valid_bits: r.read()?,
-                    channel_mask: r.read()?,
-                    sub_format: r.read()?,
+                    channel_mask,
                 })
             }
             _ => Err(Error::UnsupportedFormat),
-        }
-    }
-}
-
-impl bitstream_io::ToByteStream for Fmt {
-    type Error = std::io::Error;
-
-    // yields entire fmt chunk, header included
-    fn to_writer<W>(&self, w: &mut W) -> std::io::Result<()>
-    where
-        W: bitstream_io::ByteWrite + ?Sized,
-    {
-        match self {
-            Self::Standard {
-                channels,
-                sample_rate,
-                data_rate,
-                data_block_size,
-                bits_per_sample,
-            } => {
-                w.write_bytes(b"fmt ")?; // chunk ID
-                w.write::<u32>(16)?; // chunk size
-                w.write::<u16>(0x0001)?; // WAVE_FORMAT_PCM
-                w.write(*channels)?;
-                w.write(*sample_rate)?;
-                w.write(*data_rate)?;
-                w.write(*data_block_size)?;
-                w.write(*bits_per_sample)?;
-                Ok(())
-            }
-            Self::Extensible {
-                channels,
-                sample_rate,
-                data_rate,
-                data_block_size,
-                bits_per_sample,
-                valid_bits,
-                channel_mask,
-                sub_format,
-            } => {
-                w.write_bytes(b"fmt ")?; // chunk ID
-                w.write::<u32>(40)?; // chunk size
-                w.write::<u16>(0xFFFE)?; // WAVE_FORMAT_EXTENSIBLE
-                w.write(*channels)?;
-                w.write(*sample_rate)?;
-                w.write(*data_rate)?;
-                w.write(*data_block_size)?;
-                w.write(*bits_per_sample)?;
-                w.write::<u16>(22)?; // size of extension
-                w.write(*valid_bits)?;
-                w.write(*channel_mask)?;
-                w.write_bytes(sub_format)?;
-                Ok(())
-            }
-        }
-    }
-}
-
-enum Chunk {
-    Header(FileHeader),
-    Fmt(Fmt),
-    Data { header: Header },
-    Foreign { header: Header, data: Vec<u8> },
-}
-
-impl Chunk {
-    fn is_foreign(&self) -> bool {
-        matches!(self, Self::Foreign { .. })
-    }
-}
-
-impl From<Chunk> for Application {
-    fn from(chunk: Chunk) -> Self {
-        use bitstream_io::{ByteWrite, ByteWriter, LittleEndian};
-
-        match chunk {
-            Chunk::Header(header) => {
-                let mut application_data = ByteWriter::endian(vec![], LittleEndian);
-                application_data.build(&header).unwrap();
-
-                Application {
-                    id: Application::RIFF,
-                    data: application_data.into_writer(),
-                }
-            }
-            Chunk::Fmt(fmt) => {
-                let mut application_data = ByteWriter::endian(vec![], LittleEndian);
-                application_data.build(&fmt).unwrap();
-
-                Application {
-                    id: Application::RIFF,
-                    data: application_data.into_writer(),
-                }
-            }
-            Chunk::Data { header } => {
-                let mut application_data = ByteWriter::endian(vec![], LittleEndian);
-                application_data.build(&header).unwrap();
-
-                Application {
-                    id: Application::RIFF,
-                    data: application_data.into_writer(),
-                }
-            }
-            Chunk::Foreign { header, data } => {
-                let mut application_data = ByteWriter::endian(vec![], LittleEndian);
-                application_data.build(&header).unwrap();
-                application_data.write_bytes(&data).unwrap();
-                if data.len() % 2 == 1 {
-                    application_data.write::<u8>(0).unwrap();
-                }
-
-                Application {
-                    id: Application::RIFF,
-                    data: application_data.into_writer(),
-                }
-            }
         }
     }
 }

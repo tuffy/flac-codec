@@ -38,11 +38,12 @@ fn flac2wav(flacs: &[OsString]) -> Result<(), Error> {
 }
 
 fn convert_flac(flac: &Path) -> Result<(), Error> {
+    use bitstream_io::{ByteWrite, ByteWriter, ToByteStream};
     use flac_codec::byteorder::LittleEndian;
     use flac_codec::decode::FlacReader;
-    use flac_codec::metadata::Application;
+    use flac_codec::metadata::Metadata;
     use std::fs::File;
-    use std::io::{BufWriter, Write};
+    use std::io::BufWriter;
 
     let wav_path = flac.with_extension("wav");
     if wav_path.exists() {
@@ -51,68 +52,33 @@ fn convert_flac(flac: &Path) -> Result<(), Error> {
     }
 
     let mut flac = FlacReader::open(flac, LittleEndian)?;
-    let mut wav = File::create_new(&wav_path).map(BufWriter::new)?;
+    let wav = File::create_new(&wav_path).map(BufWriter::new)?;
 
-    match flac
-        .metadata()
-        .get_all::<Application>()
-        .filter(|a| a.id == Application::RIFF)
-        .cloned()
-        .collect::<Vec<_>>()
-        .as_slice()
-    {
-        [] => {
-            use bitstream_io::{ByteWrite, ByteWriter, LittleEndian, ToByteStream};
-            use flac_codec::metadata::Metadata;
+    let fmt = Fmt::new(&flac);
 
-            // FLAC file has no foreign RIFF chunks,
-            // so construct RIFF WAVE chunks if possible
-            let fmt = Fmt::new(&flac);
+    let data_size: u32 = flac
+        .decoded_len()
+        .ok_or(Error::FlacSizeUnknown)?
+        .try_into()
+        .map_err(|_| Error::FlacTooLarge)?;
 
-            let data_size: u32 = flac
-                .decoded_len()
-                .ok_or(Error::FlacSizeUnknown)?
-                .try_into()
-                .map_err(|_| Error::FlacTooLarge)?;
+    let whole_size: u32 = (4 + fmt.bytes::<u32>()? + 8)
+        .checked_add(data_size)
+        .ok_or(Error::FlacTooLarge)?;
 
-            let whole_size: u32 = (4 + fmt.bytes::<u32>()? + 8)
-                .checked_add(data_size)
-                .ok_or(Error::FlacTooLarge)?;
+    // FIXME - pad out odd-sized chunks
+    // (this can happen with 8-bit samples)
 
-            // FIXME - pad out odd-sized chunks
-            // (this can happen with 8-bit samples)
-
-            let mut wav = ByteWriter::endian(wav, LittleEndian);
-            wav.write_bytes(b"RIFF")?;
-            wav.write(whole_size)?;
-            wav.write_bytes(b"WAVE")?;
-            wav.build(&fmt)?;
-            wav.write_bytes(b"data")?;
-            wav.write(data_size)?;
-            std::io::copy(&mut flac, wav.writer())?;
-            println!("* Write: {}", wav_path.display());
-            Ok(())
-        }
-        chunks => {
-            // FLAC file has foreign RIFF chunks,
-            // so preserve them in output file
-            for chunk in chunks {
-                match chunk.data.as_slice() {
-                    chunk @ &[0x64, 0x61, 0x74, 0x61, _, _, _, _] => {
-                        // data chunk needs bytes populated from reader
-                        wav.write_all(&chunk)?;
-                        std::io::copy(&mut flac, &mut wav)?;
-                    }
-                    chunk => {
-                        // other chunks output verbatim
-                        wav.write_all(&chunk)?;
-                    }
-                }
-            }
-            println!("* Wrote: {}", wav_path.display());
-            Ok(())
-        }
-    }
+    let mut wav = ByteWriter::endian(wav, bitstream_io::LittleEndian);
+    wav.write_bytes(b"RIFF")?;
+    wav.write(whole_size)?;
+    wav.write_bytes(b"WAVE")?;
+    wav.build(&fmt)?;
+    wav.write_bytes(b"data")?;
+    wav.write(data_size)?;
+    std::io::copy(&mut flac, wav.writer())?;
+    println!("* Wrote: {}", wav_path.display());
+    Ok(())
 }
 
 enum Fmt {
