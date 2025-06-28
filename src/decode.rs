@@ -164,6 +164,7 @@ impl<R: std::io::Read + std::io::Seek, E: crate::byteorder::Endianness> FlacByte
     /// FLAC stream.  If the file has non-FLAC data
     /// at the beginning (such as ID3v2 tags), one
     /// should skip such data before initializing a `FlacByteReader`.
+    ///
     /// # Example
     ///
     /// ```
@@ -486,6 +487,21 @@ impl<R: std::io::Read> FlacSampleReader<R> {
 }
 
 impl<R: std::io::Read + std::io::Seek> FlacSampleReader<R> {
+    /// Opens a new seekable FLAC reader which wraps the given reader
+    ///
+    /// If a stream is both readable and seekable,
+    /// it's vital to use this method to open it if one
+    /// also wishes to seek within the FLAC stream.
+    /// Otherwise, an I/O error will result when attempting to seek.
+    ///
+    /// [`FlacSampleReader::open`] calls this method to ensure
+    /// all `File`-based streams are also seekable.
+    ///
+    /// The reader must be positioned at the start of the
+    /// FLAC stream.  If the file has non-FLAC data
+    /// at the beginning (such as ID3v2 tags), one
+    /// should skip such data before initializing a `FlacSampleReader`.
+    ///
     /// # Example
     ///
     /// ```

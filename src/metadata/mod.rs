@@ -2620,7 +2620,7 @@ pub mod contiguous {
         type Error = NonContiguous;
 
         fn try_from(items: Vec<T>) -> Result<Self, Self::Error> {
-            is_contiguous(&items)
+            (items.len() <= MAX && is_contiguous(&items))
                 .then_some(Self { items })
                 .ok_or(NonContiguous)
         }
