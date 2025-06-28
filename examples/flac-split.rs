@@ -6,7 +6,7 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use flac_codec::decode::{FlacSampleRead, FlacSampleReader};
+use flac_codec::decode::FlacSampleReader;
 use flac_codec::encode::FlacSampleWriter;
 use std::path::Path;
 
@@ -126,12 +126,12 @@ fn extract_track<R: std::io::Read + std::io::Seek>(
 }
 
 fn copy<R, W>(
-    reader: &mut R,
+    reader: &mut FlacSampleReader<R>,
     writer: &mut FlacSampleWriter<W>,
     mut samples: u64,
 ) -> Result<(), flac_codec::Error>
 where
-    R: FlacSampleRead,
+    R: std::io::Read,
     W: std::io::Write + std::io::Seek,
 {
     while samples > 0 {

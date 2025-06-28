@@ -1,6 +1,6 @@
 use flac_codec::{
     byteorder::LittleEndian,
-    decode::{FlacByteReader, FlacSampleRead, FlacSampleReader},
+    decode::{FlacByteReader, FlacSampleReader},
     encode::{FlacByteWriter, FlacSampleWriter, Options},
 };
 use std::io::{Cursor, Read, Seek, Write};

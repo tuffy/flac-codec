@@ -396,7 +396,7 @@ impl<W: std::io::Write + std::io::Seek, E: crate::byteorder::Endianness> Drop
 /// ```
 /// use flac_codec::{
 ///     encode::{FlacSampleWriter, Options},
-///     decode::{FlacSampleReader, FlacSampleRead},
+///     decode::FlacSampleReader,
 /// };
 /// use std::io::{Cursor, Seek};
 ///

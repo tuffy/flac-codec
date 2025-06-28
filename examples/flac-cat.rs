@@ -6,7 +6,8 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use flac_codec::{decode::FlacSampleRead, encode::FlacSampleWriter};
+use flac_codec::decode::FlacSampleReader;
+use flac_codec::encode::FlacSampleWriter;
 use std::path::Path;
 
 fn main() {
@@ -21,10 +22,7 @@ fn main() {
 }
 
 fn concat_flacs<P: AsRef<Path>>(first: &P, rest: &[P], output: &P) -> Result<(), Error> {
-    use flac_codec::{
-        decode::{FlacSampleReader, Metadata},
-        encode::Options,
-    };
+    use flac_codec::{decode::Metadata, encode::Options};
 
     let mut first = FlacSampleReader::open(first)?;
 
@@ -76,9 +74,12 @@ fn concat_flacs<P: AsRef<Path>>(first: &P, rest: &[P], output: &P) -> Result<(),
     output.finalize().map_err(Error::Flac)
 }
 
-fn copy<R, W>(r: &mut R, w: &mut FlacSampleWriter<W>) -> Result<(), flac_codec::Error>
+fn copy<R, W>(
+    r: &mut FlacSampleReader<R>,
+    w: &mut FlacSampleWriter<W>,
+) -> Result<(), flac_codec::Error>
 where
-    R: FlacSampleRead,
+    R: std::io::Read,
     W: std::io::Write + std::io::Seek,
 {
     loop {

@@ -52,78 +52,6 @@ impl SignedInteger for i64 {
     }
 }
 
-/// A `Read`-like trait for signed integer samples
-pub trait FlacSampleRead {
-    /// Attempts to fill the buffer with samples and returns quantity read
-    ///
-    /// Returned samples are interleaved by channel, like:
-    /// [left₀ , right₀ , left₁ , right₁ , left₂ , right₂ , …]
-    ///
-    /// # Errors
-    ///
-    /// Returns error if some error occurs reading FLAC file
-    fn read(&mut self, samples: &mut [i32]) -> Result<usize, Error>;
-
-    /// Returns complete buffer of all read samples
-    ///
-    /// Analogous to [`std::io::BufRead::fill_buf`], this should
-    /// be paired with [`FlacSampleReader::consume`] to
-    /// consume samples in the filled buffer once used.
-    ///
-    /// Returned samples are interleaved by channel, like:
-    /// [left₀ , right₀ , left₁ , right₁ , left₂ , right₂ , …]
-    ///
-    /// # Errors
-    ///
-    /// Returns error if some error occurs reading FLAC file
-    /// to fill buffer.
-    fn fill_buf(&mut self) -> Result<&[i32], Error>;
-
-    /// Informs the reader that `amt` samples have been consumed.
-    ///
-    /// Analagous to [`std::io::BufRead::consume`], which marks
-    /// samples as having been read.
-    ///
-    /// May panic if attempting to consume more bytes
-    /// than are available in the buffer.
-    fn consume(&mut self, amt: usize);
-
-    /// Reads all samples from source FLAC, placing them in `buf`
-    ///
-    /// If successful, returns the total number of samples read
-    fn read_to_end(&mut self, buf: &mut Vec<i32>) -> Result<usize, Error> {
-        let mut amt_read = 0;
-        loop {
-            match self.fill_buf()? {
-                [] => break Ok(amt_read),
-                decoded => {
-                    let decoded_len = decoded.len();
-                    buf.extend_from_slice(decoded);
-                    amt_read += decoded_len;
-                    self.consume(decoded_len);
-                }
-            }
-        }
-    }
-}
-
-impl<R: FlacSampleRead + ?Sized> FlacSampleRead for &mut R {
-    #[inline]
-    fn read(&mut self, samples: &mut [i32]) -> Result<usize, Error> {
-        (**self).read(samples)
-    }
-
-    #[inline]
-    fn fill_buf(&mut self) -> Result<&[i32], Error> {
-        (**self).fill_buf()
-    }
-
-    #[inline]
-    fn consume(&mut self, amt: usize) {
-        (**self).consume(amt)
-    }
-}
-
 /// A FLAC reader which outputs PCM samples as bytes
 ///
 /// # Example
@@ -405,7 +333,7 @@ impl<R: std::io::Read, E: crate::byteorder::Endianness> std::io::BufRead for Fla
 /// ```
 /// use flac_codec::{
 ///     encode::{FlacSampleWriter, Options},
-///     decode::{FlacSampleReader, FlacSampleRead},
+///     decode::FlacSampleReader,
 /// };
 /// use std::io::{Cursor, Seek};
 ///
@@ -472,6 +400,89 @@ impl<R: std::io::Read> FlacSampleReader<R> {
     pub fn metadata(&self) -> &BlockList {
         self.decoder.metadata()
     }
+
+    /// Attempts to fill the buffer with samples and returns quantity read
+    ///
+    /// Returned samples are interleaved by channel, like:
+    /// [left₀ , right₀ , left₁ , right₁ , left₂ , right₂ , …]
+    ///
+    /// # Errors
+    ///
+    /// Returns error if some error occurs reading FLAC file
+    #[inline]
+    pub fn read(&mut self, samples: &mut [i32]) -> Result<usize, Error> {
+        if self.buf.is_empty() {
+            match self.decoder.read_frame()? {
+                Some(frame) => {
+                    self.buf.extend(frame.iter());
+                }
+                None => return Ok(0),
+            }
+        }
+
+        let to_consume = samples.len().min(self.buf.len());
+        for (i, o) in samples.iter_mut().zip(self.buf.drain(0..to_consume)) {
+            *i = o;
+        }
+        Ok(to_consume)
+    }
+
+    /// Reads all samples from source FLAC, placing them in `buf`
+    ///
+    /// If successful, returns the total number of samples read
+    pub fn read_to_end(&mut self, buf: &mut Vec<i32>) -> Result<usize, Error> {
+        let mut amt_read = 0;
+        loop {
+            match self.fill_buf()? {
+                [] => break Ok(amt_read),
+                decoded => {
+                    let decoded_len = decoded.len();
+                    buf.extend_from_slice(decoded);
+                    amt_read += decoded_len;
+                    self.consume(decoded_len);
+                }
+            }
+        }
+    }
+
+    /// Returns complete buffer of all read samples
+    ///
+    /// Analogous to [`std::io::BufRead::fill_buf`], this should
+    /// be paired with [`FlacSampleReader::consume`] to
+    /// consume samples in the filled buffer once used.
+    ///
+    /// Returned samples are interleaved by channel, like:
+    /// [left₀ , right₀ , left₁ , right₁ , left₂ , right₂ , …]
+    ///
+    /// # Errors
+    ///
+    /// Returns error if some error occurs reading FLAC file
+    /// to fill buffer.
+    #[inline]
+    pub fn fill_buf(&mut self) -> Result<&[i32], Error> {
+        if self.buf.is_empty() {
+            match self.decoder.read_frame()? {
+                Some(frame) => {
+                    self.buf.extend(frame.iter());
+                }
+                None => return Ok(&[]),
+            }
+        }
+
+        Ok(self.buf.make_contiguous())
+    }
+
+    /// Informs the reader that `amt` samples have been consumed.
+    ///
+    /// Analagous to [`std::io::BufRead::consume`], which marks
+    /// samples as having been read.
+    ///
+    /// May panic if attempting to consume more bytes
+    /// than are available in the buffer.
+    #[inline]
+    pub fn consume(&mut self, amt: usize) {
+        self.buf.drain(0..amt);
+    }
 }
 
 impl<R: std::io::Read + std::io::Seek> FlacSampleReader<R> {
@@ -480,7 +491,7 @@ impl<R: std::io::Read + std::io::Seek> FlacSampleReader<R> {
     /// ```
     /// use flac_codec::{
     ///     encode::{FlacSampleWriter, Options},
-    ///     decode::{FlacSampleReader, FlacSampleRead},
+    ///     decode::FlacSampleReader,
     /// };
     /// use std::io::{Cursor, Seek};
     ///
@@ -577,45 +588,6 @@ impl<R: std::io::Read> Metadata for FlacSampleReader<R> {
     }
 }
 
-impl<R: std::io::Read> FlacSampleRead for FlacSampleReader<R> {
-    #[inline]
-    fn read(&mut self, samples: &mut [i32]) -> Result<usize, Error> {
-        if self.buf.is_empty() {
-            match self.decoder.read_frame()? {
-                Some(frame) => {
-                    self.buf.extend(frame.iter());
-                }
-                None => return Ok(0),
-            }
-        }
-
-        let to_consume = samples.len().min(self.buf.len());
-        for (i, o) in samples.iter_mut().zip(self.buf.drain(0..to_consume)) {
-            *i = o;
-        }
-        Ok(to_consume)
-    }
-
-    #[inline]
-    fn fill_buf(&mut self) -> Result<&[i32], Error> {
-        if self.buf.is_empty() {
-            match self.decoder.read_frame()? {
-                Some(frame) => {
-                    self.buf.extend(frame.iter());
-                }
-                None => return Ok(&[]),
-            }
-        }
-
-        Ok(self.buf.make_contiguous())
-    }
-
-    #[inline]
-    fn consume(&mut self, amt: usize) {
-        self.buf.drain(0..amt);
-    }
-}
-
 impl<R: std::io::Read> IntoIterator for FlacSampleReader<R> {
     type IntoIter = FlacSampleIterator<R>;
     type Item = Result<i32, Error>;
@@ -632,7 +604,7 @@ impl<R: std::io::Read> IntoIterator for FlacSampleReader<R> {
 /// ```
 /// use flac_codec::{
 ///     encode::{FlacSampleWriter, Options},
-///     decode::{FlacSampleReader, FlacSampleRead},
+///     decode::FlacSampleReader,
 /// };
 /// use std::io::{Cursor, Seek};
 ///

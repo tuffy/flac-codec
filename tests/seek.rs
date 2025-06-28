@@ -91,7 +91,7 @@ fn test_byte_seeking() {
 
 #[test]
 fn test_sample_seeking() {
-    use flac_codec::decode::{FlacSampleRead, FlacSampleReader, Metadata};
+    use flac_codec::decode::{FlacSampleReader, Metadata};
     use std::io::Cursor;
 
     let mut flac =
