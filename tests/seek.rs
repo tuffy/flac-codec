@@ -91,11 +91,11 @@ fn test_byte_seeking() {
 
 #[test]
 fn test_sample_seeking() {
-    use flac_codec::decode::{FlacSampleRead, Metadata, SeekableFlacSampleReader};
+    use flac_codec::decode::{FlacSampleRead, FlacSampleReader, Metadata};
     use std::io::Cursor;
 
     let mut flac =
-        SeekableFlacSampleReader::new(Cursor::new(include_bytes!("data/sine.flac"))).unwrap();
+        FlacSampleReader::new_seekable(Cursor::new(include_bytes!("data/sine.flac"))).unwrap();
 
     assert_eq!(flac.channel_count(), 2);
 

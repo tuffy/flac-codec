@@ -6,7 +6,7 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use flac_codec::decode::{FlacSampleRead, SeekableFlacSampleReader};
+use flac_codec::decode::{FlacSampleRead, FlacSampleReader};
 use flac_codec::encode::FlacSampleWriter;
 use std::path::Path;
 
@@ -36,7 +36,7 @@ fn split_flac<P: AsRef<Path>>(source: P) -> Result<(), Error> {
     // (this may come in handy later)
     let source_data = std::fs::read(source.as_ref())?;
 
-    let source_reader = SeekableFlacSampleReader::new(Cursor::new(source_data.as_slice()))?;
+    let source_reader = FlacSampleReader::new_seekable(Cursor::new(source_data.as_slice()))?;
 
     let track_ranges = source_reader
         .metadata()
@@ -53,7 +53,7 @@ fn split_flac<P: AsRef<Path>>(source: P) -> Result<(), Error> {
 fn extract_tracks<R>(
     track_ranges: Vec<(std::ops::Range<u64>, u8)>,
     source: &Path,
-    mut reader: SeekableFlacSampleReader<R>,
+    mut reader: FlacSampleReader<R>,
 ) -> Result<(), Error>
 where
     R: std::io::Read + std::io::Seek + Clone + Sync,
@@ -69,7 +69,7 @@ where
 fn extract_tracks<R>(
     track_ranges: Vec<(std::ops::Range<u64>, u8)>,
     source: &Path,
-    reader: SeekableFlacSampleReader<R>,
+    reader: FlacSampleReader<R>,
 ) -> Result<(), Error>
 where
     R: std::io::Read + std::io::Seek + Clone + Sync,
@@ -91,7 +91,7 @@ where
 fn extract_track<R: std::io::Read + std::io::Seek>(
     source: &Path,
     track_num: u8,
-    reader: &mut SeekableFlacSampleReader<R>,
+    reader: &mut FlacSampleReader<R>,
     std::ops::Range { start, end }: std::ops::Range<u64>,
 ) -> Result<(), Error> {
     use flac_codec::{decode::Metadata, encode::Options};

@@ -445,6 +445,8 @@ pub struct FlacSampleReader<R> {
     decoder: Decoder<R>,
     // decoded sample buffer
     buf: VecDeque<i32>,
+    // start of FLAC frames
+    frames_start: Option<u64>,
 }
 
 impl<R: std::io::Read> FlacSampleReader<R> {
@@ -461,6 +463,7 @@ impl<R: std::io::Read> FlacSampleReader<R> {
         Ok(Self {
             decoder: Decoder::new(reader, blocklist),
             buf: VecDeque::default(),
+            frames_start: None,
         })
     }
 
@@ -471,11 +474,74 @@ impl<R: std::io::Read> FlacSampleReader<R> {
     }
 }
 
+impl<R: std::io::Read + std::io::Seek> FlacSampleReader<R> {
+    /// # Example
+    ///
+    /// ```
+    /// use flac_codec::{
+    ///     encode::{FlacSampleWriter, Options},
+    ///     decode::{FlacSampleReader, FlacSampleRead},
+    /// };
+    /// use std::io::{Cursor, Seek};
+    ///
+    /// let mut flac = Cursor::new(vec![]);  // a FLAC file in memory
+    ///
+    /// let mut writer = FlacSampleWriter::new(
+    ///     &mut flac,           // our wrapped writer
+    ///     Options::default(),  // default encoding options
+    ///     44100,               // sample rate
+    ///     16,                  // bits-per-sample
+    ///     1,                   // channel count
+    ///     Some(1000),          // total samples
+    /// ).unwrap();
+    ///
+    /// // write 1000 samples
+    /// let written_samples = (0..1000).collect::<Vec<i32>>();
+    /// assert!(writer.write(&written_samples).is_ok());
+    ///
+    /// // finalize writing file
+    /// assert!(writer.finalize().is_ok());
+    ///
+    /// flac.rewind().unwrap();
+    ///
+    /// // open reader around written FLAC file
+    /// let mut reader = FlacSampleReader::new_seekable(flac).unwrap();
+    ///
+    /// // read 1000 samples
+    /// let mut read_samples_1 = vec![0; 1000];
+    /// assert!(matches!(reader.read(&mut read_samples_1), Ok(1000)));
+    ///
+    /// // ensure they match
+    /// assert_eq!(read_samples_1, written_samples);
+    ///
+    /// // rewind reader to halfway through file
+    /// assert!(reader.seek(500).is_ok());
+    ///
+    /// // read 500 samples
+    /// let mut read_samples_2 = vec![0; 500];
+    /// assert!(matches!(reader.read(&mut read_samples_2), Ok(500)));
+    ///
+    /// // ensure output matches back half of input
+    /// assert_eq!(read_samples_2.len(), 500);
+    /// assert!(written_samples.ends_with(&read_samples_2));
+    /// ```
+    pub fn new_seekable(mut reader: R) -> Result<Self, Error> {
+        let blocklist = BlockList::read(reader.by_ref())?;
+        let frames_start = reader.stream_position()?;
+
+        Ok(Self {
+            decoder: Decoder::new(reader, blocklist),
+            buf: VecDeque::default(),
+            frames_start: Some(frames_start),
+        })
+    }
+}
+
 impl FlacSampleReader<BufReader<File>> {
     /// Opens FLAC file from the given path
     #[inline]
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
-        FlacSampleReader::new(BufReader::new(File::open(path.as_ref())?))
+        FlacSampleReader::new_seekable(BufReader::new(File::open(path.as_ref())?))
     }
 }
 
@@ -753,140 +819,7 @@ impl<R: std::io::Read + std::io::Seek, E: crate::byteorder::Endianness> std::io:
     }
 }
 
-/// A seekable FLAC reader which outputs PCM samples as signed integers
-///
-/// # Example
-///
-/// ```
-/// use flac_codec::{
-///     encode::{FlacSampleWriter, Options},
-///     decode::{SeekableFlacSampleReader, FlacSampleRead},
-/// };
-/// use std::io::{Cursor, Seek};
-///
-/// let mut flac = Cursor::new(vec![]);  // a FLAC file in memory
-///
-/// let mut writer = FlacSampleWriter::new(
-///     &mut flac,           // our wrapped writer
-///     Options::default(),  // default encoding options
-///     44100,               // sample rate
-///     16,                  // bits-per-sample
-///     1,                   // channel count
-///     Some(1000),          // total samples
-/// ).unwrap();
-///
-/// // write 1000 samples
-/// let written_samples = (0..1000).collect::<Vec<i32>>();
-/// assert!(writer.write(&written_samples).is_ok());
-///
-/// // finalize writing file
-/// assert!(writer.finalize().is_ok());
-///
-/// flac.rewind().unwrap();
-///
-/// // open reader around written FLAC file
-/// let mut reader = SeekableFlacSampleReader::new(flac).unwrap();
-///
-/// // read 1000 samples
-/// let mut read_samples_1 = vec![0; 1000];
-/// assert!(matches!(reader.read(&mut read_samples_1), Ok(1000)));
-///
-/// // ensure they match
-/// assert_eq!(read_samples_1, written_samples);
-///
-/// // rewind reader to halfway through file
-/// assert!(reader.seek(500).is_ok());
-///
-/// // read 500 samples
-/// let mut read_samples_2 = vec![0; 500];
-/// assert!(matches!(reader.read(&mut read_samples_2), Ok(500)));
-///
-/// // ensure output matches back half of input
-/// assert_eq!(read_samples_2.len(), 500);
-/// assert!(written_samples.ends_with(&read_samples_2));
-/// ```
-#[derive(Clone)]
-pub struct SeekableFlacSampleReader<R> {
-    // the wrapped sample reader
-    reader: FlacSampleReader<R>,
-    // the start of the FLAC frames, in bytes
-    frames_start: u64,
-}
-
-impl<R: std::io::Read + std::io::Seek> SeekableFlacSampleReader<R> {
-    /// Opens new seekable FLAC reader which wraps the given reader
-    pub fn new(mut reader: R) -> Result<Self, Error> {
-        let blocklist = BlockList::read(reader.by_ref())?;
-        let frames_start = reader.stream_position()?;
-
-        Ok(Self {
-            frames_start,
-            reader: FlacSampleReader {
-                decoder: Decoder::new(reader, blocklist),
-                buf: VecDeque::default(),
-            },
-        })
-    }
-
-    /// Returns FLAC metadata blocks
-    #[inline]
-    pub fn metadata(&self) -> &BlockList {
-        self.reader.decoder.metadata()
-    }
-}
-
-impl SeekableFlacSampleReader<BufReader<File>> {
-    /// Opens seekable FLAC file from the given path
-    #[inline]
-    pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
-        SeekableFlacSampleReader::new(BufReader::new(File::open(path.as_ref())?))
-    }
-}
-
-impl<R: std::io::Read> Metadata for SeekableFlacSampleReader<R> {
-    fn channel_count(&self) -> u8 {
-        self.reader.channel_count()
-    }
-
-    fn channel_mask(&self) -> ChannelMask {
-        self.reader.channel_mask()
-    }
-
-    fn sample_rate(&self) -> u32 {
-        self.reader.sample_rate()
-    }
-
-    fn bits_per_sample(&self) -> u32 {
-        self.reader.bits_per_sample()
-    }
-
-    fn total_samples(&self) -> Option<u64> {
-        self.reader.total_samples()
-    }
-
-    fn md5(&self) -> Option<&[u8; 16]> {
-        self.reader.md5()
-    }
-}
-
-impl<R: std::io::Read> FlacSampleRead for SeekableFlacSampleReader<R> {
-    #[inline]
-    fn read(&mut self, samples: &mut [i32]) -> Result<usize, Error> {
-        self.reader.read(samples)
-    }
-
-    #[inline]
-    fn fill_buf(&mut self) -> Result<&[i32], Error> {
-        self.reader.fill_buf()
-    }
-
-    #[inline]
-    fn consume(&mut self, amt: usize) {
-        self.reader.consume(amt)
-    }
-}
-
-impl<R: std::io::Read + std::io::Seek> SeekableFlacSampleReader<R> {
+impl<R: std::io::Read + std::io::Seek> FlacSampleReader<R> {
     /// Seeks to the given channel-independent sample
     ///
     /// The sample is relative to the beginning of the stream
@@ -894,14 +827,18 @@ impl<R: std::io::Read + std::io::Seek> SeekableFlacSampleReader<R> {
         let channels: u8 = self.channel_count();
 
         // actual position, in channel-independent samples
-        let mut pos = self.reader.decoder.seek(self.frames_start, sample)?;
+        let mut pos = self.decoder.seek(
+            self.frames_start
+                .ok_or(std::io::Error::from(std::io::ErrorKind::NotSeekable))?,
+            sample,
+        )?;
 
         // seeking invalidates the current buffer
-        self.reader.buf.clear();
+        self.buf.clear();
 
         // needed channel-independent samples
         while sample > pos {
-            let buf = self.reader.fill_buf()?;
+            let buf = self.fill_buf()?;
 
             // size of buf in channel-independent samples
             match buf.len() / usize::from(channels) {
@@ -914,7 +851,7 @@ impl<R: std::io::Read + std::io::Seek> SeekableFlacSampleReader<R> {
                     let to_consume = buf_samples.min((sample - pos).try_into().unwrap());
 
                     // mark samples in buffer as consumed
-                    self.reader.consume(to_consume * usize::from(channels));
+                    self.consume(to_consume * usize::from(channels));
 
                     // advance current actual position
                     pos += to_consume as u64;
