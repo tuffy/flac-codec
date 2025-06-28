@@ -2556,23 +2556,14 @@ pub mod contiguous {
         /// existing items.
         pub fn try_push(&mut self, item: T) -> Result<(), NonContiguous> {
             if self.items.len() < MAX {
-                match self.items.last() {
-                    None => {
-                        if item.valid_first() {
-                            self.items.push(item);
-                            Ok(())
-                        } else {
-                            Err(NonContiguous)
-                        }
-                    }
-                    Some(last) => {
-                        if item.is_next(last) {
-                            self.items.push(item);
-                            Ok(())
-                        } else {
-                            Err(NonContiguous)
-                        }
-                    }
+                if match self.items.last() {
+                    None => item.valid_first(),
+                    Some(last) => item.is_next(last),
+                } {
+                    self.items.push(item);
+                    Ok(())
+                } else {
+                    Err(NonContiguous)
                 }
             } else {
                 Err(NonContiguous)
