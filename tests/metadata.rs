@@ -107,21 +107,6 @@ fn test_write_metadata() {
         }),
         Err(Error::MultipleSeekTable)
     ));
-
-    // SEEKTABLE points must be in proper order
-    assert!(matches!(
-        seektable_test(|blocks| {
-            use flac_codec::metadata::SeekTable;
-
-            match &mut blocks[1] {
-                Block::SeekTable(SeekTable { points }) => {
-                    points.swap(0, 1);
-                }
-                _ => panic!("seektable not found"),
-            }
-        }),
-        Err(Error::InvalidSeekTablePoint)
-    ));
 }
 
 #[test]

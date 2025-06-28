@@ -1878,39 +1878,39 @@ impl ToBitStream for Application {
 ///     },
 /// );
 ///
+/// let seektable = r.parse_using::<SeekTable>(header.size).unwrap();
+///
 /// assert_eq!(
-///     r.parse_using::<SeekTable>(header.size).unwrap(),
-///     SeekTable {
-///         points: vec![
-///             SeekPoint::Defined {
-///                 sample_offset: 0x00,
-///                 byte_offset: 0x00,
-///                 frame_samples: 0x14,
-///             },
-///             SeekPoint::Defined {
-///                 sample_offset: 0x14,
-///                 byte_offset: 0x0c,
-///                 frame_samples: 0x14,
-///             },
-///             SeekPoint::Defined {
-///                 sample_offset: 0x28,
-///                 byte_offset: 0x22,
-///                 frame_samples: 0x14,
-///             },
-///             SeekPoint::Defined {
-///                 sample_offset: 0x3c,
-///                 byte_offset: 0x3c,
-///                 frame_samples: 0x14,
-///             },
-///         ],
-///     },
+///     Vec::from(seektable.points),
+///     vec![
+///         SeekPoint::Defined {
+///             sample_offset: 0x00,
+///             byte_offset: 0x00,
+///             frame_samples: 0x14,
+///         },
+///         SeekPoint::Defined {
+///             sample_offset: 0x14,
+///             byte_offset: 0x0c,
+///             frame_samples: 0x14,
+///         },
+///         SeekPoint::Defined {
+///             sample_offset: 0x28,
+///             byte_offset: 0x22,
+///             frame_samples: 0x14,
+///         },
+///         SeekPoint::Defined {
+///             sample_offset: 0x3c,
+///             byte_offset: 0x3c,
+///             frame_samples: 0x14,
+///         },
+///     ],
 /// );
 ///
 /// ```
 #[derive(Debug, Clone, Eq, PartialEq, Default)]
 pub struct SeekTable {
     /// The seek table's individual seek points
-    pub points: Vec<SeekPoint>,
+    pub points: contiguous::Contiguous<{ Self::MAX_POINTS }, SeekPoint>,
 }
 
 impl SeekTable {
@@ -1927,30 +1927,10 @@ impl FromBitStreamUsing for SeekTable {
 
     fn from_reader<R: BitRead + ?Sized>(r: &mut R, size: BlockSize) -> Result<Self, Self::Error> {
         match (size.get() / 18, size.get() % 18) {
-            (p, 0) => {
-                let mut points = Vec::with_capacity(p.try_into().unwrap());
-
-                for _ in 0..p {
-                    let point: SeekPoint = r.parse()?;
-                    match point {
-                        SeekPoint::Placeholder => points.push(point),
-                        SeekPoint::Defined {
-                            sample_offset: our_offset,
-                            ..
-                        } => match points.last() {
-                            Some(SeekPoint::Defined {
-                                sample_offset: last_offset,
-                                ..
-                            }) if our_offset <= *last_offset => {
-                                return Err(Error::InvalidSeekTablePoint);
-                            }
-                            _ => points.push(point),
-                        },
-                    }
-                }
-
-                Ok(Self { points })
-            }
+            (p, 0) => Ok(Self {
+                points: contiguous::Contiguous::try_collect((0..p).map(|_| r.parse()))
+                    .map_err(|_| Error::InvalidSeekTablePoint)??,
+            }),
             _ => Err(Error::InvalidSeekTableSize),
         }
     }
@@ -2015,6 +1995,33 @@ impl SeekPoint {
         match self {
             Self::Defined { sample_offset, .. } => Some(*sample_offset),
             Self::Placeholder => None,
+        }
+    }
+}
+
+impl contiguous::Adjacent for SeekPoint {
+    fn valid_first(&self) -> bool {
+        true
+    }
+
+    fn is_next(&self, previous: &SeekPoint) -> bool {
+        // seekpoints must be unique by sample offset
+        // and sample offsets must be ascending
+        //
+        // placeholders can come after non-placeholders or other placeholders,
+        // but non-placeholders can't come after placeholders
+        match self {
+            Self::Defined {
+                sample_offset: our_offset,
+                ..
+            } => match previous {
+                Self::Defined {
+                    sample_offset: prev_offset,
+                    ..
+                } => our_offset > prev_offset,
+                Self::Placeholder => false,
+            },
+            Self::Placeholder => true,
         }
     }
 }
@@ -2524,6 +2531,22 @@ pub mod contiguous {
     }
 
     impl<const MAX: usize, T: Adjacent> Contiguous<MAX, T> {
+        /// Constructs new contiguous block with the given capacity
+        ///
+        /// See [`Vec::with_capacity`]
+        pub fn with_capacity(capacity: usize) -> Self {
+            Self {
+                items: Vec::with_capacity(capacity.min(MAX)),
+            }
+        }
+
+        /// Removes all items without adjust total capacity
+        ///
+        /// See [`Vec::clear`]
+        pub fn clear(&mut self) {
+            self.items.clear()
+        }
+
         /// Attempts to push item into contiguous set
         ///
         /// # Errors
@@ -2556,12 +2579,22 @@ pub mod contiguous {
             }
         }
 
+        /// Attempts to extends set with items from iterator
+        pub fn try_extend(
+            &mut self,
+            iter: impl IntoIterator<Item = T>,
+        ) -> Result<(), NonContiguous> {
+            iter.into_iter().try_for_each(|item| self.try_push(item))
+        }
+
         /// Attempts to collect a contiguous set from a fallible iterator
         pub fn try_collect<I, E>(iter: I) -> Result<Result<Self, E>, NonContiguous>
         where
             I: IntoIterator<Item = Result<T, E>>,
         {
-            let mut c = Self::default();
+            let iter = iter.into_iter();
+            let mut c = Self::with_capacity(iter.size_hint().0);
+
             for item in iter {
                 match item {
                     Ok(item) => c.try_push(item)?,
@@ -2592,6 +2625,16 @@ pub mod contiguous {
         }
     }
 
+    impl<const MAX: usize, T: Adjacent> TryFrom<Vec<T>> for Contiguous<MAX, T> {
+        type Error = NonContiguous;
+
+        fn try_from(items: Vec<T>) -> Result<Self, Self::Error> {
+            is_contiguous(&items)
+                .then_some(Self { items })
+                .ok_or(NonContiguous)
+        }
+    }
+
     /// Attempted to insert a non-contiguous item into a set
     #[derive(Copy, Clone, Debug)]
     pub struct NonContiguous;
@@ -2602,6 +2645,20 @@ pub mod contiguous {
         fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
             "item is non-contiguous".fmt(f)
         }
+    }
+
+    fn is_contiguous<'t, T: Adjacent + 't>(items: impl IntoIterator<Item = &'t T>) -> bool {
+        and_previous(items).all(|(prev, item)| match prev {
+            Some(prev) => item.is_next(prev),
+            None => item.valid_first(),
+        })
+    }
+
+    fn and_previous<T: Copy>(
+        iter: impl IntoIterator<Item = T>,
+    ) -> impl Iterator<Item = (Option<T>, T)> {
+        let mut previous = None;
+        iter.into_iter().map(move |i| (previous.replace(i), i))
     }
 }
 

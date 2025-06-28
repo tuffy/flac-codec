@@ -1568,10 +1568,13 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
                 use crate::metadata::SeekTable;
 
                 blocks.insert(SeekTable {
+                    // placeholder points should always be contiguous
                     points: placeholders
                         .take(SeekTable::MAX_POINTS)
                         .map(|p| p.into())
-                        .collect(),
+                        .collect::<Vec<_>>()
+                        .try_into()
+                        .unwrap(),
                 });
             }
         }
@@ -1676,10 +1679,19 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
                         // placeholder SEEKTABLE already in place,
                         // so no need to adjust PADDING to fit
 
+                        // ensure points count is the same
+
+                        let points_len = points.len();
+                        points.clear();
                         points
-                            .iter_mut()
-                            .zip(encoded_points)
-                            .for_each(|(o, i)| *o = i.into());
+                            .try_extend(
+                                encoded_points
+                                    .into_iter()
+                                    .map(|p| p.into())
+                                    .chain(std::iter::repeat(SeekPoint::Placeholder))
+                                    .take(points_len),
+                            )
+                            .unwrap();
                     }
                     (None, Some(crate::metadata::Padding { size: padding_size })) => {
                         // no SEEKTABLE, but there is a PADDING block,
@@ -1688,7 +1700,11 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
                         use crate::metadata::MetadataBlock;
 
                         let seektable = SeekTable {
-                            points: encoded_points.map(|p| p.into()).collect(),
+                            points: encoded_points
+                                .map(|p| p.into())
+                                .collect::<Vec<_>>()
+                                .try_into()
+                                .unwrap(),
                         };
                         if let Some(new_padding_size) = seektable
                             .total_size()
@@ -1877,7 +1893,9 @@ pub fn generate_seektable<R: std::io::Read>(
             .filter(sample_rate, seekpoints)
             .take(SeekTable::MAX_POINTS)
             .map(|p| p.into())
-            .collect(),
+            .collect::<Vec<_>>()
+            .try_into()
+            .unwrap(),
     })
 }
 
