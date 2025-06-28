@@ -180,6 +180,8 @@ pub struct FlacByteReader<R, E> {
     buf: VecDeque<u8>,
     // the endianness of the bytes in our byte buffer
     endianness: std::marker::PhantomData<E>,
+    // offset start of frames, if known
+    frames_start: Option<u64>,
 }
 
 impl<R: std::io::Read, E: crate::byteorder::Endianness> FlacByteReader<R, E> {
@@ -197,6 +199,7 @@ impl<R: std::io::Read, E: crate::byteorder::Endianness> FlacByteReader<R, E> {
             decoder: Decoder::new(reader, blocklist),
             buf: VecDeque::default(),
             endianness: std::marker::PhantomData,
+            frames_start: None,
         })
     }
 
@@ -215,6 +218,87 @@ impl<R: std::io::Read, E: crate::byteorder::Endianness> FlacByteReader<R, E> {
     #[inline]
     pub fn metadata(&self) -> &BlockList {
         self.decoder.metadata()
+    }
+}
+
+impl<R: std::io::Read + std::io::Seek, E: crate::byteorder::Endianness> FlacByteReader<R, E> {
+    /// Opens a new seekable FLAC reader which wraps the given reader
+    ///
+    /// If a stream is both readable and seekable,
+    /// it's vital to use this method to open it if one
+    /// also wishes to seek within the FLAC stream.
+    /// Otherwise, an I/O error will result when attempting to seek.
+    ///
+    /// [`FlacByteReader::open`] calls this method to ensure
+    /// all `File`-based streams are also seekable.
+    ///
+    /// The reader must be positioned at the start of the
+    /// FLAC stream.  If the file has non-FLAC data
+    /// at the beginning (such as ID3v2 tags), one
+    /// should skip such data before initializing a `FlacByteReader`.
+    /// # Example
+    ///
+    /// ```
+    /// use flac_codec::{
+    ///     byteorder::LittleEndian,
+    ///     encode::{FlacByteWriter, Options},
+    ///     decode::FlacByteReader,
+    /// };
+    /// use std::io::{Cursor, Read, Seek, SeekFrom, Write};
+    ///
+    /// let mut flac = Cursor::new(vec![]);  // a FLAC file in memory
+    ///
+    /// let mut writer = FlacByteWriter::endian(
+    ///     &mut flac,           // our wrapped writer
+    ///     LittleEndian,        // .wav-style byte order
+    ///     Options::default(),  // default encoding options
+    ///     44100,               // sample rate
+    ///     16,                  // bits-per-sample
+    ///     1,                   // channel count
+    ///     Some(2000),          // total bytes
+    /// ).unwrap();
+    ///
+    /// // write 1000 samples as 16-bit, signed, little-endian bytes (2000 bytes total)
+    /// let written_bytes = (0..1000).map(i16::to_le_bytes).flatten().collect::<Vec<u8>>();
+    /// assert!(writer.write_all(&written_bytes).is_ok());
+    ///
+    /// // finalize writing file
+    /// assert!(writer.finalize().is_ok());
+    ///
+    /// flac.rewind().unwrap();
+    ///
+    /// // open reader around written FLAC file
+    /// let mut reader: FlacByteReader<_, LittleEndian> =
+    ///     FlacByteReader::new_seekable(flac).unwrap();
+    ///
+    /// // read 2000 bytes
+    /// let mut read_bytes_1 = vec![];
+    /// assert!(reader.read_to_end(&mut read_bytes_1).is_ok());
+    ///
+    /// // ensure input and output matches
+    /// assert_eq!(read_bytes_1, written_bytes);
+    ///
+    /// // rewind reader to halfway through file
+    /// assert!(reader.seek(SeekFrom::Start(1000)).is_ok());
+    ///
+    /// // read 1000 bytes
+    /// let mut read_bytes_2 = vec![];
+    /// assert!(reader.read_to_end(&mut read_bytes_2).is_ok());
+    ///
+    /// // ensure output matches back half of input
+    /// assert_eq!(read_bytes_2.len(), 1000);
+    /// assert!(written_bytes.ends_with(&read_bytes_2));
+    /// ```
+    pub fn new_seekable(mut reader: R) -> Result<Self, Error> {
+        let blocklist = BlockList::read(reader.by_ref())?;
+        let frames_start = reader.stream_position()?;
+
+        Ok(Self {
+            decoder: Decoder::new(reader, blocklist),
+            buf: VecDeque::default(),
+            endianness: std::marker::PhantomData,
+            frames_start: Some(frames_start),
+        })
     }
 }
 
@@ -254,7 +338,7 @@ impl<E: crate::byteorder::Endianness> FlacByteReader<BufReader<File>, E> {
     /// Opens FLAC file from the given path
     #[inline]
     pub fn open<P: AsRef<Path>>(path: P, _endianness: E) -> Result<Self, Error> {
-        FlacByteReader::new(BufReader::new(File::open(path.as_ref())?))
+        FlacByteReader::new_seekable(BufReader::new(File::open(path.as_ref())?))
     }
 }
 
@@ -565,177 +649,13 @@ impl<R: std::io::Read> Iterator for FlacSampleIterator<R> {
     }
 }
 
-/// A seekable FLAC reader which outputs PCM samples as bytes
-///
-/// This has an additional [`std::io::Seek`] bound over
-/// the wrapped reader in order to enable seeking.
-///
-/// # Example
-///
-/// ```
-/// use flac_codec::{
-///     byteorder::LittleEndian,
-///     encode::{FlacByteWriter, Options},
-///     decode::SeekableFlacByteReader,
-/// };
-/// use std::io::{Cursor, Read, Seek, SeekFrom, Write};
-///
-/// let mut flac = Cursor::new(vec![]);  // a FLAC file in memory
-///
-/// let mut writer = FlacByteWriter::endian(
-///     &mut flac,           // our wrapped writer
-///     LittleEndian,        // .wav-style byte order
-///     Options::default(),  // default encoding options
-///     44100,               // sample rate
-///     16,                  // bits-per-sample
-///     1,                   // channel count
-///     Some(2000),          // total bytes
-/// ).unwrap();
-///
-/// // write 1000 samples as 16-bit, signed, little-endian bytes (2000 bytes total)
-/// let written_bytes = (0..1000).map(i16::to_le_bytes).flatten().collect::<Vec<u8>>();
-/// assert!(writer.write_all(&written_bytes).is_ok());
-///
-/// // finalize writing file
-/// assert!(writer.finalize().is_ok());
-///
-/// flac.rewind().unwrap();
-///
-/// // open reader around written FLAC file
-/// let mut reader = SeekableFlacByteReader::endian(flac, LittleEndian).unwrap();
-///
-/// // read 2000 bytes
-/// let mut read_bytes_1 = vec![];
-/// assert!(reader.read_to_end(&mut read_bytes_1).is_ok());
-///
-/// // ensure input and output matches
-/// assert_eq!(read_bytes_1, written_bytes);
-///
-/// // rewind reader to halfway through file
-/// assert!(reader.seek(SeekFrom::Start(1000)).is_ok());
-///
-/// // read 1000 bytes
-/// let mut read_bytes_2 = vec![];
-/// assert!(reader.read_to_end(&mut read_bytes_2).is_ok());
-///
-/// // ensure output matches back half of input
-/// assert_eq!(read_bytes_2.len(), 1000);
-/// assert!(written_bytes.ends_with(&read_bytes_2));
-/// ```
-#[derive(Clone)]
-pub struct SeekableFlacByteReader<R, E> {
-    // our wrapped FLAC reader
-    reader: FlacByteReader<R, E>,
-    // start of first frame from known start of stream
-    frames_start: u64,
-}
-
-impl<R: std::io::Read + std::io::Seek, E: crate::byteorder::Endianness>
-    SeekableFlacByteReader<R, E>
-{
-    /// Opens new seekable FLAC reader which wraps the given reader
-    ///
-    /// The reader must be positioned at the start of the
-    /// FLAC stream.  If the file has non-FLAC data
-    /// at the beginning (such as ID3v2 tags), one
-    /// should skip such data before initializing a `FlacByteReader`.
-    #[inline]
-    pub fn new(mut reader: R) -> Result<Self, Error> {
-        let blocklist = BlockList::read(reader.by_ref())?;
-        let frames_start = reader.stream_position()?;
-
-        Ok(Self {
-            frames_start,
-            reader: FlacByteReader {
-                decoder: Decoder::new(reader, blocklist),
-                buf: VecDeque::default(),
-                endianness: std::marker::PhantomData,
-            },
-        })
-    }
-
-    /// Opens new seekable FLAC reader in the given endianness
-    ///
-    /// The reader must be positioned at the start of the
-    /// FLAC stream.  If the file has non-FLAC data
-    /// at the beginning (such as ID3v2 tags), one
-    /// should skip such data before initializing a `FlacByteReader`.
-    #[inline]
-    pub fn endian(reader: R, _endian: E) -> Result<Self, Error> {
-        Self::new(reader)
-    }
-
-    /// Returns FLAC metadata blocks
-    #[inline]
-    pub fn metadata(&self) -> &BlockList {
-        self.reader.decoder.metadata()
-    }
-}
-
-impl<E: crate::byteorder::Endianness> SeekableFlacByteReader<BufReader<File>, E> {
-    /// Opens seekable FLAC file from the given path
-    #[inline]
-    pub fn open<P: AsRef<Path>>(path: P, _endianness: E) -> Result<Self, Error> {
-        SeekableFlacByteReader::new(BufReader::new(File::open(path.as_ref())?))
-    }
-}
-
-impl<R: std::io::Read, E: crate::byteorder::Endianness> std::io::Read
-    for SeekableFlacByteReader<R, E>
-{
-    #[inline]
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        self.reader.read(buf)
-    }
-}
-
-impl<R: std::io::Read, E: crate::byteorder::Endianness> std::io::BufRead
-    for SeekableFlacByteReader<R, E>
-{
-    #[inline]
-    fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
-        self.reader.fill_buf()
-    }
-
-    fn consume(&mut self, amt: usize) {
-        self.reader.consume(amt);
-    }
-}
-
-impl<R: std::io::Read, E: crate::byteorder::Endianness> Metadata for SeekableFlacByteReader<R, E> {
-    fn channel_count(&self) -> u8 {
-        self.reader.channel_count()
-    }
-
-    #[inline]
-    fn channel_mask(&self) -> ChannelMask {
-        self.reader.channel_mask()
-    }
-
-    fn sample_rate(&self) -> u32 {
-        self.reader.sample_rate()
-    }
-
-    fn bits_per_sample(&self) -> u32 {
-        self.reader.bits_per_sample()
-    }
-
-    fn total_samples(&self) -> Option<u64> {
-        self.reader.total_samples()
-    }
-
-    fn md5(&self) -> Option<&[u8; 16]> {
-        self.reader.md5()
-    }
-}
-
 impl<R: std::io::Read + std::io::Seek, E: crate::byteorder::Endianness> std::io::Seek
-    for SeekableFlacByteReader<R, E>
+    for FlacByteReader<R, E>
 {
     fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
         use std::cmp::Ordering;
 
-        let FlacByteReader { decoder, buf, .. } = &mut self.reader;
+        let Self { decoder, buf, .. } = self;
 
         let streaminfo = decoder.blocks.streaminfo();
 
@@ -744,69 +664,68 @@ impl<R: std::io::Read + std::io::Seek, E: crate::byteorder::Endianness> std::io:
         .into();
 
         // the desired absolute position in the stream, in bytes
-        let desired_pos: u64 =
-            match pos {
-                std::io::SeekFrom::Start(pos) => pos,
-                std::io::SeekFrom::Current(pos) => {
-                    // current position in bytes is current position in samples
-                    // converted to bytes *minus* the un-consumed space in the buffer
-                    // since the sample position is running ahead of the byte position
-                    let original_pos: u64 =
-                        (decoder.current_sample * bytes_per_pcm_frame) - (buf.len() as u64);
+        let desired_pos: u64 = match pos {
+            std::io::SeekFrom::Start(pos) => pos,
+            std::io::SeekFrom::Current(pos) => {
+                // current position in bytes is current position in samples
+                // converted to bytes *minus* the un-consumed space in the buffer
+                // since the sample position is running ahead of the byte position
+                let original_pos: u64 =
+                    (decoder.current_sample * bytes_per_pcm_frame) - (buf.len() as u64);
 
-                    match pos.cmp(&0) {
-                        Ordering::Less => original_pos.checked_sub(pos.unsigned_abs()).ok_or(
-                            std::io::Error::new(
+                match pos.cmp(&0) {
+                    Ordering::Less => {
+                        original_pos
+                            .checked_sub(pos.unsigned_abs())
+                            .ok_or(std::io::Error::new(
                                 std::io::ErrorKind::InvalidInput,
                                 "cannot seek below byte 0",
-                            ),
-                        )?,
-                        Ordering::Equal => return Ok(original_pos),
-                        Ordering::Greater => original_pos.checked_add(pos.unsigned_abs()).ok_or(
-                            std::io::Error::new(
+                            ))?
+                    }
+                    Ordering::Equal => return Ok(original_pos),
+                    Ordering::Greater => {
+                        original_pos
+                            .checked_add(pos.unsigned_abs())
+                            .ok_or(std::io::Error::new(
                                 std::io::ErrorKind::InvalidInput,
                                 "seek offset too large",
-                            ),
-                        )?,
+                            ))?
                     }
                 }
-                std::io::SeekFrom::End(pos) => {
-                    // if the total samples is unknown in streaminfo,
-                    // we have no way to know where the file's end is
-                    // (this is a very unusual case)
-                    let max_pos: u64 =
-                        decoder
-                            .total_samples()
-                            .map(|s| s.get())
-                            .ok_or(std::io::Error::new(
-                                std::io::ErrorKind::NotSeekable,
-                                "total samples not known",
-                            ))?;
+            }
+            std::io::SeekFrom::End(pos) => {
+                // if the total samples is unknown in streaminfo,
+                // we have no way to know where the file's end is
+                // (this is a very unusual case)
+                let max_pos: u64 = decoder.total_samples().map(|s| s.get()).ok_or_else(|| {
+                    std::io::Error::new(std::io::ErrorKind::NotSeekable, "total samples not known")
+                })?;
 
-                    match pos.cmp(&0) {
-                        Ordering::Less => {
-                            max_pos
-                                .checked_sub(pos.unsigned_abs())
-                                .ok_or(std::io::Error::new(
-                                    std::io::ErrorKind::InvalidInput,
-                                    "cannot seek below byte 0",
-                                ))?
-                        }
-                        Ordering::Equal => max_pos,
-                        Ordering::Greater => {
-                            return Err(std::io::Error::new(
-                                std::io::ErrorKind::InvalidInput,
-                                "cannot seek beyond end of file",
-                            ));
-                        }
+                match pos.cmp(&0) {
+                    Ordering::Less => max_pos.checked_sub(pos.unsigned_abs()).ok_or_else(|| {
+                        std::io::Error::new(
+                            std::io::ErrorKind::InvalidInput,
+                            "cannot seek below byte 0",
+                        )
+                    })?,
+                    Ordering::Equal => max_pos,
+                    Ordering::Greater => {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::InvalidInput,
+                            "cannot seek beyond end of file",
+                        ));
                     }
                 }
-            };
+            }
+        };
 
         // perform seek in stream to the desired sample
         // (this will usually be some position prior to the desired sample)
-        let mut new_pos = decoder.seek(self.frames_start, desired_pos / bytes_per_pcm_frame)?
-            * bytes_per_pcm_frame;
+        let mut new_pos = decoder.seek(
+            self.frames_start
+                .ok_or(std::io::Error::from(std::io::ErrorKind::NotSeekable))?,
+            desired_pos / bytes_per_pcm_frame,
+        )? * bytes_per_pcm_frame;
 
         // seeking invalidates current buffer
         buf.clear();
@@ -815,11 +734,11 @@ impl<R: std::io::Read + std::io::Seek, E: crate::byteorder::Endianness> std::io:
         while new_pos < desired_pos {
             use std::io::BufRead;
 
-            let buf = self.reader.fill_buf()?;
+            let buf = self.fill_buf()?;
 
             if !buf.is_empty() {
                 let to_skip = (usize::try_from(desired_pos - new_pos).unwrap()).min(buf.len());
-                self.reader.consume(to_skip);
+                self.consume(to_skip);
                 new_pos += to_skip as u64;
             } else {
                 // attempting to seek beyond the end of the FLAC file
