@@ -2478,6 +2478,133 @@ pub mod fields {
     pub const RG_REFERENCE_LOUDNESS: &str = "REPLAYGAIN_REFERENCE_LOUDNESS";
 }
 
+/// Types for collections which must be contiguous
+///
+/// Used by the SEEKTABLE and CUESHEET metadata blocks
+pub mod contiguous {
+    /// A trait for types which can be contiguous
+    pub trait Adjacent {
+        /// Whether the item is valid as the first in a sequence
+        fn valid_first(&self) -> bool;
+
+        /// Whether the item is immediately following the previous
+        fn is_next(&self, previous: &Self) -> bool;
+    }
+
+    impl Adjacent for u64 {
+        fn valid_first(&self) -> bool {
+            *self == 0
+        }
+
+        fn is_next(&self, previous: &Self) -> bool {
+            *self > *previous
+        }
+    }
+
+    impl Adjacent for std::num::NonZero<u8> {
+        fn valid_first(&self) -> bool {
+            *self == Self::MIN
+        }
+
+        fn is_next(&self, previous: &Self) -> bool {
+            previous.checked_add(1).map(|n| n == *self).unwrap_or(false)
+        }
+    }
+
+    /// A Vec-like type which requires all items to be adjacent
+    #[derive(Debug, Clone, Eq, PartialEq)]
+    pub struct Contiguous<const MAX: usize, T: Adjacent> {
+        items: Vec<T>,
+    }
+
+    impl<const MAX: usize, T: Adjacent> Default for Contiguous<MAX, T> {
+        fn default() -> Self {
+            Self { items: Vec::new() }
+        }
+    }
+
+    impl<const MAX: usize, T: Adjacent> Contiguous<MAX, T> {
+        /// Attempts to push item into contiguous set
+        ///
+        /// # Errors
+        ///
+        /// Returns error if item is not a valid first item
+        /// in the set or is not contiguous with the
+        /// existing items.
+        pub fn try_push(&mut self, item: T) -> Result<(), NonContiguous> {
+            if self.items.len() < MAX {
+                match self.items.last() {
+                    None => {
+                        if item.valid_first() {
+                            self.items.push(item);
+                            Ok(())
+                        } else {
+                            Err(NonContiguous)
+                        }
+                    }
+                    Some(last) => {
+                        if item.is_next(last) {
+                            self.items.push(item);
+                            Ok(())
+                        } else {
+                            Err(NonContiguous)
+                        }
+                    }
+                }
+            } else {
+                Err(NonContiguous)
+            }
+        }
+
+        /// Attempts to collect a contiguous set from a fallible iterator
+        pub fn try_collect<I, E>(iter: I) -> Result<Result<Self, E>, NonContiguous>
+        where
+            I: IntoIterator<Item = Result<T, E>>,
+        {
+            let mut c = Self::default();
+            for item in iter {
+                match item {
+                    Ok(item) => c.try_push(item)?,
+                    Err(err) => return Ok(Err(err)),
+                }
+            }
+            Ok(Ok(c))
+        }
+    }
+
+    impl<const MAX: usize, T: Adjacent> std::ops::Deref for Contiguous<MAX, T> {
+        type Target = [T];
+
+        fn deref(&self) -> &[T] {
+            self.items.as_slice()
+        }
+    }
+
+    impl<const MAX: usize, T: Adjacent> From<Contiguous<MAX, T>> for Vec<T> {
+        fn from(contiguous: Contiguous<MAX, T>) -> Self {
+            contiguous.items
+        }
+    }
+
+    impl<const MAX: usize, T: Adjacent> From<Contiguous<MAX, T>> for std::collections::VecDeque<T> {
+        fn from(contiguous: Contiguous<MAX, T>) -> Self {
+            contiguous.items.into()
+        }
+    }
+
+    /// Attempted to insert a non-contiguous item into a set
+    #[derive(Copy, Clone, Debug)]
+    pub struct NonContiguous;
+
+    impl std::error::Error for NonContiguous {}
+
+    impl std::fmt::Display for NonContiguous {
+        fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            "item is non-contiguous".fmt(f)
+        }
+    }
+}
+
 /// A CUESHEET metadata block
 ///
 /// A cue sheet stores a disc's original layout
@@ -2522,7 +2649,7 @@ pub enum Cuesheet {
         /// The cue sheet's non-lead-out tracks
         ///
         /// For CD-DA, 0 ≤ track count ≤ 99
-        tracks: cuesheet::Contiguous<99, cuesheet::TrackCDDA>,
+        tracks: contiguous::Contiguous<99, cuesheet::TrackCDDA>,
 
         /// The required lead-out-track
         ///
@@ -2540,7 +2667,7 @@ pub enum Cuesheet {
         /// The cue sheet's non-lead-out tracks
         ///
         /// For Non-CD-DA, 0 ≤ track count ≤ 254
-        tracks: cuesheet::Contiguous<254, cuesheet::TrackNonCDDA>,
+        tracks: contiguous::Contiguous<254, cuesheet::TrackNonCDDA>,
 
         /// The required lead-out-track
         ///
@@ -3154,7 +3281,7 @@ impl FromBitStream for Cuesheet {
                     }
                 },
                 lead_in_samples,
-                tracks: cuesheet::Contiguous::try_collect(
+                tracks: contiguous::Contiguous::try_collect(
                     (0..track_count
                         .checked_sub(1)
                         .filter(|c| *c <= 99)
@@ -3172,7 +3299,7 @@ impl FromBitStream for Cuesheet {
                     .map(cuesheet::Digit::try_from)
                     .collect::<Result<Vec<_>, _>>()
                     .map_err(|_| Error::from(CuesheetError::InvalidCatalogNumber))?,
-                tracks: cuesheet::Contiguous::try_collect(
+                tracks: contiguous::Contiguous::try_collect(
                     (0..track_count
                         .checked_sub(1)
                         .ok_or(Error::from(CuesheetError::NoTracks))?)
@@ -3253,16 +3380,16 @@ fn trim_nulls(mut s: &[u8]) -> &[u8] {
 type ParsedCuesheetTrack<const INDEX_MAX: usize, O> =
     cuesheet::Track<O, NonZero<u8>, cuesheet::IndexVec<INDEX_MAX, O>>;
 
-struct ParsedCuesheet<const TRACK_MAX: usize, const INDEX_MAX: usize, C, O: cuesheet::Adjacent> {
+struct ParsedCuesheet<const TRACK_MAX: usize, const INDEX_MAX: usize, C, O: contiguous::Adjacent> {
     catalog_number: C,
-    tracks: cuesheet::Contiguous<TRACK_MAX, ParsedCuesheetTrack<INDEX_MAX, O>>,
+    tracks: contiguous::Contiguous<TRACK_MAX, ParsedCuesheetTrack<INDEX_MAX, O>>,
 }
 
 impl<const TRACK_MAX: usize, const INDEX_MAX: usize, C, O>
     ParsedCuesheet<TRACK_MAX, INDEX_MAX, C, O>
 where
     C: Default,
-    O: cuesheet::Adjacent
+    O: contiguous::Adjacent
         + std::str::FromStr
         + Into<u64>
         + std::ops::Sub<Output = O>
@@ -3276,10 +3403,10 @@ where
         type WipTrack<const INDEX_MAX: usize, O> = cuesheet::Track<
             Option<O>,
             NonZero<u8>,
-            cuesheet::Contiguous<INDEX_MAX, cuesheet::Index<O>>,
+            contiguous::Contiguous<INDEX_MAX, cuesheet::Index<O>>,
         >;
 
-        impl<const INDEX_MAX: usize, O: cuesheet::Adjacent> WipTrack<INDEX_MAX, O> {
+        impl<const INDEX_MAX: usize, O: contiguous::Adjacent> WipTrack<INDEX_MAX, O> {
             fn new(number: NonZero<u8>) -> Self {
                 Self {
                     offset: None,
@@ -3287,12 +3414,12 @@ where
                     isrc: cuesheet::ISRC::None,
                     non_audio: false,
                     pre_emphasis: false,
-                    index_points: cuesheet::Contiguous::default(),
+                    index_points: contiguous::Contiguous::default(),
                 }
             }
         }
 
-        impl<const INDEX_MAX: usize, O: cuesheet::Adjacent> TryFrom<WipTrack<INDEX_MAX, O>>
+        impl<const INDEX_MAX: usize, O: contiguous::Adjacent> TryFrom<WipTrack<INDEX_MAX, O>>
             for ParsedCuesheetTrack<INDEX_MAX, O>
         {
             type Error = CuesheetError;
@@ -3324,7 +3451,7 @@ where
 
         let mut parsed = ParsedCuesheet {
             catalog_number: None,
-            tracks: cuesheet::Contiguous::default(),
+            tracks: contiguous::Contiguous::default(),
         };
 
         for line in cuesheet.lines() {

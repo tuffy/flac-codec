@@ -1,5 +1,6 @@
 use crate::Error;
 use crate::metadata::CuesheetError;
+use crate::metadata::contiguous::{Adjacent, Contiguous};
 use bitstream_io::{BitRead, BitWrite, FromBitStream, ToBitStream};
 use std::num::NonZero;
 use std::str::FromStr;
@@ -89,104 +90,6 @@ impl std::fmt::Display for Digit {
             Self::Digit8 => '8'.fmt(f),
             Self::Digit9 => '9'.fmt(f),
         }
-    }
-}
-
-/// A trait for types which can be contiguous
-pub trait Adjacent {
-    /// Whether the item is valid as the first in a sequence
-    fn valid_first(&self) -> bool;
-
-    /// Whether the item is immediately following the previous
-    fn is_next(&self, previous: &Self) -> bool;
-}
-
-impl Adjacent for u64 {
-    fn valid_first(&self) -> bool {
-        *self == 0
-    }
-
-    fn is_next(&self, previous: &Self) -> bool {
-        *self > *previous
-    }
-}
-
-impl Adjacent for std::num::NonZero<u8> {
-    fn valid_first(&self) -> bool {
-        *self == Self::MIN
-    }
-
-    fn is_next(&self, previous: &Self) -> bool {
-        previous.checked_add(1).map(|n| n == *self).unwrap_or(false)
-    }
-}
-
-/// A Vec-like type which requires all items to be adjacent
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub struct Contiguous<const MAX: usize, T: Adjacent> {
-    items: Vec<T>,
-}
-
-impl<const MAX: usize, T: Adjacent> Default for Contiguous<MAX, T> {
-    fn default() -> Self {
-        Self { items: Vec::new() }
-    }
-}
-
-impl<const MAX: usize, T: Adjacent> Contiguous<MAX, T> {
-    /// Attempts to push item into contiguous set
-    ///
-    /// # Errors
-    ///
-    /// Returns error if item is not a valid first item
-    /// in the set or is not contiguous with the
-    /// existing items.
-    pub fn try_push(&mut self, item: T) -> Result<(), T> {
-        if self.items.len() < MAX {
-            match self.items.last() {
-                None => {
-                    if item.valid_first() {
-                        self.items.push(item);
-                        Ok(())
-                    } else {
-                        Err(item)
-                    }
-                }
-                Some(last) => {
-                    if item.is_next(last) {
-                        self.items.push(item);
-                        Ok(())
-                    } else {
-                        Err(item)
-                    }
-                }
-            }
-        } else {
-            Err(item)
-        }
-    }
-
-    /// Attempts to collect a contiguous set from a fallible iterator
-    pub fn try_collect<I, E>(iter: I) -> Result<Result<Self, E>, T>
-    where
-        I: IntoIterator<Item = Result<T, E>>,
-    {
-        let mut c = Self::default();
-        for item in iter {
-            match item {
-                Ok(item) => c.try_push(item)?,
-                Err(err) => return Ok(Err(err)),
-            }
-        }
-        Ok(Ok(c))
-    }
-}
-
-impl<const MAX: usize, T: Adjacent> std::ops::Deref for Contiguous<MAX, T> {
-    type Target = [T];
-
-    fn deref(&self) -> &[T] {
-        self.items.as_slice()
     }
 }
 
@@ -896,7 +799,7 @@ impl<const MAX: usize, O: Adjacent> IndexVec<MAX, O> {
 impl<const MAX: usize, O: Adjacent> TryFrom<Contiguous<MAX, Index<O>>> for IndexVec<MAX, O> {
     type Error = CuesheetError;
 
-    fn try_from(Contiguous { items }: Contiguous<MAX, Index<O>>) -> Result<Self, CuesheetError> {
+    fn try_from(items: Contiguous<MAX, Index<O>>) -> Result<Self, CuesheetError> {
         use std::collections::VecDeque;
 
         let mut items: VecDeque<Index<O>> = items.into();
