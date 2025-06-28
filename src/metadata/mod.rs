@@ -24,17 +24,6 @@
 //! | [VORBIS_COMMENT](`VorbisComment`) | textual metadata such as track title, artist name, album name, etc. |
 //! | [CUESHEET](`Cuesheet`) | the original disc's layout, for CD images |
 //! | [PICTURE](`Picture`) | embedded image files such as cover art |
-//!
-//! # Quick Shortcuts
-//!
-//! | Need To | Qty             | From/To | Try       |
-//! |--------:|----------------:|---------|-----------|
-//! | read    | one block       | disk    | [`block`] |
-//! | read    | one block       | reader  | [`read_block`] |
-//! | read    | multiple blocks | disk    | [`BlockList::open`] |
-//! | read    | multiple blocks | reader  | [`BlockList::read`] or [`read_blocks`] |
-//! | write   | any blocks      | disk    | [`update`]      |
-//! | write   | any blocks      | writer  | [`update_file`] |
 
 use crate::Error;
 use bitstream_io::{
