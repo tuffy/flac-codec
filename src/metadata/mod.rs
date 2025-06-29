@@ -1375,6 +1375,21 @@ pub enum BlockRef<'b> {
     Picture(&'b Picture),
 }
 
+impl BlockRef<'_> {
+    /// Our block type
+    pub fn block_type(&self) -> BlockType {
+        match self {
+            Self::Streaminfo(_) => BlockType::Streaminfo,
+            Self::Padding(_) => BlockType::Padding,
+            Self::Application(_) => BlockType::Application,
+            Self::SeekTable(_) => BlockType::SeekTable,
+            Self::VorbisComment(_) => BlockType::VorbisComment,
+            Self::Cuesheet(_) => BlockType::Cuesheet,
+            Self::Picture(_) => BlockType::Picture,
+        }
+    }
+}
+
 impl AsBlockRef for BlockRef<'_> {
     fn as_block_ref(&self) -> BlockRef<'_> {
         *self
@@ -4312,14 +4327,17 @@ impl BlockList {
             self.blocks.push(block.into());
             None
         } else {
-            let mut v = self
+            match self
                 .blocks
-                .extract_if(.., |b| b.block_type() == B::TYPE)
-                .collect::<Vec<_>>();
-
-            self.blocks.push(block.into());
-
-            v.pop().and_then(|b| b.try_into().ok())
+                .iter_mut()
+                .find_map(|b| B::try_from_opt_block_mut(b).ok())
+            {
+                Some(b) => Some(std::mem::replace(b, block)),
+                None => {
+                    self.blocks.push(block.into());
+                    None
+                }
+            }
         }
     }
 

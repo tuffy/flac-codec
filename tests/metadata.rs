@@ -383,3 +383,60 @@ fn test_cuesheets() {
         Err(CuesheetError::NonZeroFirstIndex)
     ));
 }
+
+#[test]
+fn test_block_position() {
+    use flac_codec::metadata::{BlockList, BlockType, Padding, Streaminfo};
+
+    let mut blocklist = BlockList::new(Streaminfo {
+        minimum_block_size: 0,
+        maximum_block_size: 0,
+        minimum_frame_size: None,
+        maximum_frame_size: None,
+        sample_rate: 44100,
+        channels: 1u8.try_into().unwrap(),
+        bits_per_sample: 16u32.try_into().unwrap(),
+        total_samples: None,
+        md5: None,
+    });
+
+    // add comment
+    let mut comment_1 = VorbisComment::default();
+    comment_1.set("FOO", "bar");
+    assert_eq!(blocklist.insert(comment_1.clone()), None);
+
+    // add padding
+    let padding = Padding { size: 10u8.into() };
+    blocklist.insert(padding);
+
+    // check order
+    assert_eq!(
+        blocklist
+            .blocks()
+            .map(|b| b.block_type())
+            .collect::<Vec<_>>(),
+        vec![
+            BlockType::Streaminfo,
+            BlockType::VorbisComment,
+            BlockType::Padding
+        ],
+    );
+
+    // add fresh comment
+    let mut comment_2 = VorbisComment::default();
+    comment_2.set("FOO", "baz");
+    assert_eq!(blocklist.insert(comment_2), Some(comment_1));
+
+    // order should be the same
+    assert_eq!(
+        blocklist
+            .blocks()
+            .map(|b| b.block_type())
+            .collect::<Vec<_>>(),
+        vec![
+            BlockType::Streaminfo,
+            BlockType::VorbisComment,
+            BlockType::Padding
+        ],
+    );
+}
