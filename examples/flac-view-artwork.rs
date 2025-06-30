@@ -6,10 +6,12 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+#[cfg(feature = "viu")]
 use flac_codec::metadata::{Picture, block};
 
 /// Views the first piece of artwork in each FLAC file, if any
 
+#[cfg(feature = "viu")]
 fn main() {
     for flac in std::env::args_os().skip(1) {
         if let Err(err) = block::<_, Picture>(flac)
@@ -21,6 +23,12 @@ fn main() {
     }
 }
 
+#[cfg(not(feature = "viu"))]
+fn main() {
+    eprintln!("* Enable the \"viu\" feature to run this example");
+}
+
+#[cfg(feature = "viu")]
 fn view(picture: Picture) -> Result<(), Error> {
     viuer::print(
         &image::load_from_memory(&picture.data)?,
@@ -32,6 +40,7 @@ fn view(picture: Picture) -> Result<(), Error> {
     Ok(())
 }
 
+#[cfg(feature = "viu")]
 #[derive(Debug)]
 enum Error {
     Flac(flac_codec::Error),
@@ -39,20 +48,24 @@ enum Error {
     Viu(viuer::ViuError),
 }
 
+#[cfg(feature = "viu")]
 impl std::error::Error for Error {}
 
+#[cfg(feature = "viu")]
 impl From<image::ImageError> for Error {
     fn from(err: image::ImageError) -> Self {
         Error::Image(err)
     }
 }
 
+#[cfg(feature = "viu")]
 impl From<viuer::ViuError> for Error {
     fn from(err: viuer::ViuError) -> Self {
         Error::Viu(err)
     }
 }
 
+#[cfg(feature = "viu")]
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {

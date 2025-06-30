@@ -6,15 +6,19 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+#[cfg(feature = "cpal")]
 use flac_codec::decode::FlacSampleReader;
+#[cfg(feature = "cpal")]
 use std::path::Path;
 
 /// Plays FLAC files to whatever default output device it can find
 
+#[cfg(feature = "cpal")]
 fn main() {
     use cpal::traits::HostTrait;
 
     let host = cpal::default_host();
+
     let device = host
         .default_output_device()
         .expect("failed to find output device");
@@ -26,6 +30,13 @@ fn main() {
     }
 }
 
+
+#[cfg(not(feature = "cpal"))]
+fn main() {
+    eprintln!("* Enable the \"cpal\" feature to run this example");
+}
+
+#[cfg(feature = "cpal")]
 fn play_flac<P: AsRef<Path>>(flac: P, device: &cpal::Device) -> Result<(), Error> {
     use cpal::traits::{DeviceTrait, StreamTrait};
     use flac_codec::decode::Metadata;
@@ -48,6 +59,7 @@ fn play_flac<P: AsRef<Path>>(flac: P, device: &cpal::Device) -> Result<(), Error
     Ok(())
 }
 
+#[cfg(feature = "cpal")]
 fn output_flac_data<R>(flac: &mut FlacSampleReader<R>, mut output_buf: &mut [f32])
 where
     R: std::io::Read,
@@ -80,6 +92,7 @@ where
     }
 }
 
+#[cfg(feature = "cpal")]
 fn samples_to_floats(flac: &[i32], output: &mut [f32], shift: f32) -> usize {
     let mut count = 0;
     for (i, o) in flac.iter().zip(output.iter_mut()) {
@@ -89,6 +102,7 @@ fn samples_to_floats(flac: &[i32], output: &mut [f32], shift: f32) -> usize {
     count
 }
 
+#[cfg(feature = "cpal")]
 #[derive(Debug)]
 enum Error {
     Flac(flac_codec::Error),
@@ -96,26 +110,31 @@ enum Error {
     PlayStream(cpal::PlayStreamError),
 }
 
+#[cfg(feature = "cpal")]
 impl std::error::Error for Error {}
 
+#[cfg(feature = "cpal")]
 impl From<flac_codec::Error> for Error {
     fn from(err: flac_codec::Error) -> Self {
         Self::Flac(err)
     }
 }
 
+#[cfg(feature = "cpal")]
 impl From<cpal::BuildStreamError> for Error {
     fn from(err: cpal::BuildStreamError) -> Self {
         Self::BuildStream(err)
     }
 }
 
+#[cfg(feature = "cpal")]
 impl From<cpal::PlayStreamError> for Error {
     fn from(err: cpal::PlayStreamError) -> Self {
         Self::PlayStream(err)
     }
 }
 
+#[cfg(feature = "cpal")]
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
