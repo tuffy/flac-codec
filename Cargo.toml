@@ -20,3 +20,7 @@ rayon = { version = "1.10", optional = true }
 
 [dev-dependencies]
 fastrand = "2.3"
+
+# For the flac-view-artwork example program
+image = "0.25"
+viuer = "0.9"
