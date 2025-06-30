@@ -1,7 +1,7 @@
 flac-codec
 ==========
 
-An comprehensive Rust library for handling FLAC files.
+A comprehensive Rust library for handling FLAC files.
 
 This library implements [RFC9639](https://www.ietf.org/rfc/rfc9639.html)
 to process FLAC files according to the standard in a safe, performant
@@ -25,7 +25,7 @@ fashion with a straightforward API.
 - Provides an easy reading API
   - If you need bytes, the byte reader simply implements `std::io::Read`
   - If you need samples, a `Read`-like trait for signed integers is also provided
-- Offers seekable reader variants if the underlying stream is also seekable
+- Offers seekable readers the underlying stream is also seekable
 
 ## Encodes Files
 
