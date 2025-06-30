@@ -37,6 +37,10 @@
 //! [official FLAC specification (RFC 9639)](https://datatracker.ietf.org/doc/rfc9639/)
 //! and verified against the
 //! [reference implementation](https://www.xiph.org/flac/index.html).
+//!
+//! Check the `examples/` directory in the source code
+//! repository for several examples of using this crate for common
+//! FLAC management tasks.
 
 #![warn(missing_docs)]
 #![forbid(unsafe_code)]

@@ -1992,7 +1992,6 @@ pub enum SeekPoint {
     /// A defined, non-placeholder seek point
     Defined {
         /// The sample number of the first sample in the target frame
-        // TODO - make this a NonMax item, if possible
         sample_offset: u64,
         /// Offset, in bytes, from the first byte of the first frame header
         /// to the first byte in the target frame's header

@@ -337,10 +337,44 @@ impl<W: std::io::Write + std::io::Seek, E: crate::byteorder::Endianness> std::io
 {
     /// Writes a set of sample bytes to the FLAC file
     ///
-    /// Samples are encoded in the stream's given byte order.
+    /// Samples are signed and encoded in the stream's given byte order.
     ///
     /// Samples are then interleaved by channel, like:
     /// [left₀ , right₀ , left₁ , right₁ , left₂ , right₂ , …]
+    ///
+    /// This is the same format used by common PCM container
+    /// formats like WAVE and AIFF.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// // a 16-bit, 2 channel stream, with 3 samples per channel
+    /// let left: [i16; 3] = [1, 2, 3];
+    /// let right: [i16; 3] = [-1, -2, -3];
+    ///
+    /// // interleave the samples into a single buffer
+    /// let interleaved: [i16; 6] = [
+    ///     left[0], right[0],
+    ///     left[1], right[1],
+    ///     left[2], right[2],
+    /// ];
+    ///
+    /// // convert those to little-endian bytes
+    /// let bytes: [[u8; 2]; 6] = interleaved.map(|i| i.to_le_bytes());
+    ///
+    /// // our output suitable for sending to write()
+    /// assert_eq!(
+    ///     bytes.as_flattened(),
+    ///     [
+    ///         1, 0,      // 1
+    ///         255, 255,  // -1
+    ///         2, 0,      // 2
+    ///         254, 255,  // -2
+    ///         3, 0,      // 3
+    ///         253, 255,  // -3
+    ///     ],
+    /// );
+    /// ```
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         use crate::byteorder::LittleEndian;
 

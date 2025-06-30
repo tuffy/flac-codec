@@ -108,27 +108,25 @@ impl Frame {
 
     /// Fills buffer with our samples in the given endianness
     pub fn to_buf<E: crate::byteorder::Endianness>(&self, buf: &mut [u8]) {
-        // TODO - replace these with array_chunks_mut once that stabilizes
-
         match self.bytes_per_sample() {
             1 => {
-                for (sample, bytes) in self.iter().zip(buf.chunks_exact_mut(1)) {
-                    bytes.copy_from_slice(&E::i8_to_bytes(sample as i8));
+                for (sample, bytes) in self.iter().zip(buf.as_chunks_mut().0) {
+                    *bytes = E::i8_to_bytes(sample as i8);
                 }
             }
             2 => {
-                for (sample, bytes) in self.iter().zip(buf.chunks_exact_mut(2)) {
-                    bytes.copy_from_slice(&E::i16_to_bytes(sample as i16));
+                for (sample, bytes) in self.iter().zip(buf.as_chunks_mut().0) {
+                    *bytes = E::i16_to_bytes(sample as i16);
                 }
             }
             3 => {
-                for (sample, bytes) in self.iter().zip(buf.chunks_exact_mut(3)) {
-                    bytes.copy_from_slice(&E::i24_to_bytes(sample));
+                for (sample, bytes) in self.iter().zip(buf.as_chunks_mut().0) {
+                    *bytes = E::i24_to_bytes(sample);
                 }
             }
             4 => {
-                for (sample, bytes) in self.iter().zip(buf.chunks_exact_mut(4)) {
-                    bytes.copy_from_slice(&E::i32_to_bytes(sample));
+                for (sample, bytes) in self.iter().zip(buf.as_chunks_mut().0) {
+                    *bytes = E::i32_to_bytes(sample);
                 }
             }
             _ => panic!("unsupported number of bytes per sample"),
@@ -149,39 +147,37 @@ impl Frame {
 
     /// Fills frame samples from bytes of the given endianness
     pub fn fill_from_buf<E: crate::byteorder::Endianness>(&mut self, buf: &[u8]) -> &Self {
-        // TODO - use array_chunks once that stabilizes
-
         match self.bytes_per_sample() {
             1 => {
                 self.channel_len = buf.len() / self.channels;
                 self.samples.resize(buf.len(), 0);
 
-                for (sample, bytes) in self.iter_mut().zip(buf.chunks_exact(1)) {
-                    *sample = E::bytes_to_i8(bytes.try_into().unwrap()) as i32
+                for (sample, bytes) in self.iter_mut().zip(buf.as_chunks().0) {
+                    *sample = E::bytes_to_i8(*bytes).into()
                 }
             }
             2 => {
                 self.channel_len = (buf.len() / 2) / self.channels;
                 self.samples.resize(buf.len() / 2, 0);
 
-                for (sample, bytes) in self.iter_mut().zip(buf.chunks_exact(2)) {
-                    *sample = E::bytes_to_i16(bytes.try_into().unwrap()) as i32
+                for (sample, bytes) in self.iter_mut().zip(buf.as_chunks().0) {
+                    *sample = E::bytes_to_i16(*bytes).into()
                 }
             }
             3 => {
                 self.channel_len = (buf.len() / 3) / self.channels;
                 self.samples.resize(buf.len() / 3, 0);
 
-                for (sample, bytes) in self.iter_mut().zip(buf.chunks_exact(3)) {
-                    *sample = E::bytes_to_i24(bytes.try_into().unwrap())
+                for (sample, bytes) in self.iter_mut().zip(buf.as_chunks().0) {
+                    *sample = E::bytes_to_i24(*bytes).into()
                 }
             }
             4 => {
                 self.channel_len = (buf.len() / 4) / self.channels;
                 self.samples.resize(buf.len() / 4, 0);
 
-                for (sample, bytes) in self.iter_mut().zip(buf.chunks_exact(4)) {
-                    *sample = E::bytes_to_i32(bytes.try_into().unwrap())
+                for (sample, bytes) in self.iter_mut().zip(buf.as_chunks().0) {
+                    *sample = E::bytes_to_i32(*bytes).into()
                 }
             }
             _ => panic!("unsupported number of bytes per sample"),

@@ -9,7 +9,7 @@ documentation = "https://docs.rs/flac-codec/"
 homepage = "https://github.com/tuffy/flac-codec"
 repository = "https://github.com/tuffy/flac-codec"
 edition = "2024"
-rust-version = "1.87"
+rust-version = "1.88"
 
 [dependencies]
 bitstream-io = "4.3"
