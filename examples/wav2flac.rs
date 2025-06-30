@@ -88,7 +88,23 @@ fn convert_wav(wav: &Path) -> Result<(), Error> {
                     Some(size.into()),
                 )?;
 
-                std::io::copy(&mut wav.reader().take(size.into()), &mut flac)?;
+                // FIXME - handle 8-bit samples properly
+                match fmt.bits_per_sample() {
+                    9.. => {
+                        std::io::copy(&mut wav.reader().take(size.into()), &mut flac)?;
+                    }
+                    bps @ ..=8 => {
+                        // wav stores files with 8 bits or fewer
+                        // as unsigned values
+                        std::io::copy(
+                            &mut UnsignedReader {
+                                reader: wav.reader().take(size.into()),
+                                shift: 1 << (bps - 1),
+                            },
+                            &mut flac,
+                        )?;
+                    }
+                }
 
                 break flac
                     .finalize()
@@ -103,6 +119,22 @@ fn convert_wav(wav: &Path) -> Result<(), Error> {
                 wav.skip(size + if size % 2 == 1 { 1 } else { 0 })?;
             }
         }
+    }
+}
+
+// A reader adapter which converts unsigned u8s to signed
+struct UnsignedReader<R> {
+    reader: R,
+    shift: u8,
+}
+
+impl<R: std::io::Read> std::io::Read for UnsignedReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.reader.read(buf).inspect(|amt| {
+            buf[0..*amt].iter_mut().for_each(|b| {
+                *b = b.wrapping_add(self.shift);
+            })
+        })
     }
 }
 

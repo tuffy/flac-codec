@@ -62,12 +62,9 @@ fn convert_flac(flac: &Path) -> Result<(), Error> {
         .try_into()
         .map_err(|_| Error::FlacTooLarge)?;
 
-    let whole_size: u32 = (4 + fmt.bytes::<u32>()? + 8)
+    let whole_size: u32 = (4 + fmt.bytes::<u32>()? + 8 + if data_size % 2 == 1 { 1 } else { 0 })
         .checked_add(data_size)
         .ok_or(Error::FlacTooLarge)?;
-
-    // FIXME - pad out odd-sized chunks
-    // (this can happen with 8-bit samples)
 
     let mut wav = ByteWriter::endian(wav, bitstream_io::LittleEndian);
     wav.write_bytes(b"RIFF")?;
@@ -76,9 +73,43 @@ fn convert_flac(flac: &Path) -> Result<(), Error> {
     wav.build(&fmt)?;
     wav.write_bytes(b"data")?;
     wav.write(data_size)?;
-    std::io::copy(&mut flac, wav.writer())?;
+
+    match flac.bits_per_sample() {
+        9.. => {
+            std::io::copy(&mut flac, wav.writer())?;
+        }
+        bps @ ..=8 => {
+            // wav stores files with 8 bits or fewer as unsigned values
+            std::io::copy(
+                &mut UnsignedReader {
+                    reader: flac,
+                    shift: 1 << (bps - 1),
+                },
+                wav.writer(),
+            )?;
+        }
+    }
+    if data_size % 2 == 1 {
+        wav.write::<u8>(0)?;
+    }
     println!("* Wrote: {}", wav_path.display());
     Ok(())
+}
+
+// A reader adapter which converts signed u8s to unsigned
+struct UnsignedReader<R> {
+    reader: R,
+    shift: u8,
+}
+
+impl<R: std::io::Read> std::io::Read for UnsignedReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.reader.read(buf).inspect(|amt| {
+            buf[0..*amt].iter_mut().for_each(|b| {
+                *b = b.wrapping_sub(self.shift);
+            })
+        })
+    }
 }
 
 enum Fmt {
