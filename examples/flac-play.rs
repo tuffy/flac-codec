@@ -73,6 +73,8 @@ where
                 // nothing to do but simply display an error
                 // if one should happen to occur
                 eprintln!("* {err}");
+                output_buf.fill(0.0);
+                return;
             }
         }
     }
