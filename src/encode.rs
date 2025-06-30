@@ -7,6 +7,14 @@
 // except according to those terms.
 
 //! For encoding PCM samples to FLAC files
+//!
+//! ## Multithreading
+//!
+//! Encoders will operate using multithreading if the optional `rayon` feature is enabled,
+//! typically boosting performance by processing channels in parallel.
+//! But because subframes must eventually be written serially, and their size cannot generally
+//! be known in advance, processing two channels across two threads will not
+//! encode twice as fast.
 
 use crate::audio::Frame;
 use crate::metadata::{
