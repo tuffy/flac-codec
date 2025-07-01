@@ -152,7 +152,7 @@ impl From<Crc16> for u16 {
 
 impl Checksum for Crc16 {
     fn update(self, byte: u8) -> Self {
-        static SUBTABLE: &[u16; 256] = &[
+        static SUMTABLE: &[u16; 256] = &[
             0x0000, 0x8005, 0x800f, 0x000a, 0x801b, 0x001e, 0x0014, 0x8011, 0x8033, 0x0036, 0x003c,
             0x8039, 0x0028, 0x802d, 0x8027, 0x0022, 0x8063, 0x0066, 0x006c, 0x8069, 0x0078, 0x807d,
             0x8077, 0x0072, 0x0050, 0x8055, 0x805f, 0x005a, 0x804b, 0x004e, 0x0044, 0x8041, 0x80c3,
@@ -179,7 +179,7 @@ impl Checksum for Crc16 {
             0x820d, 0x8207, 0x0202,
         ];
 
-        Self(SUBTABLE[((self.0 >> 8) as u8 ^ byte) as usize] ^ (self.0 << 8))
+        Self(SUMTABLE[((self.0 >> 8) as u8 ^ byte) as usize] ^ (self.0 << 8))
     }
 
     fn valid(self) -> bool {
