@@ -11,6 +11,13 @@ use flac_codec::encode::FlacSampleWriter;
 use std::path::Path;
 
 fn main() {
+    // This is a CPU-heavy example which should be
+    // using --release mode, or people might get confused
+    // about how well it actually performs.
+    if cfg!(debug_assertions) {
+        eprintln!("WARNING: running in --release mode is preferred for best performance");
+    }
+
     match std::env::args_os().skip(1).collect::<Vec<_>>().as_slice() {
         [first, rest @ .., last] => {
             if let Err(err) = concat_flacs(first, rest, last) {

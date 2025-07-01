@@ -10,6 +10,13 @@ use std::ffi::OsString;
 use std::path::Path;
 
 fn main() {
+    // This is a CPU-heavy example which should be
+    // using --release mode, or people might get confused
+    // about how well it actually performs.
+    if cfg!(debug_assertions) {
+        eprintln!("WARNING: running in --release mode is preferred for best performance");
+    }
+
     match std::env::args_os().skip(1).collect::<Vec<_>>().as_slice() {
         [] => eprintln!("* Usage: wav2flac [file 1.wav] [file 2.wav] ..."),
         flacs => {

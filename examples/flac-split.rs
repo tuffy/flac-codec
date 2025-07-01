@@ -11,6 +11,13 @@ use flac_codec::encode::FlacSampleWriter;
 use std::path::Path;
 
 fn main() {
+    // This is a CPU-heavy example which should be
+    // using --release mode, or people might get confused
+    // about how well it actually performs.
+    if cfg!(debug_assertions) {
+        eprintln!("WARNING: running in --release mode is preferred for best performance");
+    }
+
     match std::env::args_os().nth(1) {
         Some(source) => {
             if let Err(err) = split_flac(source) {

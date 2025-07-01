@@ -17,6 +17,13 @@ use std::path::Path;
 fn main() {
     use cpal::traits::HostTrait;
 
+    // This is a CPU-heavy example which should be
+    // using --release mode, or people might get confused
+    // about how well it actually performs.
+    if cfg!(debug_assertions) {
+        eprintln!("WARNING: running in --release mode is preferred for best performance");
+    }
+
     let host = cpal::default_host();
 
     let device = host
