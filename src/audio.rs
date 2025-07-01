@@ -169,7 +169,7 @@ impl Frame {
                 self.samples.resize(buf.len() / 3, 0);
 
                 for (sample, bytes) in self.iter_mut().zip(buf.as_chunks().0) {
-                    *sample = E::bytes_to_i24(*bytes).into()
+                    *sample = E::bytes_to_i24(*bytes)
                 }
             }
             4 => {
@@ -177,7 +177,7 @@ impl Frame {
                 self.samples.resize(buf.len() / 4, 0);
 
                 for (sample, bytes) in self.iter_mut().zip(buf.as_chunks().0) {
-                    *sample = E::bytes_to_i32(*bytes).into()
+                    *sample = E::bytes_to_i32(*bytes)
                 }
             }
             _ => panic!("unsupported number of bytes per sample"),
