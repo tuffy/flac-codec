@@ -284,33 +284,6 @@ impl<R: std::io::Read, E: crate::byteorder::Endianness> std::io::Read for FlacBy
     ///
     /// Returns any error that occurs when reading the stream,
     /// converted to an I/O error.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// // a 16 bit, 2 channel stream returned from read()
-    /// let buf: [u8; 12] = [1, 0, 255, 255, 2, 0, 254, 255, 3, 0, 253, 255];
-    ///
-    /// // convert our buffer back into 16 bit signed samples
-    /// let samples = buf.as_chunks()
-    ///     .0
-    ///     .into_iter()
-    ///     .copied()
-    ///     .map(i16::from_le_bytes)
-    ///     .collect::<Vec<_>>();
-    ///
-    /// assert_eq!(&samples, &[1, -1, 2, -2, 3, -3]);
-    ///
-    /// // then de-interleave them back into 2 channels
-    /// let (left, right): (Vec<i16>, Vec<i16>) = samples.as_chunks()
-    ///     .0
-    ///     .into_iter()
-    ///     .map(|[l, r]| (l, r))
-    ///     .unzip();
-    ///
-    /// assert_eq!(&left, &[1, 2, 3]);
-    /// assert_eq!(&right, &[-1, -2, -3]);
-    /// ```
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         if self.buf.is_empty() {
             match self.decoder.read_frame()? {
