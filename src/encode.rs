@@ -3658,7 +3658,7 @@ fn vec_map<T, U, F>(src: Vec<T>, f: F) -> Vec<U>
 where
     T: Send,
     U: Send,
-    F: Fn(T) -> U,
+    F: Fn(T) -> U + Send + Sync,
 {
     src.into_iter().map(f).collect()
 }
