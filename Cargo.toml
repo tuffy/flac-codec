@@ -30,5 +30,8 @@ cpal = { version = "0.16", optional = true }
 image = { version = "0.25", optional = true }
 viuer = { version = "0.9", optional = true }
 
+# For the flac-resample example program
+rubato = { version = "0.16", optional = true }
+
 [dev-dependencies]
 fastrand = "2.3"

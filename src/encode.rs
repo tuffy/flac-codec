@@ -942,6 +942,67 @@ impl<W: std::io::Write + std::io::Seek> FlacChannelWriter<W> {
     }
 }
 
+impl FlacChannelWriter<BufWriter<File>> {
+    /// Creates new FLAC file at the given path
+    ///
+    /// `sample_rate` must be between 0 (for non-audio streams) and 2²⁰.
+    ///
+    /// `bits_per_sample` must be between 1 and 32.
+    ///
+    /// `channels` must be between 1 and 8.
+    ///
+    /// Note that if `total_bytes` is indicated,
+    /// the number of bytes written *must*
+    /// be equal to that amount or an error will occur when writing
+    /// or finalizing the stream.
+    ///
+    /// # Errors
+    ///
+    /// Returns I/O error if unable to write initial
+    /// metadata blocks.
+    #[inline]
+    pub fn create<P: AsRef<Path>>(
+        path: P,
+        options: Options,
+        sample_rate: u32,
+        bits_per_sample: u32,
+        channels: u8,
+        total_samples: Option<u64>,
+    ) -> Result<Self, Error> {
+        FlacChannelWriter::new(
+            BufWriter::new(options.create(path)?),
+            options,
+            sample_rate,
+            bits_per_sample,
+            channels,
+            total_samples,
+        )
+    }
+
+    /// Creates new FLAC file at the given path with CDDA parameters
+    ///
+    /// Sample rate is 44100 Hz, bits-per-sample is 16,
+    /// channels is 2.
+    ///
+    /// Note that if `total_bytes` is indicated,
+    /// the number of bytes written *must*
+    /// be equal to that amount or an error will occur when writing
+    /// or finalizing the stream.
+    ///
+    /// # Errors
+    ///
+    /// Returns I/O error if unable to write initial
+    /// metadata blocks.
+    #[inline]
+    pub fn create_cdda<P: AsRef<Path>>(
+        path: P,
+        options: Options,
+        total_samples: Option<u64>,
+    ) -> Result<Self, Error> {
+        Self::create(path, options, 44100, 16, 2, total_samples)
+    }
+}
+
 /// A FLAC writer which operates on streamed output
 ///
 /// Because this encodes FLAC frames without any metadata
