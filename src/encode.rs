@@ -687,6 +687,49 @@ impl FlacSampleWriter<BufWriter<File>> {
 }
 
 /// A FLAC writer which accepts samples as channels of signed integers
+///
+/// # Example
+/// ```
+/// use flac_codec::{
+///     encode::{FlacChannelWriter, Options},
+///     decode::FlacChannelReader,
+/// };
+/// use std::io::{Cursor, Seek};
+///
+/// let mut flac = Cursor::new(vec![]);  // a FLAC file in memory
+///
+/// let mut writer = FlacChannelWriter::new(
+///     &mut flac,           // our wrapped writer
+///     Options::default(),  // default encoding options
+///     44100,               // sample rate
+///     16,                  // bits-per-sample
+///     2,                   // channel count
+///     Some(5),             // total channel-independent samples
+/// ).unwrap();
+///
+/// // write our samples, divided by channel
+/// let written_samples = vec![
+///     vec![1, 2, 3, 4, 5],
+///     vec![-1, -2, -3, -4, -5],
+/// ];
+/// assert!(writer.write(&written_samples).is_ok());
+///
+/// // finalize writing file
+/// assert!(writer.finalize().is_ok());
+///
+/// flac.rewind().unwrap();
+///
+/// // open reader around written FLAC file
+/// let mut reader = FlacChannelReader::new(flac).unwrap();
+///
+/// // read a buffer's worth of samples
+/// let read_samples = reader.fill_buf().unwrap();
+///
+/// // ensure the channels match
+/// assert_eq!(read_samples.len(), written_samples.len());
+/// assert_eq!(read_samples[0], written_samples[0]);
+/// assert_eq!(read_samples[1], written_samples[1]);
+/// ```
 pub struct FlacChannelWriter<W: std::io::Write + std::io::Seek> {
     // the wrapped encoder
     encoder: Encoder<W>,
@@ -735,14 +778,11 @@ impl<W: std::io::Write + std::io::Seek> FlacChannelWriter<W> {
 
         let bytes_per_sample = u32::from(bits_per_sample).div_ceil(8) as usize;
 
-        let pcm_frame_size = usize::from(channels);
-
         Ok(Self {
             channel_bufs: vec![VecDeque::default(); channels.into()],
             frame: Frame::empty(channels.into(), bits_per_sample.into()),
             bytes_per_sample,
-            // pcm_frame_size,
-            frame_sample_size: pcm_frame_size * options.block_size as usize,
+            frame_sample_size: options.block_size as usize,
             encoder: Encoder::new(
                 writer,
                 options,

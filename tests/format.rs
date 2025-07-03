@@ -741,6 +741,38 @@ fn generate_sine_2(
         .collect()
 }
 
+fn generate_sine_2_noninterleaved(
+    full_scale: f64,
+    sample_rate: f64,
+    samples: usize,
+    f1: f64,
+    a1: f64,
+    f2: f64,
+    a2: f64,
+    fmult: f64,
+) -> Vec<Vec<i32>> {
+    use std::f64::consts::PI;
+
+    let delta1: f64 = 2.0 * PI / (sample_rate / f1);
+    let delta2: f64 = 2.0 * PI / (sample_rate / f2);
+    let mut theta1: f64 = 0.0;
+    let mut theta2: f64 = 0.0;
+    let mut c0 = vec![];
+    let mut c1 = vec![];
+
+    for _ in 0..samples {
+        c0.push(a1 * theta1.sin() + a2 * theta2.sin() * full_scale);
+        c1.push(-(a1 * (theta1 * fmult).sin()) + a2 * (theta2 * fmult).sin() * full_scale);
+        theta1 += delta1;
+        theta2 += delta2;
+    }
+
+    vec![
+        c0.into_iter().map(|v| v as i32).collect(),
+        c1.into_iter().map(|v| v as i32).collect(),
+    ]
+}
+
 #[test]
 fn test_sine_wave_streams() {
     fn test_flac<const STEREO: bool, const SAMPLE_RATE: u32>(sine: Vec<i32>, bits_per_sample: u8) {
@@ -956,6 +988,248 @@ fn test_sine_wave_streams() {
             ),
             // sine{BPS}-19
             generate_sine_2(
+                f64::from(1 << (bits_per_sample - 1)),
+                44100.0,
+                200000,
+                8820.0,
+                0.70,
+                4410.0,
+                0.29,
+                0.1,
+            ),
+        ] {
+            test_flac::<true, 44100>(sine, bits_per_sample);
+        }
+    }
+}
+
+#[test]
+fn test_sine_wave_stream_by_channel() {
+    use flac_codec::decode::FlacChannelReader;
+    use flac_codec::encode::FlacChannelWriter;
+
+    fn test_flac<const STEREO: bool, const SAMPLE_RATE: u32>(
+        sines: Vec<Vec<i32>>,
+        bits_per_sample: u8,
+    ) {
+        let mut flac = Cursor::new(vec![]);
+
+        let mut w = FlacChannelWriter::new(
+            &mut flac,
+            Options::default(),
+            SAMPLE_RATE,
+            u32::from(bits_per_sample),
+            match STEREO {
+                true => 2,
+                false => 1,
+            },
+            sines[0].len().try_into().ok(),
+        )
+        .unwrap();
+
+        assert!(w.write(&sines).is_ok());
+        assert!(w.finalize().is_ok());
+
+        assert!(flac.rewind().is_ok());
+
+        let mut r = FlacChannelReader::new(flac).unwrap();
+        let mut sines = sines.iter().map(|s| s.as_slice()).collect::<Vec<_>>();
+
+        loop {
+            match r.fill_buf() {
+                Ok(bufs) if !bufs[0].is_empty() => {
+                    for (buf, sine) in bufs.iter().zip(sines.iter_mut()) {
+                        let (start, rest) = sine.split_at(buf.len());
+                        assert_eq!(buf, &start);
+                        *sine = rest;
+                    }
+                    let buf_len = bufs[0].len();
+                    r.consume(buf_len);
+                }
+                Ok(_) => break,
+                Err(err) => {
+                    dbg!(err);
+                    panic!("error reading from FLAC file");
+                }
+            }
+        }
+    }
+
+    for bits_per_sample in [8, 16, 24, 32] {
+        test_flac::<false, 48000>(
+            // sine{BPS}-00
+            vec![generate_sine_1(
+                f64::from(1 << (bits_per_sample - 1)),
+                48000.0,
+                200000,
+                441.0,
+                0.50,
+                441.0,
+                0.49,
+            )],
+            bits_per_sample,
+        );
+
+        test_flac::<false, 96000>(
+            // sine{BPS}-01
+            vec![generate_sine_1(
+                f64::from(1 << (bits_per_sample - 1)),
+                96000.0,
+                200000,
+                441.0,
+                0.61,
+                661.5,
+                0.37,
+            )],
+            bits_per_sample,
+        );
+
+        for sine in [
+            // sine{BPS}-02
+            vec![generate_sine_1(
+                f64::from(1 << (bits_per_sample - 1)),
+                44100.0,
+                200000,
+                441.0,
+                0.50,
+                882.0,
+                0.49,
+            )],
+            // sine{BPS}-03
+            vec![generate_sine_1(
+                f64::from(1 << (bits_per_sample - 1)),
+                44100.0,
+                200000,
+                441.0,
+                0.50,
+                4410.0,
+                0.49,
+            )],
+            // sine{BPS}-04
+            vec![generate_sine_1(
+                f64::from(1 << (bits_per_sample - 1)),
+                44100.0,
+                200000,
+                8820.0,
+                0.70,
+                4410.0,
+                0.29,
+            )],
+        ] {
+            test_flac::<false, 44100>(sine, bits_per_sample);
+        }
+
+        for sine in [
+            // sine{BPS}-10
+            generate_sine_2_noninterleaved(
+                f64::from(1 << (bits_per_sample - 1)),
+                48000.0,
+                200000,
+                441.0,
+                0.50,
+                441.0,
+                0.49,
+                1.0,
+            ),
+            // sine{BPS}-11
+            generate_sine_2_noninterleaved(
+                f64::from(1 << (bits_per_sample - 1)),
+                48000.0,
+                200000,
+                441.0,
+                0.61,
+                661.5,
+                0.37,
+                1.0,
+            ),
+        ] {
+            test_flac::<true, 48000>(sine, bits_per_sample);
+        }
+
+        // sine{BPS}-12
+        test_flac::<true, 96000>(
+            generate_sine_2_noninterleaved(
+                f64::from(1 << (bits_per_sample - 1)),
+                96000.0,
+                200000,
+                441.0,
+                0.50,
+                882.0,
+                0.49,
+                1.0,
+            ),
+            bits_per_sample,
+        );
+
+        for sine in [
+            // sine{BPS}-13
+            generate_sine_2_noninterleaved(
+                f64::from(1 << (bits_per_sample - 1)),
+                44100.0,
+                200000,
+                441.0,
+                0.50,
+                4410.0,
+                0.49,
+                1.0,
+            ),
+            // sine{BPS}-14
+            generate_sine_2_noninterleaved(
+                f64::from(1 << (bits_per_sample - 1)),
+                44100.0,
+                200000,
+                8820.0,
+                0.70,
+                4410.0,
+                0.29,
+                1.0,
+            ),
+            // sine{BPS}-15
+            generate_sine_2_noninterleaved(
+                f64::from(1 << (bits_per_sample - 1)),
+                44100.0,
+                200000,
+                441.0,
+                0.50,
+                441.0,
+                0.49,
+                0.5,
+            ),
+            // sine{BPS}-16
+            generate_sine_2_noninterleaved(
+                f64::from(1 << (bits_per_sample - 1)),
+                44100.0,
+                200000,
+                441.0,
+                0.61,
+                661.5,
+                0.37,
+                2.0,
+            ),
+            // sine{BPS}-17
+            generate_sine_2_noninterleaved(
+                f64::from(1 << (bits_per_sample - 1)),
+                44100.0,
+                200000,
+                441.0,
+                0.50,
+                882.0,
+                0.49,
+                0.7,
+            ),
+            // sine{BPS}-18
+            generate_sine_2_noninterleaved(
+                f64::from(1 << (bits_per_sample - 1)),
+                44100.0,
+                200000,
+                441.0,
+                0.50,
+                4410.0,
+                0.49,
+                1.3,
+            ),
+            // sine{BPS}-19
+            generate_sine_2_noninterleaved(
                 f64::from(1 << (bits_per_sample - 1)),
                 44100.0,
                 200000,

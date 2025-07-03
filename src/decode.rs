@@ -855,6 +855,49 @@ impl<R: std::io::Read + std::io::Seek> FlacSampleReader<R> {
 }
 
 /// A FLAC reader which outputs non-interleaved channels
+///
+/// # Example
+/// ```
+/// use flac_codec::{
+///     encode::{FlacChannelWriter, Options},
+///     decode::FlacChannelReader,
+/// };
+/// use std::io::{Cursor, Seek};
+///
+/// let mut flac = Cursor::new(vec![]);  // a FLAC file in memory
+///
+/// let mut writer = FlacChannelWriter::new(
+///     &mut flac,           // our wrapped writer
+///     Options::default(),  // default encoding options
+///     44100,               // sample rate
+///     16,                  // bits-per-sample
+///     2,                   // channel count
+///     Some(5),             // total channel-independent samples
+/// ).unwrap();
+///
+/// // write our samples, divided by channel
+/// let written_samples = vec![
+///     vec![1, 2, 3, 4, 5],
+///     vec![-1, -2, -3, -4, -5],
+/// ];
+/// assert!(writer.write(&written_samples).is_ok());
+///
+/// // finalize writing file
+/// assert!(writer.finalize().is_ok());
+///
+/// flac.rewind().unwrap();
+///
+/// // open reader around written FLAC file
+/// let mut reader = FlacChannelReader::new(flac).unwrap();
+///
+/// // read a buffer's worth of samples
+/// let read_samples = reader.fill_buf().unwrap();
+///
+/// // ensure the channels match
+/// assert_eq!(read_samples.len(), written_samples.len());
+/// assert_eq!(read_samples[0], written_samples[0]);
+/// assert_eq!(read_samples[1], written_samples[1]);
+/// ```
 #[derive(Clone)]
 pub struct FlacChannelReader<R> {
     // the wrapped decoder
