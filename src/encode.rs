@@ -457,7 +457,6 @@ pub struct FlacSampleWriter<W: std::io::Write + std::io::Seek> {
     pcm_frame_size: usize,
     // size of a single sample in bytes
     bytes_per_sample: usize,
-    // size of single set of channel-independent samples in bytes
     // whether the encoder has finalized the file
     finalized: bool,
 }
@@ -565,7 +564,11 @@ impl<W: std::io::Write + std::io::Seek> FlacSampleWriter<W> {
         {
             // update running MD5 sum calculation
             // since samples are already interleaved in channel order
-            update_md5(&mut self.encoder, buf, self.bytes_per_sample);
+            update_md5(
+                &mut self.encoder,
+                buf.iter().copied(),
+                self.bytes_per_sample,
+            );
 
             // encode fresh FLAC frame
             self.encoder.encode(self.frame.fill_from_samples(buf))?;
@@ -591,7 +594,11 @@ impl<W: std::io::Write + std::io::Seek> FlacSampleWriter<W> {
 
                 // update running MD5 sum calculation
                 // since samples are already interleaved in channel order
-                update_md5(&mut self.encoder, buf, self.bytes_per_sample);
+                update_md5(
+                    &mut self.encoder,
+                    buf.iter().copied(),
+                    self.bytes_per_sample,
+                );
 
                 // encode final FLAC frame
                 self.encoder.encode(self.frame.fill_from_samples(buf))?;
@@ -676,6 +683,222 @@ impl FlacSampleWriter<BufWriter<File>> {
         total_samples: Option<u64>,
     ) -> Result<Self, Error> {
         Self::create(path, options, 44100, 16, 2, total_samples)
+    }
+}
+
+/// A FLAC writer which accepts samples as channels of signed integers
+pub struct FlacChannelWriter<W: std::io::Write + std::io::Seek> {
+    // the wrapped encoder
+    encoder: Encoder<W>,
+    // channels that make up a partial FLAC frame
+    channel_bufs: Vec<VecDeque<i32>>,
+    // a whole set of samples for a FLAC frame
+    frame: Frame,
+    // size of a single frame in samples
+    frame_sample_size: usize,
+    // size of a single sample in bytes
+    bytes_per_sample: usize,
+    // whether the encoder has finalized the file
+    finalized: bool,
+}
+
+impl<W: std::io::Write + std::io::Seek> FlacChannelWriter<W> {
+    /// Creates new FLAC writer with the given parameters
+    ///
+    /// `sample_rate` must be between 0 (for non-audio streams) and 2²⁰.
+    ///
+    /// `bits_per_sample` must be between 1 and 32.
+    ///
+    /// `channels` must be between 1 and 8.
+    ///
+    /// Note that if `total_samples` is indicated,
+    /// the number of samples written *must*
+    /// be equal to that amount or an error will occur when writing
+    /// or finalizing the stream.
+    ///
+    /// # Errors
+    ///
+    /// Returns I/O error if unable to write initial
+    /// metadata blocks.
+    /// Returns error if any of the encoding parameters are invalid.
+    pub fn new(
+        writer: W,
+        options: Options,
+        sample_rate: u32,
+        bits_per_sample: u32,
+        channels: u8,
+        total_samples: Option<u64>,
+    ) -> Result<Self, Error> {
+        let bits_per_sample: SignedBitCount<32> = bits_per_sample
+            .try_into()
+            .map_err(|_| Error::InvalidBitsPerSample)?;
+
+        let bytes_per_sample = u32::from(bits_per_sample).div_ceil(8) as usize;
+
+        let pcm_frame_size = usize::from(channels);
+
+        Ok(Self {
+            channel_bufs: vec![VecDeque::default(); channels.into()],
+            frame: Frame::empty(channels.into(), bits_per_sample.into()),
+            bytes_per_sample,
+            // pcm_frame_size,
+            frame_sample_size: pcm_frame_size * options.block_size as usize,
+            encoder: Encoder::new(
+                writer,
+                options,
+                sample_rate,
+                bits_per_sample,
+                channels,
+                total_samples.and_then(NonZero::new),
+            )?,
+            finalized: false,
+        })
+    }
+
+    /// Creates new FLAC writer with CDDA parameters
+    ///
+    /// Sample rate is 44100 Hz, bits-per-sample is 16,
+    /// channels is 2.
+    ///
+    /// Note that if `total_samples` is indicated,
+    /// the number of samples written *must*
+    /// be equal to that amount or an error will occur when writing
+    /// or finalizing the stream.
+    ///
+    /// # Errors
+    ///
+    /// Returns I/O error if unable to write initial
+    /// metadata blocks.
+    /// Returns error if any of the encoding parameters are invalid.
+    pub fn new_cdda(
+        writer: W,
+        options: Options,
+        total_samples: Option<u64>,
+    ) -> Result<Self, Error> {
+        Self::new(writer, options, 44100, 16, 2, total_samples)
+    }
+
+    /// Given a set of channels containing samples, writes them to the FLAC file
+    ///
+    /// Channels should be a slice-able set of sample slices, like:
+    /// [[left₀ , left₁ , left₂ , …] , [right₀ , right₁ , right₂ , …]]
+    ///
+    /// The number of channels must be identical to the
+    /// channel count indicated when intializing the encoder.
+    ///
+    /// The number of samples in each channel must also be identical.
+    pub fn write<C, S>(&mut self, channels: C) -> Result<(), Error>
+    where
+        C: AsRef<[S]>,
+        S: AsRef<[i32]>,
+    {
+        use crate::audio::MultiZip;
+
+        // sanity-check our channel inputs
+        let channels = channels.as_ref();
+
+        match channels {
+            whole @ [first, rest @ ..]
+                if whole.len() == usize::from(self.encoder.channel_count().get()) =>
+            {
+                if rest
+                    .iter()
+                    .any(|c| c.as_ref().len() != first.as_ref().len())
+                {
+                    return Err(Error::ChannelLengthMismatch);
+                }
+            }
+            _ => {
+                return Err(Error::ChannelCountMismatch);
+            }
+        }
+
+        // dump whole set of samples into our internal channel buffers
+        for (buf, channel) in self.channel_bufs.iter_mut().zip(channels) {
+            buf.extend(channel.as_ref());
+        }
+
+        // encode as many FLAC frames as possible (which may be 0)
+        let mut encoded_frames = 0;
+        for bufs in self
+            .channel_bufs
+            .iter_mut()
+            .map(|v| v.make_contiguous().chunks_exact_mut(self.frame_sample_size))
+            .collect::<MultiZip<_>>()
+        {
+            // update running MD5 sum calculation
+            update_md5(
+                &mut self.encoder,
+                bufs.iter()
+                    .map(|c| c.iter().copied())
+                    .collect::<MultiZip<_>>()
+                    .flatten(),
+                self.bytes_per_sample,
+            );
+
+            // encode fresh FLAC frame
+            self.encoder.encode(self.frame.fill_from_channels(&bufs))?;
+
+            encoded_frames += 1;
+        }
+
+        // drain encoded samples from buffers
+        for channel in self.channel_bufs.iter_mut() {
+            channel.drain(0..self.frame_sample_size * encoded_frames);
+        }
+
+        Ok(())
+    }
+
+    fn finalize_inner(&mut self) -> Result<(), Error> {
+        use crate::audio::MultiZip;
+
+        if !self.finalized {
+            self.finalized = true;
+
+            // encode as many samples possible into final frame, if necessary
+            if !self.channel_bufs[0].is_empty() {
+                // update running MD5 sum calculation
+                update_md5(
+                    &mut self.encoder,
+                    self.channel_bufs
+                        .iter()
+                        .map(|c| c.iter().copied())
+                        .collect::<MultiZip<_>>()
+                        .flatten(),
+                    self.bytes_per_sample,
+                );
+
+                // encode final FLAC frame
+                self.encoder.encode(
+                    self.frame.fill_from_channels(
+                        self.channel_bufs
+                            .iter_mut()
+                            .map(|v| v.make_contiguous())
+                            .collect::<ArrayVec<_, MAX_CHANNELS>>()
+                            .as_slice(),
+                    ),
+                )?;
+            }
+
+            self.encoder.finalize_inner()
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Attempt to finalize stream
+    ///
+    /// It is necessary to finalize the FLAC encoder
+    /// so that it will write any partially unwritten samples
+    /// to the stream and update the [`crate::metadata::Streaminfo`] and [`crate::metadata::SeekTable`] blocks
+    /// with their final values.
+    ///
+    /// Dropping the encoder will attempt to finalize the stream
+    /// automatically, but will ignore any errors that may occur.
+    pub fn finalize(mut self) -> Result<(), Error> {
+        self.finalize_inner()?;
+        Ok(())
     }
 }
 
@@ -967,7 +1190,7 @@ impl<W: std::io::Write> FlacStreamWriter<W> {
 
 fn update_md5<W: std::io::Write + std::io::Seek>(
     encoder: &mut Encoder<W>,
-    samples: &[i32],
+    samples: impl Iterator<Item = i32>,
     bytes_per_sample: usize,
 ) {
     use crate::byteorder::{Endianness, LittleEndian};
@@ -975,22 +1198,22 @@ fn update_md5<W: std::io::Write + std::io::Seek>(
     match bytes_per_sample {
         1 => {
             for s in samples {
-                encoder.update_md5(&LittleEndian::i8_to_bytes(*s as i8));
+                encoder.update_md5(&LittleEndian::i8_to_bytes(s as i8));
             }
         }
         2 => {
             for s in samples {
-                encoder.update_md5(&LittleEndian::i16_to_bytes(*s as i16));
+                encoder.update_md5(&LittleEndian::i16_to_bytes(s as i16));
             }
         }
         3 => {
             for s in samples {
-                encoder.update_md5(&LittleEndian::i24_to_bytes(*s));
+                encoder.update_md5(&LittleEndian::i24_to_bytes(s));
             }
         }
         4 => {
             for s in samples {
-                encoder.update_md5(&LittleEndian::i32_to_bytes(*s));
+                encoder.update_md5(&LittleEndian::i32_to_bytes(s));
             }
         }
         _ => panic!("unsupported number of bytes per sample"),
@@ -1629,6 +1852,11 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
             md5: md5::Context::new(),
             finalized: false,
         })
+    }
+
+    /// The encoder's channel count
+    fn channel_count(&self) -> NonZero<u8> {
+        self.blocks.streaminfo().channels
     }
 
     /// Updates running MD5 calculation with signed, little-endian bytes

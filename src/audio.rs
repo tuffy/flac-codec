@@ -197,11 +197,37 @@ impl Frame {
 
         self
     }
+
+    /// Fills frame samples from indepedent channels
+    ///
+    /// Channel count must match our internal channel count
+    /// (Which must be at least 1 channel)
+    pub fn fill_from_channels<C, S>(&mut self, channels: C) -> &Self
+    where
+        C: AsRef<[S]>,
+        S: AsRef<[i32]>,
+    {
+        let channels = channels.as_ref();
+        debug_assert_eq!(self.channels, channels.len());
+
+        self.channel_len = channels[0].as_ref().len();
+        self.samples.resize(channels.len() * self.channel_len, 0);
+
+        for (o, i) in self
+            .samples
+            .chunks_exact_mut(self.channel_len)
+            .zip(channels)
+        {
+            o.copy_from_slice(i.as_ref());
+        }
+
+        self
+    }
 }
 
 const MAX_CHANNELS: usize = 8;
 
-struct MultiZip<I> {
+pub struct MultiZip<I> {
     iters: ArrayVec<I, MAX_CHANNELS>,
 }
 
@@ -211,5 +237,14 @@ impl<I: Iterator> Iterator for MultiZip<I> {
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
         self.iters.iter_mut().map(|i| i.next()).collect()
+    }
+}
+
+impl<I> FromIterator<I> for MultiZip<I> {
+    #[inline]
+    fn from_iter<T: IntoIterator<Item = I>>(iter: T) -> Self {
+        Self {
+            iters: iter.into_iter().collect(),
+        }
     }
 }

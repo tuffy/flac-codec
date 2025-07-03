@@ -186,6 +186,10 @@ pub enum Error {
     InvalidTotalBytes,
     /// Invalid total samples count
     InvalidTotalSamples,
+    /// Number of channels sent to encoder is incorrect
+    ChannelCountMismatch,
+    /// Channels sent to encoder are not all the same length
+    ChannelLengthMismatch,
 }
 
 impl From<std::io::Error> for Error {
@@ -288,6 +292,10 @@ impl std::fmt::Display for Error {
             }
             Self::InvalidTotalBytes => "invalid total byte count".fmt(f),
             Self::InvalidTotalSamples => "invalid total samples count".fmt(f),
+            Self::ChannelCountMismatch => {
+                "number of written channels differs from encoder's channel count".fmt(f)
+            }
+            Self::ChannelLengthMismatch => "number of written channels are not consistent".fmt(f),
         }
     }
 }
