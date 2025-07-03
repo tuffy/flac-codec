@@ -854,6 +854,199 @@ impl<R: std::io::Read + std::io::Seek> FlacSampleReader<R> {
     }
 }
 
+/// A FLAC reader which outputs non-interleaved channels
+#[derive(Clone)]
+pub struct FlacChannelReader<R> {
+    // the wrapped decoder
+    decoder: Decoder<R>,
+    // amount of consumed frames across all channels
+    consumed: usize,
+    // start of FLAC frames
+    frames_start: Option<u64>,
+}
+
+impl<R: std::io::Read> FlacChannelReader<R> {
+    /// Opens new FLAC reader which wraps the given reader
+    ///
+    /// The reader must be positioned at the start of the
+    /// FLAC stream.  If the file has non-FLAC data
+    /// at the beginning (such as ID3v2 tags), one
+    /// should skip such data before initializing a `FlacByteReader`.
+    #[inline]
+    pub fn new(mut reader: R) -> Result<Self, Error> {
+        let blocklist = BlockList::read(reader.by_ref())?;
+
+        Ok(Self {
+            decoder: Decoder::new(reader, blocklist),
+            consumed: 0,
+            frames_start: None,
+        })
+    }
+
+    /// Returns FLAC metadata blocks
+    #[inline]
+    pub fn metadata(&self) -> &BlockList {
+        self.decoder.metadata()
+    }
+
+    /// Returns complete buffer of all read samples
+    ///
+    /// Analogous to [`std::io::BufRead::fill_buf`], this should
+    /// be paired with [`FlacSampleReader::consume`] to
+    /// consume samples in the filled buffer once used.
+    ///
+    /// Returned samples are returned as a `Vec` of channel slices,
+    /// like: [[left₀ , left₁ , left₂ , …], [right₀ , right₁ , right₂ , …]]
+    ///
+    /// The returned buffer will always contain at least one channel.
+    /// All channel slices will always be the same length.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if some error occurs reading FLAC file
+    /// to fill buffer.
+    #[inline]
+    pub fn fill_buf(&mut self) -> Result<Vec<&[i32]>, Error> {
+        if self.consumed < self.decoder.buf.pcm_frames() {
+            Ok(self
+                .decoder
+                .buf
+                .channels()
+                .map(|c| &c[self.consumed..])
+                .collect())
+        } else {
+            self.consumed = 0;
+            let channels = usize::from(self.decoder.channel_count().get());
+            match self.decoder.read_frame()? {
+                Some(frame) => Ok(frame.channels().collect()),
+                None => Ok(vec![&[]; channels]),
+            }
+        }
+    }
+
+    /// Informs the reader that `amt` channel-indepedent samples
+    /// have been consumed.
+    ///
+    /// Analagous to [`std::io::BufRead::consume`], which marks
+    /// samples as having been read.
+    ///
+    /// May panic if attempting to consume more bytes
+    /// than are available in the buffer.
+    #[inline]
+    pub fn consume(&mut self, amt: usize) {
+        self.consumed += amt;
+    }
+}
+
+impl<R: std::io::Read + std::io::Seek> FlacChannelReader<R> {
+    /// Opens a new seekable FLAC reader which wraps the given reader
+    ///
+    /// If a stream is both readable and seekable,
+    /// it's vital to use this method to open it if one
+    /// also wishes to seek within the FLAC stream.
+    /// Otherwise, an I/O error will result when attempting to seek.
+    ///
+    /// [`FlacChannelReader::open`] calls this method to ensure
+    /// all `File`-based streams are also seekable.
+    ///
+    /// The reader must be positioned at the start of the
+    /// FLAC stream.  If the file has non-FLAC data
+    /// at the beginning (such as ID3v2 tags), one
+    /// should skip such data before initializing a `FlacChannelReader`.
+    pub fn new_seekable(mut reader: R) -> Result<Self, Error> {
+        let blocklist = BlockList::read(reader.by_ref())?;
+        let frames_start = reader.stream_position()?;
+
+        Ok(Self {
+            decoder: Decoder::new(reader, blocklist),
+            consumed: 0,
+            frames_start: Some(frames_start),
+        })
+    }
+}
+
+impl FlacChannelReader<BufReader<File>> {
+    /// Opens FLAC file from the given path
+    #[inline]
+    pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
+        FlacChannelReader::new_seekable(BufReader::new(File::open(path.as_ref())?))
+    }
+}
+
+impl<R: std::io::Read + std::io::Seek> FlacChannelReader<R> {
+    /// Seeks to the given channel-independent sample
+    ///
+    /// The sample is relative to the beginning of the stream
+    pub fn seek(&mut self, sample: u64) -> Result<(), Error> {
+        // actual position, in channel-independent samples
+        let mut pos = self.decoder.seek(
+            self.frames_start
+                .ok_or(std::io::Error::from(std::io::ErrorKind::NotSeekable))?,
+            sample,
+        )?;
+
+        // seeking invalidates the current samples consumed
+        self.consumed = 0;
+
+        // needed channel-independent samples
+        while sample > pos {
+            let buf = self.fill_buf()?;
+
+            // size of buf in channel-independent samples
+            match buf[0].len() {
+                0 => {
+                    // read beyond end of stream
+                    return Err(Error::InvalidSeek);
+                }
+                buf_samples => {
+                    // amount of channel-independent samples to consume
+                    let to_consume = buf_samples.min((sample - pos).try_into().unwrap());
+
+                    // mark samples in buffer as consumed
+                    self.consume(to_consume);
+
+                    // advance current actual position
+                    pos += to_consume as u64;
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
+
+impl<R: std::io::Read> Metadata for FlacChannelReader<R> {
+    #[inline]
+    fn channel_count(&self) -> u8 {
+        self.decoder.channel_count().get()
+    }
+
+    #[inline]
+    fn channel_mask(&self) -> ChannelMask {
+        self.decoder.channel_mask()
+    }
+
+    #[inline]
+    fn sample_rate(&self) -> u32 {
+        self.decoder.sample_rate()
+    }
+
+    #[inline]
+    fn bits_per_sample(&self) -> u32 {
+        self.decoder.bits_per_sample()
+    }
+
+    #[inline]
+    fn total_samples(&self) -> Option<u64> {
+        self.decoder.total_samples().map(|s| s.get())
+    }
+
+    #[inline]
+    fn md5(&self) -> Option<&[u8; 16]> {
+        self.decoder.md5()
+    }
+}
+
 /// A FLAC reader which operates on streamed input
 ///
 /// Streamed FLAC files are simply a collection of raw

@@ -37,7 +37,6 @@ fn main() {
     }
 }
 
-
 #[cfg(not(feature = "cpal"))]
 fn main() {
     eprintln!("* Enable the \"cpal\" feature to run this example");
