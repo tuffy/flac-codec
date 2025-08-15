@@ -1893,25 +1893,25 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
         };
 
         // insert a dummy SeekTable to be populated later
-        if let Some(total_samples) = total_samples {
-            if let Some(placeholders) = options.seektable_interval.map(|s| {
+        if let Some(total_samples) = total_samples
+            && let Some(placeholders) = options.seektable_interval.map(|s| {
                 s.filter(
                     sample_rate,
                     EncoderSeekPoint::placeholders(total_samples.get(), options.block_size),
                 )
-            }) {
-                use crate::metadata::SeekTable;
+            })
+        {
+            use crate::metadata::SeekTable;
 
-                blocks.insert(SeekTable {
-                    // placeholder points should always be contiguous
-                    points: placeholders
-                        .take(SeekTable::MAX_POINTS)
-                        .map(|p| p.into())
-                        .collect::<Vec<_>>()
-                        .try_into()
-                        .unwrap(),
-                });
-            }
+            blocks.insert(SeekTable {
+                // placeholder points should always be contiguous
+                points: placeholders
+                    .take(SeekTable::MAX_POINTS)
+                    .map(|p| p.into())
+                    .collect::<Vec<_>>()
+                    .try_into()
+                    .unwrap(),
+            });
         }
 
         let start = writer.stream_position()?;
@@ -1985,10 +1985,10 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
 
         // update running total of samples written
         self.samples_written += frame.pcm_frames() as u64;
-        if let Some(total_samples) = self.blocks.streaminfo().total_samples {
-            if self.samples_written > total_samples.get() {
-                return Err(Error::ExcessiveTotalSamples);
-            }
+        if let Some(total_samples) = self.blocks.streaminfo().total_samples
+            && self.samples_written > total_samples.get()
+        {
+            return Err(Error::ExcessiveTotalSamples);
         }
 
         encode_frame(
