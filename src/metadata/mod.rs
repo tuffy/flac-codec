@@ -4419,6 +4419,13 @@ impl BlockList {
         self.blocks.retain(|b| b.block_type() != B::TYPE)
     }
 
+    /// Removes and returns all instances of the given block type
+    pub fn extract<B: OptionalMetadataBlock>(&mut self) -> impl Iterator<Item = B> {
+        self.blocks
+            .extract_if(.., |block| block.block_type() == B::TYPE)
+            .filter_map(|b| B::try_from(b).ok())
+    }
+
     /// Updates first instance of the given block, creating it if necessary
     ///
     /// # Example

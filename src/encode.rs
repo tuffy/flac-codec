@@ -3911,7 +3911,7 @@ fn write_residuals<W: BitWrite>(
 
     fn try_reduce_rice(
         partitions: ArrayVec<Partition<'_, 0b11111>, MAX_PARTITIONS>,
-    ) -> CodingMethod {
+    ) -> CodingMethod<'_> {
         match partitions
             .iter()
             .map(|Partition { header, residuals }| {
