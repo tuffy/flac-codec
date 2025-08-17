@@ -1803,7 +1803,7 @@ fn read_residuals<R: BitRead, I: SignedInteger>(
     fn read_block<const RICE_MAX: u32, R: BitRead, I: SignedInteger>(
         reader: &mut R,
         predictor_order: usize,
-        mut residuals: &mut [I],
+        residuals: &mut [I],
     ) -> Result<(), Error> {
         use crate::stream::ResidualPartitionHeader;
 
@@ -1811,15 +1811,12 @@ fn read_residuals<R: BitRead, I: SignedInteger>(
         let partition_order = reader.read::<4, u32>()?;
         let partition_count = 1 << partition_order;
 
-        for p in 0..partition_count {
-            let (partition, next) = residuals
-                .split_at_mut_checked(
-                    (block_size / partition_count)
-                        .checked_sub(if p == 0 { predictor_order } else { 0 })
-                        .ok_or(Error::InvalidPartitionOrder)?,
-                )
-                .ok_or(Error::InvalidPartitionOrder)?;
+        let partitions = residuals.rchunks_mut(block_size / partition_count).rev();
 
+        if partitions.len() != partition_count {
+            return Err(Error::InvalidPartitionOrder);
+        }
+        for partition in partitions {
             match reader.parse()? {
                 ResidualPartitionHeader::Standard { rice } => {
                     partition.iter_mut().try_for_each(|s| {
@@ -1844,8 +1841,6 @@ fn read_residuals<R: BitRead, I: SignedInteger>(
                     partition.fill(I::ZERO);
                 }
             }
-
-            residuals = next;
         }
 
         Ok(())
