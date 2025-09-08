@@ -18,8 +18,8 @@
 
 use crate::audio::Frame;
 use crate::metadata::{
-    Application, BlockList, BlockSize, Cuesheet, Picture, SeekPoint, Streaminfo, VorbisComment,
-    write_blocks,
+    Application, BlockList, BlockSize, Cuesheet, Picture, PortableMetadataBlock, SeekPoint,
+    Streaminfo, VorbisComment, write_blocks,
 };
 use crate::stream::{ChannelAssignment, FrameNumber, Independent, SampleRate};
 use crate::{Counter, Error};
@@ -1591,6 +1591,34 @@ impl Options {
             seektable_interval: None,
             ..self
         }
+    }
+
+    /// Add new block to metadata
+    ///
+    /// If the block may only occur once in a file,
+    /// any previous block of that same type is removed.
+    pub fn with_block<B>(&mut self, block: B) -> &mut Self
+    where
+        B: PortableMetadataBlock,
+    {
+        self.metadata.insert(block);
+        self
+    }
+
+    /// Add new block to metadata
+    ///
+    /// If the block may only occur once in a file,
+    /// any current block of that type is replaced by
+    /// the final block in the iterator - if any.
+    /// Otherwise, all blocks in the iterator are used.
+    pub fn with_blocks<B>(&mut self, iter: impl IntoIterator<Item = B>) -> &mut Self
+    where
+        B: PortableMetadataBlock,
+    {
+        for block in iter {
+            self.metadata.insert(block);
+        }
+        self
     }
 
     /// Overwrites existing file if it already exists

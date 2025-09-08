@@ -1472,11 +1472,20 @@ macro_rules! block {
     };
 }
 
+macro_rules! portable_block {
+    (Seektable:ty) => {};
+    ($t:ty) => {
+        impl PortableMetadataBlock for $t {}
+    };
+}
+
 macro_rules! optional_block {
     ($t:ty, $v:ident) => {
         impl OptionalMetadataBlock for $t {
             const OPTIONAL_TYPE: OptionalBlockType = OptionalBlockType::$v;
         }
+
+        portable_block!($t);
 
         impl private::OptionalMetadataBlock for $t {
             fn try_from_opt_block(
@@ -4656,6 +4665,14 @@ pub trait OptionalMetadataBlock: MetadataBlock + private::OptionalMetadataBlock 
     /// Our optional block type
     const OPTIONAL_TYPE: OptionalBlockType;
 }
+
+/// A type of optional FLAC metadata block which is portable
+///
+/// These are blocks which may be safely ported from one
+/// encoding of a FLAC file to another.
+///
+/// All blocks except STREAMINFO and SEEKTABLE are considered portable.
+pub trait PortableMetadataBlock: OptionalMetadataBlock {}
 
 mod private {
     use super::{
