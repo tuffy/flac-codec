@@ -156,7 +156,8 @@ impl TryFrom<u64> for CDDAOffset {
     type Error = u64;
 
     fn try_from(offset: u64) -> Result<Self, Self::Error> {
-        ((offset % Self::SAMPLES_PER_SECTOR) == 0)
+        offset
+            .is_multiple_of(Self::SAMPLES_PER_SECTOR)
             .then_some(Self { offset })
             .ok_or(offset)
     }

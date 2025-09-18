@@ -1106,7 +1106,7 @@ impl<W: std::io::Write> FlacStreamWriter<W> {
             .map_err(|_| Error::NonSubsetBitsPerSample)?;
 
         // samples must divide evenly into channels
-        if samples.len() % usize::from(channels) != 0 {
+        if !samples.len().is_multiple_of(usize::from(channels)) {
             return Err(Error::SamplesNotDivisibleByChannels);
         } else if !(1..=8).contains(&channels) {
             return Err(Error::ExcessiveChannels);
@@ -3577,7 +3577,7 @@ fn lp_coefficients(
                         coeffs: coeffs
                             .iter()
                             .zip(coeffs.iter().rev().map(|c| k * c))
-                            .map(|(c1, c2)| (c1 - c2))
+                            .map(|(c1, c2)| c1 - c2)
                             .chain(std::iter::once(k))
                             .collect(),
                         error: error * (1.0 - k.powi(2)),

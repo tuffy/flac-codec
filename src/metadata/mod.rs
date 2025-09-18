@@ -212,7 +212,7 @@ impl bitstream_io::write::Counter for BlockBits {
     }
 
     fn byte_aligned(&self) -> bool {
-        self.0 % 8 == 0
+        self.0.is_multiple_of(8)
     }
 }
 
