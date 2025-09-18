@@ -1597,7 +1597,7 @@ impl Options {
     ///
     /// If the block may only occur once in a file,
     /// any previous block of that same type is removed.
-    pub fn with_block<B>(&mut self, block: B) -> &mut Self
+    pub fn add_block<B>(&mut self, block: B) -> &mut Self
     where
         B: PortableMetadataBlock,
     {
@@ -1605,13 +1605,13 @@ impl Options {
         self
     }
 
-    /// Add new block to metadata
+    /// Add new blocks to metadata
     ///
     /// If the block may only occur once in a file,
     /// any current block of that type is replaced by
     /// the final block in the iterator - if any.
     /// Otherwise, all blocks in the iterator are used.
-    pub fn with_blocks<B>(&mut self, iter: impl IntoIterator<Item = B>) -> &mut Self
+    pub fn add_blocks<B>(&mut self, iter: impl IntoIterator<Item = B>) -> &mut Self
     where
         B: PortableMetadataBlock,
     {
