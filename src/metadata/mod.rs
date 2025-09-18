@@ -1472,20 +1472,12 @@ macro_rules! block {
     };
 }
 
-macro_rules! portable_block {
-    (Seektable:ty) => {};
-    ($t:ty) => {
-        impl PortableMetadataBlock for $t {}
-    };
-}
 
 macro_rules! optional_block {
     ($t:ty, $v:ident) => {
         impl OptionalMetadataBlock for $t {
             const OPTIONAL_TYPE: OptionalBlockType = OptionalBlockType::$v;
         }
-
-        portable_block!($t);
 
         impl private::OptionalMetadataBlock for $t {
             fn try_from_opt_block(
@@ -4673,6 +4665,12 @@ pub trait OptionalMetadataBlock: MetadataBlock + private::OptionalMetadataBlock 
 ///
 /// All blocks except STREAMINFO and SEEKTABLE are considered portable.
 pub trait PortableMetadataBlock: OptionalMetadataBlock {}
+
+impl PortableMetadataBlock for Padding {}
+impl PortableMetadataBlock for Application {}
+impl PortableMetadataBlock for VorbisComment {}
+impl PortableMetadataBlock for Cuesheet {}
+impl PortableMetadataBlock for Picture {}
 
 mod private {
     use super::{
