@@ -2108,7 +2108,7 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
             }
 
             // update STREAMINFO MD5 sum
-            self.blocks.streaminfo_mut().md5 = Some(self.md5.clone().compute().0);
+            self.blocks.streaminfo_mut().md5 = Some(self.md5.clone().finalize().0);
 
             // rewrite metadata blocks, relative to the beginning
             // of the stream

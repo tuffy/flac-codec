@@ -1290,7 +1290,7 @@ pub fn verify_reader<R: std::io::Read>(r: R) -> Result<Verified, Error> {
         Some(flac_md5) => {
             let mut output_md5 = md5::Context::new();
             std::io::copy(&mut r, &mut output_md5)?;
-            Ok(if flac_md5 == output_md5.compute().0 {
+            Ok(if flac_md5 == output_md5.finalize().0 {
                 Verified::MD5Match
             } else {
                 Verified::MD5Mismatch

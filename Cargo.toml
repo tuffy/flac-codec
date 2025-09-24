@@ -16,9 +16,9 @@ rust-version = "1.88"
 viu = ["dep:image", "dep:viuer"]
 
 [dependencies]
-bitstream-io = "4.6"
+bitstream-io = "4.8"
 arrayvec = "0.7"
-md5 = "0.7"
+md5 = "0.8"
 
 # Rayon only used for FLAC encoding
 rayon = { version = "1.11", optional = true }

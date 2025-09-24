@@ -28,7 +28,7 @@ fn test_byte_seeking() {
 
     let mut md5 = md5::Context::new();
     md5.consume(&all_data);
-    assert_eq!(&md5.compute().0, flac.md5().unwrap());
+    assert_eq!(&md5.finalize().0, flac.md5().unwrap());
 
     // test seeking from start
     for i in 1..(flac_len / 10000) {
