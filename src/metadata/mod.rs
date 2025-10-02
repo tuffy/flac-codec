@@ -1472,7 +1472,6 @@ macro_rules! block {
     };
 }
 
-
 macro_rules! optional_block {
     ($t:ty, $v:ident) => {
         impl OptionalMetadataBlock for $t {

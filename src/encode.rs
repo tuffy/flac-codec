@@ -253,7 +253,7 @@ impl<W: std::io::Write + std::io::Seek, E: crate::byteorder::Endianness> FlacByt
                 E::bytes_to_le(buf, self.bytes_per_sample);
 
                 // update MD5 sum with little-endian bytes
-                self.encoder.update_md5(buf);
+                self.encoder.md5.consume(&buf);
 
                 self.encoder
                     .encode(self.frame.fill_from_buf::<LittleEndian>(buf))?;
@@ -369,7 +369,7 @@ impl<W: std::io::Write + std::io::Seek, E: crate::byteorder::Endianness> std::io
             E::bytes_to_le(buf, self.bytes_per_sample);
 
             // update MD5 sum with little-endian bytes
-            self.encoder.update_md5(buf);
+            self.encoder.md5.consume(&buf);
 
             // encode fresh FLAC frame
             self.encoder
@@ -565,7 +565,7 @@ impl<W: std::io::Write + std::io::Seek> FlacSampleWriter<W> {
             // update running MD5 sum calculation
             // since samples are already interleaved in channel order
             update_md5(
-                &mut self.encoder,
+                &mut self.encoder.md5,
                 buf.iter().copied(),
                 self.bytes_per_sample,
             );
@@ -595,7 +595,7 @@ impl<W: std::io::Write + std::io::Seek> FlacSampleWriter<W> {
                 // update running MD5 sum calculation
                 // since samples are already interleaved in channel order
                 update_md5(
-                    &mut self.encoder,
+                    &mut self.encoder.md5,
                     buf.iter().copied(),
                     self.bytes_per_sample,
                 );
@@ -868,7 +868,7 @@ impl<W: std::io::Write + std::io::Seek> FlacChannelWriter<W> {
         {
             // update running MD5 sum calculation
             update_md5(
-                &mut self.encoder,
+                &mut self.encoder.md5,
                 bufs.iter()
                     .map(|c| c.iter().copied())
                     .collect::<MultiZip<_>>()
@@ -900,7 +900,7 @@ impl<W: std::io::Write + std::io::Seek> FlacChannelWriter<W> {
             if !self.channel_bufs[0].is_empty() {
                 // update running MD5 sum calculation
                 update_md5(
-                    &mut self.encoder,
+                    &mut self.encoder.md5,
                     self.channel_bufs
                         .iter()
                         .map(|c| c.iter().copied())
@@ -1289,32 +1289,28 @@ impl<W: std::io::Write> FlacStreamWriter<W> {
     }
 }
 
-fn update_md5<W: std::io::Write + std::io::Seek>(
-    encoder: &mut Encoder<W>,
-    samples: impl Iterator<Item = i32>,
-    bytes_per_sample: usize,
-) {
+fn update_md5(md5: &mut md5::Context, samples: impl Iterator<Item = i32>, bytes_per_sample: usize) {
     use crate::byteorder::{Endianness, LittleEndian};
 
     match bytes_per_sample {
         1 => {
             for s in samples {
-                encoder.update_md5(&LittleEndian::i8_to_bytes(s as i8));
+                md5.consume(&LittleEndian::i8_to_bytes(s as i8));
             }
         }
         2 => {
             for s in samples {
-                encoder.update_md5(&LittleEndian::i16_to_bytes(s as i16));
+                md5.consume(&LittleEndian::i16_to_bytes(s as i16));
             }
         }
         3 => {
             for s in samples {
-                encoder.update_md5(&LittleEndian::i24_to_bytes(s));
+                md5.consume(&LittleEndian::i24_to_bytes(s));
             }
         }
         4 => {
             for s in samples {
-                encoder.update_md5(&LittleEndian::i32_to_bytes(s));
+                md5.consume(&LittleEndian::i32_to_bytes(s));
             }
         }
         _ => panic!("unsupported number of bytes per sample"),
@@ -1986,11 +1982,6 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
     /// The encoder's channel count
     fn channel_count(&self) -> NonZero<u8> {
         self.blocks.streaminfo().channels
-    }
-
-    /// Updates running MD5 calculation with signed, little-endian bytes
-    fn update_md5(&mut self, frame_bytes: &[u8]) {
-        self.md5.consume(frame_bytes)
     }
 
     /// Encodes an audio frame of PCM samples
