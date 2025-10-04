@@ -4649,6 +4649,17 @@ impl IntoIterator for BlockList {
     }
 }
 
+impl<B: OptionalMetadataBlock> Extend<B> for BlockList {
+    fn extend<I>(&mut self, iter: I)
+    where
+        I: IntoIterator<Item = B>,
+    {
+        for block in iter {
+            self.insert(block);
+        }
+    }
+}
+
 /// A type of FLAC metadata block which is not required
 ///
 /// The STREAMINFO block is required.  All others are optional.
