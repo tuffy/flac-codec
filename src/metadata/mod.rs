@@ -789,6 +789,21 @@ where
     })
 }
 
+/// Returns iterator of blocks of a given type
+pub fn blocks_of<P, B>(p: P) -> impl Iterator<Item = Result<B, Error>>
+where
+    P: AsRef<Path>,
+    B: MetadataBlock + 'static,
+{
+    match blocks(p) {
+        Ok(iter) => {
+            Box::new(iter.filter_map(|block| block.map(|b| B::try_from(b).ok()).transpose()))
+                as Box<dyn Iterator<Item = Result<B, Error>>>
+        }
+        Err(e) => Box::new(std::iter::once(Err(e.into()))),
+    }
+}
+
 /// Writes iterator of blocks to the given writer.
 ///
 /// Because this may perform many small writes,
