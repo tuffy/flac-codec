@@ -1295,22 +1295,22 @@ fn update_md5(md5: &mut md5::Context, samples: impl Iterator<Item = i32>, bytes_
     match bytes_per_sample {
         1 => {
             for s in samples {
-                md5.consume(&LittleEndian::i8_to_bytes(s as i8));
+                md5.consume(LittleEndian::i8_to_bytes(s as i8));
             }
         }
         2 => {
             for s in samples {
-                md5.consume(&LittleEndian::i16_to_bytes(s as i16));
+                md5.consume(LittleEndian::i16_to_bytes(s as i16));
             }
         }
         3 => {
             for s in samples {
-                md5.consume(&LittleEndian::i24_to_bytes(s));
+                md5.consume(LittleEndian::i24_to_bytes(s));
             }
         }
         4 => {
             for s in samples {
-                md5.consume(&LittleEndian::i32_to_bytes(s));
+                md5.consume(LittleEndian::i32_to_bytes(s));
             }
         }
         _ => panic!("unsupported number of bytes per sample"),

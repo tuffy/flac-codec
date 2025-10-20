@@ -39,6 +39,8 @@ use std::path::Path;
 /// Types related to the CUESHEET metadata block
 pub mod cuesheet;
 
+const FLAC_TAG: &[u8; 4] = b"fLaC";
+
 /// A trait for indicating various pieces of FLAC stream metadata
 ///
 /// This metadata may be necessary for decoding a FLAC file
@@ -562,7 +564,7 @@ impl<R: std::io::Read> Iterator for BlockIterator<R> {
             let mut tag = [0; 4];
             match self.reader.read_exact(&mut tag) {
                 Ok(()) => match &tag {
-                    b"fLaC" => {
+                    FLAC_TAG => {
                         self.tag_read = true;
                         self.next()
                     }
@@ -789,6 +791,49 @@ where
     })
 }
 
+/// Returns FLAC's STREAMINFO metadata block from the given file
+///
+/// # Errors
+///
+/// Returns an error if the STREAMINFO block is not first
+/// or if any I/O error occurs when reading the file.
+pub fn info<P: AsRef<Path>>(p: P) -> Result<Streaminfo, Error> {
+    File::open(p)
+        .map_err(Error::Io)
+        .and_then(|f| read_info(BufReader::new(f)))
+}
+
+/// Returns FLAC's STREAMINFO metadata block from the given reader
+/// The reader is assumed to be rewound to the start of the FLAC file data.
+///
+/// # Errors
+///
+/// Returns an error if the STREAMINFO block is not first
+/// or if any I/O error occurs when reading the file.
+pub fn read_info<R: std::io::Read>(r: R) -> Result<Streaminfo, Error> {
+    let mut r = BitReader::endian(r, BigEndian);
+
+    // FLAC tag must be first thing in stream
+    if &r.read_to::<[u8; 4]>()? != FLAC_TAG {
+        return Err(Error::MissingFlacTag);
+    }
+
+    // STREAMINFO block must be present, and must be first
+    if !matches!(
+        r.parse()?,
+        BlockHeader {
+            block_type: BlockType::Streaminfo,
+            size: Streaminfo::SIZE,
+            last: _,
+        }
+    ) {
+        return Err(Error::MissingStreaminfo);
+    }
+
+    // Finally, parse STREAMINFO block itself
+    r.parse().map_err(Error::Io)
+}
+
 /// Returns iterator of blocks of a given type
 pub fn blocks_of<P, B>(p: P) -> impl Iterator<Item = Result<B, Error>>
 where
@@ -877,7 +922,7 @@ pub fn write_blocks<B: AsBlockRef>(
     }
 
     // "FlaC" tag must come before anything else
-    w.write_all(b"fLaC").map_err(Error::Io)?;
+    w.write_all(FLAC_TAG).map_err(Error::Io)?;
 
     let mut w = bitstream_io::BitWriter::endian(w, BigEndian);
     let mut blocks = iter_last(blocks.into_iter());
@@ -1646,6 +1691,9 @@ impl Streaminfo {
 
     /// The maximum number of total samples (2³⁶ - 1)
     pub const MAX_TOTAL_SAMPLES: NonZero<u64> = NonZero::new((1 << 36) - 1).unwrap();
+
+    /// Defined size of STREAMINFO block
+    const SIZE: BlockSize = BlockSize(0x22);
 }
 
 block!(Streaminfo, Streaminfo, false);
