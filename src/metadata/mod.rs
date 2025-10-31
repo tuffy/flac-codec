@@ -906,20 +906,12 @@ pub fn write_blocks<B: AsBlockRef>(
     blocks: impl IntoIterator<Item = B>,
 ) -> Result<(), Error> {
     fn iter_last<T>(i: impl Iterator<Item = T>) -> impl Iterator<Item = (bool, T)> {
-        struct LastIterator<I: std::iter::Iterator> {
-            iter: std::iter::Peekable<I>,
-        }
+        let mut iter = i.peekable();
 
-        impl<T, I: std::iter::Iterator<Item = T>> Iterator for LastIterator<I> {
-            type Item = (bool, T);
-
-            fn next(&mut self) -> Option<Self::Item> {
-                let item = self.iter.next()?;
-                Some((self.iter.peek().is_none(), item))
-            }
-        }
-
-        LastIterator { iter: i.peekable() }
+        std::iter::from_fn(move || {
+            let item = iter.next()?;
+            Some((iter.peek().is_none(), item))
+        })
     }
 
     // "FlaC" tag must come before anything else
@@ -1230,7 +1222,7 @@ where
     /// Returns Ok if successful
     fn shrink_padding(blocks: &mut BlockList, fewer_bytes: u64) -> Result<(), ()> {
         // if a block set has more than one PADDING, we'll try the first
-        // rather than attempt to grow each in turn
+        // rather than attempt to shrink each in turn
         //
         // this is the most common case
         let padding = blocks.get_mut::<Padding>().ok_or(())?;
