@@ -804,6 +804,7 @@ pub fn info<P: AsRef<Path>>(p: P) -> Result<Streaminfo, Error> {
 }
 
 /// Returns FLAC's STREAMINFO metadata block from the given reader
+///
 /// The reader is assumed to be rewound to the start of the FLAC file data.
 ///
 /// # Errors
