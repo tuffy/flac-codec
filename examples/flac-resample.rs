@@ -127,8 +127,10 @@ fn int_to_float(bps: u32) -> impl Fn(i32) -> f32 {
 #[cfg(feature = "rubato")]
 fn float_to_int(bps: u32) -> impl Fn(f32) -> i32 {
     let shift = (1 << (bps - 1)) as f32;
+    let min = -(1 << (bps - 1));
+    let max = (1 << (bps - 1)) - 1;
 
-    move |f| (f * shift) as i32
+    move |f| ((f * shift) as i32).clamp(min, max)
 }
 
 #[cfg(feature = "rubato")]
