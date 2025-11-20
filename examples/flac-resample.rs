@@ -6,6 +6,10 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+
+#[cfg(feature = "rubato")]
+use bitstream_io::SignedBitCount;
+
 #[cfg(feature = "rubato")]
 use std::path::Path;
 
@@ -57,7 +61,7 @@ fn resample<P: AsRef<Path>>(input: P, output: P, sample_rate: usize) -> Result<(
         decoder.channel_count().into(),
     )?;
 
-    let bps = decoder.bits_per_sample();
+    let bps = decoder.metadata().streaminfo().bits_per_sample;
     let mut input_f: Vec<VecDeque<f32>> =
         vec![VecDeque::default(); usize::from(decoder.channel_count())];
     let mut output_f = resampler.output_buffer_allocate(true);
@@ -118,17 +122,18 @@ fn resample<P: AsRef<Path>>(input: P, output: P, sample_rate: usize) -> Result<(
 }
 
 #[cfg(feature = "rubato")]
-fn int_to_float(bps: u32) -> impl Fn(i32) -> f32 {
-    let shift = (1 << (bps - 1)) as f32;
+fn int_to_float(bps: SignedBitCount<32>) -> impl Fn(i32) -> f32 {
+    // TODO - take advantage of unsigned_count once that stabilizes
+    let shift = (1 << (u32::from(bps.count()) - 1)) as f32;
 
     move |i| i as f32 / shift
 }
 
 #[cfg(feature = "rubato")]
-fn float_to_int(bps: u32) -> impl Fn(f32) -> i32 {
-    let shift = (1 << (bps - 1)) as f32;
-    let min = -(1 << (bps - 1));
-    let max = (1 << (bps - 1)) - 1;
+fn float_to_int(bps: SignedBitCount<32>) -> impl Fn(f32) -> i32 {
+    // TODO - take advantage of unsigned_count once that stabilizes
+    let shift = (1 << (u32::from(bps.count()) - 1)) as f32;
+    let (min, max) = bps.range().into_inner();
 
     move |f| ((f * shift) as i32).clamp(min, max)
 }
@@ -138,7 +143,7 @@ fn floats_to_ints<'i>(
     f: &[Vec<f32>],
     i: &'i mut Vec<Vec<i32>>,
     output_frames: usize,
-    bps: u32,
+    bps: SignedBitCount<32>,
 ) -> &'i [Vec<i32>] {
     for (f, i) in f.iter().zip(i.iter_mut()) {
         i.clear();
