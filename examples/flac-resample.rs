@@ -6,7 +6,6 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-
 #[cfg(feature = "rubato")]
 use bitstream_io::SignedBitCount;
 

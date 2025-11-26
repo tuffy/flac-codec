@@ -2441,6 +2441,51 @@ impl VorbisComment {
                 .map(|value| format!("{field}={value}")),
         );
     }
+
+    /// Replaces instances of the given field with a closure's result
+    ///
+    /// Closure takes the field's current value and returns
+    /// something `Display`-able such as a `String`.
+    ///
+    /// The closure is called for each maching field, if any.
+    ///
+    /// Fields are matched case-insensitively.
+    ///
+    /// # Panics
+    ///
+    /// Panics if field contains the `=` character
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use flac_codec::metadata::{VorbisComment, fields::ARTIST};
+    ///
+    /// let mut comment = VorbisComment {
+    ///     fields: vec![
+    ///         "ARTIST=some artist".to_owned(),
+    ///     ],
+    ///     ..VorbisComment::default()
+    /// };
+    ///
+    /// comment.replace_with(ARTIST, |s| s.to_ascii_uppercase());
+    ///
+    /// assert_eq!(comment.get(ARTIST), Some("SOME ARTIST"));
+    /// ```
+    pub fn replace_with<S: std::fmt::Display>(
+        &mut self,
+        field: &str,
+        mut f: impl FnMut(&str) -> S,
+    ) {
+        assert!(!field.contains('='), "field must not contain '='");
+
+        self.fields.iter_mut().for_each(|s| {
+            if let Some((key, value)) = s.split_once('=')
+                && key.eq_ignore_ascii_case(field)
+            {
+                *s = format!("{key}={}", f(value));
+            }
+        })
+    }
 }
 
 block!(VorbisComment, VorbisComment, false);
