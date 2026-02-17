@@ -1449,16 +1449,12 @@ impl<R: std::io::Seek> Decoder<R> {
 
         match self.blocks.get() {
             Some(SeekTable { points: seektable }) => {
-                match seektable
-                    .iter()
-                    .filter(|point| {
-                        point
-                            .sample_offset()
-                            .map(|offset| offset <= sample)
-                            .unwrap_or(false)
-                    })
-                    .next_back()
-                {
+                match seektable.iter().rfind(|point| {
+                    point
+                        .sample_offset()
+                        .map(|offset| offset <= sample)
+                        .unwrap_or(false)
+                }) {
                     Some(SeekPoint::Defined {
                         sample_offset,
                         byte_offset,
