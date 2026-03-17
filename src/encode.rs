@@ -25,7 +25,6 @@ use crate::stream::{ChannelAssignment, FrameNumber, Independent, SampleRate};
 use crate::{Counter, Error};
 use arrayvec::ArrayVec;
 use bitstream_io::{BigEndian, BitRecorder, BitWrite, BitWriter, SignedBitCount};
-use std::collections::VecDeque;
 use std::fs::File;
 use std::io::BufWriter;
 use std::num::NonZero;
@@ -98,7 +97,7 @@ pub struct FlacByteWriter<W: std::io::Write + std::io::Seek, E: crate::byteorder
     // the wrapped encoder
     encoder: Encoder<W>,
     // bytes that make up a partial FLAC frame
-    buf: VecDeque<u8>,
+    buf: Vec<u8>,
     // a whole set of samples for a FLAC frame
     frame: Frame,
     // size of a single sample in bytes
@@ -151,7 +150,7 @@ impl<W: std::io::Write + std::io::Seek, E: crate::byteorder::Endianness> FlacByt
         let pcm_frame_size = bytes_per_sample * channels as usize;
 
         Ok(Self {
-            buf: VecDeque::default(),
+            buf: Vec::default(),
             frame: Frame::empty(channels.into(), bits_per_sample.into()),
             bytes_per_sample,
             pcm_frame_size,
@@ -245,7 +244,7 @@ impl<W: std::io::Write + std::io::Seek, E: crate::byteorder::Endianness> FlacByt
                 use crate::byteorder::LittleEndian;
 
                 // truncate buffer to whole PCM frames
-                let buf = self.buf.make_contiguous();
+                let buf = self.buf.as_mut_slice();
                 let buf_len = buf.len();
                 let buf = &mut buf[..(buf_len - buf_len % self.pcm_frame_size)];
 
@@ -362,7 +361,7 @@ impl<W: std::io::Write + std::io::Seek, E: crate::byteorder::Endianness> std::io
         let mut encoded_frames = 0;
         for buf in self
             .buf
-            .make_contiguous()
+            .as_mut_slice()
             .chunks_exact_mut(self.frame_byte_size)
         {
             // convert buffer to little-endian bytes
@@ -377,7 +376,7 @@ impl<W: std::io::Write + std::io::Seek, E: crate::byteorder::Endianness> std::io
 
             encoded_frames += 1;
         }
-        // TODO - use truncate_front whenever that stabilizes
+
         self.buf.drain(0..self.frame_byte_size * encoded_frames);
 
         // indicate whole buffer's been consumed
@@ -448,7 +447,7 @@ pub struct FlacSampleWriter<W: std::io::Write + std::io::Seek> {
     // in channel-interleaved order
     // (must de-interleave later in case someone writes
     // only partial set of channels in a single write call)
-    sample_buf: VecDeque<i32>,
+    sample_buf: Vec<i32>,
     // a whole set of samples for a FLAC frame
     frame: Frame,
     // size of a single frame in samples
@@ -497,7 +496,7 @@ impl<W: std::io::Write + std::io::Seek> FlacSampleWriter<W> {
         let pcm_frame_size = usize::from(channels);
 
         Ok(Self {
-            sample_buf: VecDeque::default(),
+            sample_buf: Vec::default(),
             frame: Frame::empty(channels.into(), bits_per_sample.into()),
             bytes_per_sample,
             pcm_frame_size,
@@ -559,7 +558,7 @@ impl<W: std::io::Write + std::io::Seek> FlacSampleWriter<W> {
         let mut encoded_frames = 0;
         for buf in self
             .sample_buf
-            .make_contiguous()
+            .as_mut_slice()
             .chunks_exact_mut(self.frame_sample_size)
         {
             // update running MD5 sum calculation
@@ -588,7 +587,7 @@ impl<W: std::io::Write + std::io::Seek> FlacSampleWriter<W> {
             // encode as many samples possible into final frame, if necessary
             if !self.sample_buf.is_empty() {
                 // truncate buffer to whole PCM frames
-                let buf = self.sample_buf.make_contiguous();
+                let buf = self.sample_buf.as_mut_slice();
                 let buf_len = buf.len();
                 let buf = &mut buf[..(buf_len - buf_len % self.pcm_frame_size)];
 
@@ -734,7 +733,7 @@ pub struct FlacChannelWriter<W: std::io::Write + std::io::Seek> {
     // the wrapped encoder
     encoder: Encoder<W>,
     // channels that make up a partial FLAC frame
-    channel_bufs: Vec<VecDeque<i32>>,
+    channel_bufs: Vec<Vec<i32>>,
     // a whole set of samples for a FLAC frame
     frame: Frame,
     // size of a single frame in samples
@@ -779,7 +778,7 @@ impl<W: std::io::Write + std::io::Seek> FlacChannelWriter<W> {
         let bytes_per_sample = u32::from(bits_per_sample).div_ceil(8) as usize;
 
         Ok(Self {
-            channel_bufs: vec![VecDeque::default(); channels.into()],
+            channel_bufs: vec![Vec::default(); channels.into()],
             frame: Frame::empty(channels.into(), bits_per_sample.into()),
             bytes_per_sample,
             frame_sample_size: options.block_size as usize,
@@ -863,7 +862,7 @@ impl<W: std::io::Write + std::io::Seek> FlacChannelWriter<W> {
         for bufs in self
             .channel_bufs
             .iter_mut()
-            .map(|v| v.make_contiguous().chunks_exact_mut(self.frame_sample_size))
+            .map(|v| v.as_mut_slice().chunks_exact_mut(self.frame_sample_size))
             .collect::<MultiZip<_>>()
         {
             // update running MD5 sum calculation
@@ -914,7 +913,7 @@ impl<W: std::io::Write + std::io::Seek> FlacChannelWriter<W> {
                     self.frame.fill_from_channels(
                         self.channel_bufs
                             .iter_mut()
-                            .map(|v| v.make_contiguous())
+                            .map(|v| v.as_mut_slice())
                             .collect::<ArrayVec<_, MAX_CHANNELS>>()
                             .as_slice(),
                     ),
