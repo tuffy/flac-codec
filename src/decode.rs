@@ -376,7 +376,7 @@ pub struct FlacSampleReader<R> {
     // the wrapped decoder
     decoder: Decoder<R>,
     // decoded sample buffer
-    buf: VecDeque<i32>,
+    buf: Vec<i32>,
     // start of FLAC frames
     frames_start: Option<u64>,
 }
@@ -394,7 +394,7 @@ impl<R: std::io::Read> FlacSampleReader<R> {
 
         Ok(Self {
             decoder: Decoder::new(reader, blocklist),
-            buf: VecDeque::default(),
+            buf: Vec::default(),
             frames_start: None,
         })
     }
@@ -473,7 +473,7 @@ impl<R: std::io::Read> FlacSampleReader<R> {
             }
         }
 
-        Ok(self.buf.make_contiguous())
+        Ok(self.buf.as_mut_slice())
     }
 
     /// Informs the reader that `amt` samples have been consumed.
@@ -561,7 +561,7 @@ impl<R: std::io::Read + std::io::Seek> FlacSampleReader<R> {
 
         Ok(Self {
             decoder: Decoder::new(reader, blocklist),
-            buf: VecDeque::default(),
+            buf: Vec::default(),
             frames_start: Some(frames_start),
         })
     }
@@ -612,7 +612,10 @@ impl<R: std::io::Read> IntoIterator for FlacSampleReader<R> {
     type Item = Result<i32, Error>;
 
     fn into_iter(self) -> FlacSampleIterator<R> {
-        FlacSampleIterator { reader: self }
+        FlacSampleIterator {
+            decoder: self.decoder,
+            buf: self.buf.into(),
+        }
     }
 }
 
@@ -662,28 +665,31 @@ impl<R: std::io::Read> IntoIterator for FlacSampleReader<R> {
 /// ```
 #[derive(Clone)]
 pub struct FlacSampleIterator<R> {
-    reader: FlacSampleReader<R>,
+    // the wrapped decoder
+    decoder: Decoder<R>,
+    // decoded sample buffer
+    buf: VecDeque<i32>,
 }
 
 impl<R: std::io::Read> Metadata for FlacSampleIterator<R> {
     fn channel_count(&self) -> u8 {
-        self.reader.channel_count()
+        self.decoder.channel_count().get()
     }
 
     fn sample_rate(&self) -> u32 {
-        self.reader.sample_rate()
+        self.decoder.sample_rate()
     }
 
     fn bits_per_sample(&self) -> u32 {
-        self.reader.bits_per_sample()
+        self.decoder.bits_per_sample()
     }
 
     fn total_samples(&self) -> Option<u64> {
-        self.reader.total_samples()
+        self.decoder.total_samples().map(|s| s.get())
     }
 
     fn md5(&self) -> Option<&[u8; 16]> {
-        self.reader.md5()
+        self.decoder.md5()
     }
 }
 
@@ -692,17 +698,17 @@ impl<R: std::io::Read> Iterator for FlacSampleIterator<R> {
 
     #[inline]
     fn next(&mut self) -> Option<Result<i32, Error>> {
-        match self.reader.buf.pop_front() {
-            Some(sample) => Some(Ok(sample)),
-            None => match self.reader.decoder.read_frame() {
+        self.buf.pop_front().map_or_else(
+            || match self.decoder.read_frame() {
                 Ok(Some(frame)) => {
-                    self.reader.buf.extend(frame.iter());
-                    self.reader.buf.pop_front().map(Ok)
+                    self.buf.extend(frame.iter());
+                    self.buf.pop_front().map(Ok)
                 }
                 Err(e) => Some(Err(e)),
                 Ok(None) => None,
             },
-        }
+            |i| Some(Ok(i)),
+        )
     }
 }
 
