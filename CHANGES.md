@@ -1,3 +1,7 @@
+# 1.3.2
+
+- Update dependencies to latest versions
+
 # 1.3.1
 
 - Minor performance optimizations
