@@ -53,7 +53,7 @@ fn play_flac<P: AsRef<Path>>(flac: P, device: &cpal::Device) -> Result<(), Error
     let stream = device.build_output_stream(
         &cpal::StreamConfig {
             channels: flac.channel_count().into(),
-            sample_rate: cpal::SampleRate(flac.sample_rate()),
+            sample_rate: flac.sample_rate(),
             buffer_size: cpal::BufferSize::Default,
         },
         move |buf: &mut [f32], _| output_flac_data(&mut flac, buf),

@@ -37,14 +37,17 @@ fn main() {
 
 #[cfg(feature = "rubato")]
 fn resample<P: AsRef<Path>>(input: P, output: P, sample_rate: usize) -> Result<(), Error> {
-    use flac_codec::decode::{FlacChannelReader, Metadata};
-    use flac_codec::encode::{FlacChannelWriter, Options};
-    use rubato::{FftFixedInOut, Resampler};
-    use std::collections::VecDeque;
+    use flac_codec::decode::{FlacSampleReader, Metadata};
+    use flac_codec::encode::{FlacSampleWriter, Options};
+    use flac_codec::metadata::Streaminfo;
+    use rubato::audioadapter_buffers::direct::InterleavedSlice;
+    use rubato::{Fft, FixedSync, Indexing, Resampler};
 
-    let mut decoder = FlacChannelReader::open(input.as_ref())?;
+    const BUF_LEN: usize = 4096;
 
-    let mut encoder = FlacChannelWriter::create(
+    let decoder = FlacSampleReader::open(input.as_ref())?;
+
+    let mut encoder = FlacSampleWriter::create(
         output.as_ref(),
         Options::default(),
         sample_rate as u32,
@@ -53,68 +56,67 @@ fn resample<P: AsRef<Path>>(input: P, output: P, sample_rate: usize) -> Result<(
         None, // won't know the exact number of output samples
     )?;
 
-    let mut resampler: FftFixedInOut<f32> = FftFixedInOut::new(
+    let mut resampler: Fft<f32> = Fft::new(
         decoder.sample_rate() as usize,
         sample_rate,
+        1024,
         2,
         decoder.channel_count().into(),
+        FixedSync::Both,
     )?;
 
-    let bps = decoder.metadata().streaminfo().bits_per_sample;
-    let mut input_f: Vec<VecDeque<f32>> =
-        vec![VecDeque::default(); usize::from(decoder.channel_count())];
-    let mut output_f = resampler.output_buffer_allocate(true);
-    let mut output_i: Vec<Vec<i32>> = vec![vec![]; usize::from(decoder.channel_count())];
+    let Streaminfo {
+        bits_per_sample: bps,
+        channels,
+        ..
+    } = decoder.metadata().streaminfo();
+    let bps = *bps;
+    let channels: usize = channels.get().into();
+
+    let mut decoder = FlacFloatSampleReader::new(decoder);
+
+    let mut output_f = [0.0; BUF_LEN];
+    let mut output_i = [0; BUF_LEN];
+
+    let mut indexing = Indexing {
+        input_offset: 0,
+        output_offset: 0,
+        active_channels_mask: None,
+        partial_len: None,
+    };
 
     loop {
-        match decoder.fill_buf()? {
-            bufs if !bufs[0].is_empty() => {
-                // entend floating point channel buffers with new samples
-                for (i, b) in input_f.iter_mut().zip(bufs) {
-                    i.extend(b.iter().copied().map(int_to_float(bps)));
-                }
-                decoder.consume(input_f[0].len());
-
-                // process chunks of samples in input buffers
-                while input_f[0].len() >= resampler.input_frames_next() {
-                    let (input_frames, output_frames) = resampler.process_into_buffer(
-                        &input_f
-                            .iter_mut()
-                            .map(|v| v.make_contiguous())
-                            .collect::<Vec<_>>(),
-                        &mut output_f,
-                        None,
-                    )?;
-
-                    encoder.write(floats_to_ints(&output_f, &mut output_i, output_frames, bps))?;
-                    input_f.iter_mut().for_each(|v| {
-                        v.drain(0..input_frames);
-                    });
-                }
-            }
-            _ => {
-                // process remaining chunks of samples in input buffers
-                while input_f[0].len() >= resampler.input_frames_next() {
-                    let (input_frames, output_frames) = resampler.process_into_buffer(
-                        &input_f
-                            .iter_mut()
-                            .map(|v| v.make_contiguous())
-                            .collect::<Vec<_>>(),
-                        &mut output_f,
-                        None,
-                    )?;
-
-                    encoder.write(floats_to_ints(&output_f, &mut output_i, output_frames, bps))?;
-                    input_f.iter_mut().for_each(|v| {
-                        v.drain(0..input_frames);
-                    });
-                }
-
-                let output_frames = resampler
-                    .process_partial_into_buffer(None::<&[&[f32]]>, &mut output_f, None)?
-                    .1;
-                encoder.write(floats_to_ints(&output_f, &mut output_i, output_frames, bps))?;
+        match decoder.fill_buf(resampler.input_frames_next() * channels)? {
+            [] => {
+                // finish encoding process
                 break encoder.finalize().map_err(Error::Flac);
+            }
+            buf => {
+                // should be None until the last iteration
+                indexing.partial_len = (resampler.input_frames_next() > buf.len() / channels)
+                    .then_some(buf.len() / channels);
+
+                let (frames_read, frames_written) = resampler.process_into_buffer(
+                    &InterleavedSlice::new(buf, channels, buf.len() / channels)?,
+                    &mut InterleavedSlice::new_mut(&mut output_f, channels, BUF_LEN / channels)?,
+                    Some(&indexing),
+                )?;
+                decoder.consume(frames_read * channels);
+
+                let samples_written = frames_written * channels;
+
+                // convert samples from floats back to ints
+                for (i, o) in output_f[0..samples_written]
+                    .iter()
+                    .copied()
+                    .map(float_to_int(bps))
+                    .zip(&mut output_i[0..samples_written])
+                {
+                    *o = i;
+                }
+
+                // process int samples
+                encoder.write(&output_i[0..samples_written])?;
             }
         }
     }
@@ -137,18 +139,44 @@ fn float_to_int(bps: SignedBitCount<32>) -> impl Fn(f32) -> i32 {
     move |f| ((f * shift) as i32).clamp(min, max)
 }
 
+/// Reads FLAC samples as floating point values
 #[cfg(feature = "rubato")]
-fn floats_to_ints<'i>(
-    f: &[Vec<f32>],
-    i: &'i mut Vec<Vec<i32>>,
-    output_frames: usize,
-    bps: SignedBitCount<32>,
-) -> &'i [Vec<i32>] {
-    for (f, i) in f.iter().zip(i.iter_mut()) {
-        i.clear();
-        i.extend(f.iter().copied().take(output_frames).map(float_to_int(bps)));
+struct FlacFloatSampleReader<R> {
+    // the wrapped decoder
+    decoder: flac_codec::decode::FlacSampleReader<R>,
+    // decoded sample buffer
+    buf: Vec<f32>,
+}
+
+#[cfg(feature = "rubato")]
+impl<R: std::io::Read> FlacFloatSampleReader<R> {
+    pub fn new(decoder: flac_codec::decode::FlacSampleReader<R>) -> Self {
+        Self {
+            decoder,
+            buf: vec![],
+        }
     }
-    i.as_slice()
+
+    pub fn fill_buf(&mut self, required: usize) -> Result<&[f32], flac_codec::Error> {
+        while self.buf.len() < required {
+            let bps = self.decoder.metadata().streaminfo().bits_per_sample;
+            match self.decoder.fill_buf()? {
+                [] => break,
+                buf => {
+                    self.buf.extend(buf.iter().copied().map(int_to_float(bps)));
+                    let buf_len = buf.len();
+                    self.decoder.consume(buf_len);
+                }
+            }
+        }
+
+        Ok(self.buf.as_slice())
+    }
+
+    pub fn consume(&mut self, amt: usize) {
+        let amt = amt.min(self.buf.len());
+        self.buf.drain(0..amt);
+    }
 }
 
 #[cfg(feature = "rubato")]
@@ -157,6 +185,7 @@ enum Error {
     Flac(flac_codec::Error),
     RubatoConf(rubato::ResamplerConstructionError),
     Resample(rubato::ResampleError),
+    Size(rubato::audioadapter_buffers::SizeError),
 }
 
 #[cfg(feature = "rubato")]
@@ -181,6 +210,13 @@ impl From<rubato::ResampleError> for Error {
 }
 
 #[cfg(feature = "rubato")]
+impl From<rubato::audioadapter_buffers::SizeError> for Error {
+    fn from(err: rubato::audioadapter_buffers::SizeError) -> Self {
+        Self::Size(err)
+    }
+}
+
+#[cfg(feature = "rubato")]
 impl std::error::Error for Error {}
 
 #[cfg(feature = "rubato")]
@@ -190,6 +226,7 @@ impl std::fmt::Display for Error {
             Self::Flac(flac) => flac.fmt(f),
             Self::RubatoConf(r) => r.fmt(f),
             Self::Resample(r) => r.fmt(f),
+            Self::Size(r) => r.fmt(f),
         }
     }
 }
