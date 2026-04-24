@@ -45,6 +45,13 @@ macro_rules! arrayvec {
     }
 }
 
+#[derive(Default)]
+enum Finalized {
+    NotFinalized,
+    #[default]
+    Finalized,
+}
+
 /// A FLAC writer which accepts samples as bytes
 ///
 /// # Example
@@ -107,7 +114,7 @@ pub struct FlacByteWriter<W: std::io::Write + std::io::Seek, E: crate::byteorder
     // size of whole FLAC frame's samples in bytes
     frame_byte_size: usize,
     // whether the encoder has finalized the file
-    not_finalized: bool,
+    finalized: Finalized,
     // the input bytes' endianness
     endianness: std::marker::PhantomData<E>,
 }
@@ -170,7 +177,7 @@ impl<W: std::io::Write + std::io::Seek, E: crate::byteorder::Endianness> FlacByt
                     })
                     .transpose()?,
             )?,
-            not_finalized: true,
+            finalized: Finalized::NotFinalized,
             endianness: std::marker::PhantomData,
         })
     }
@@ -236,7 +243,7 @@ impl<W: std::io::Write + std::io::Seek, E: crate::byteorder::Endianness> FlacByt
     }
 
     fn finalize_inner(&mut self) -> Result<(), Error> {
-        if std::mem::take(&mut self.not_finalized) {
+        if matches!(std::mem::take(&mut self.finalized), Finalized::NotFinalized) {
             // encode as many bytes as possible into final frame, if necessary
             if !self.buf.is_empty() {
                 use crate::byteorder::LittleEndian;
@@ -455,7 +462,7 @@ pub struct FlacSampleWriter<W: std::io::Write + std::io::Seek> {
     // size of a single sample in bytes
     bytes_per_sample: usize,
     // whether the encoder has finalized the file
-    not_finalized: bool,
+    finalized: Finalized,
 }
 
 impl<W: std::io::Write + std::io::Seek> FlacSampleWriter<W> {
@@ -513,7 +520,7 @@ impl<W: std::io::Write + std::io::Seek> FlacSampleWriter<W> {
                     })
                     .transpose()?,
             )?,
-            not_finalized: true,
+            finalized: Finalized::NotFinalized,
         })
     }
 
@@ -579,7 +586,7 @@ impl<W: std::io::Write + std::io::Seek> FlacSampleWriter<W> {
     }
 
     fn finalize_inner(&mut self) -> Result<(), Error> {
-        if std::mem::take(&mut self.not_finalized) {
+        if matches!(std::mem::take(&mut self.finalized), Finalized::NotFinalized) {
             // encode as many samples possible into final frame, if necessary
             if !self.sample_buf.is_empty() {
                 // truncate buffer to whole PCM frames
@@ -737,7 +744,7 @@ pub struct FlacChannelWriter<W: std::io::Write + std::io::Seek> {
     // size of a single sample in bytes
     bytes_per_sample: usize,
     // whether the encoder has finalized the file
-    not_finalized: bool,
+    finalized: Finalized,
 }
 
 impl<W: std::io::Write + std::io::Seek> FlacChannelWriter<W> {
@@ -786,7 +793,7 @@ impl<W: std::io::Write + std::io::Seek> FlacChannelWriter<W> {
                 channels,
                 total_samples.and_then(NonZero::new),
             )?,
-            not_finalized: true,
+            finalized: Finalized::NotFinalized,
         })
     }
 
@@ -888,7 +895,7 @@ impl<W: std::io::Write + std::io::Seek> FlacChannelWriter<W> {
     fn finalize_inner(&mut self) -> Result<(), Error> {
         use crate::audio::MultiZip;
 
-        if std::mem::take(&mut self.not_finalized) {
+        if matches!(std::mem::take(&mut self.finalized), Finalized::NotFinalized) {
             // encode as many samples possible into final frame, if necessary
             if !self.channel_bufs[0].is_empty() {
                 // update running MD5 sum calculation
@@ -1866,7 +1873,7 @@ struct Encoder<W: std::io::Write + std::io::Seek> {
     // our running MD5 calculation
     md5: md5::Context,
     // whether the encoder has finalized the file
-    not_finalized: bool,
+    finalized: Finalized,
 }
 
 impl<W: std::io::Write + std::io::Seek> Encoder<W> {
@@ -1968,7 +1975,7 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
             samples_written: 0,
             seekpoints: Vec::new(),
             md5: md5::Context::new(),
-            not_finalized: true,
+            finalized: Finalized::NotFinalized,
         })
     }
 
@@ -2015,7 +2022,7 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
     }
 
     fn finalize_inner(&mut self) -> Result<(), Error> {
-        if std::mem::take(&mut self.not_finalized) {
+        if matches!(std::mem::take(&mut self.finalized), Finalized::NotFinalized) {
             use crate::metadata::SeekTable;
 
             // update SEEKTABLE metadata block with final values
