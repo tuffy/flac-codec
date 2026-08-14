@@ -20,18 +20,18 @@ use std::path::Path;
 
 pub use crate::metadata::Metadata;
 
-trait SignedInteger:
-    bitstream_io::SignedInteger + Into<i64> + std::ops::AddAssign + std::ops::Neg<Output = Self>
-{
-    fn from_i64(i: i64) -> Self;
+trait SignedInteger: bitstream_io::SignedInteger + Into<i64> + std::ops::Neg<Output = Self> {
+    fn checked_add_i128(self, rhs: i128) -> Option<Self>;
 
     fn from_u32(u: u32) -> Self;
 }
 
 impl SignedInteger for i32 {
     #[inline(always)]
-    fn from_i64(i: i64) -> i32 {
-        i as i32
+    fn checked_add_i128(self, rhs: i128) -> Option<Self> {
+        i128::from(self)
+            .checked_add(rhs)
+            .and_then(|sum| sum.try_into().ok())
     }
 
     #[inline(always)]
@@ -42,8 +42,10 @@ impl SignedInteger for i32 {
 
 impl SignedInteger for i64 {
     #[inline(always)]
-    fn from_i64(i: i64) -> i64 {
-        i
+    fn checked_add_i128(self, rhs: i128) -> Option<Self> {
+        i128::from(self)
+            .checked_add(rhs)
+            .and_then(|sum| sum.try_into().ok())
     }
 
     #[inline(always)]
@@ -727,60 +729,77 @@ impl<R: std::io::Read + std::io::Seek, E: crate::byteorder::Endianness> std::io:
         .into();
 
         // the desired absolute position in the stream, in bytes
-        let desired_pos: u64 = match pos {
-            std::io::SeekFrom::Start(pos) => pos,
-            std::io::SeekFrom::Current(pos) => {
-                // current position in bytes is current position in samples
-                // converted to bytes *minus* the un-consumed space in the buffer
-                // since the sample position is running ahead of the byte position
-                let original_pos: u64 =
-                    (decoder.current_sample * bytes_per_pcm_frame) - (buf.len() as u64);
+        let desired_pos: u64 =
+            match pos {
+                std::io::SeekFrom::Start(pos) => pos,
+                std::io::SeekFrom::Current(pos) => {
+                    // current position in bytes is current position in samples
+                    // converted to bytes *minus* the un-consumed space in the buffer
+                    // since the sample position is running ahead of the byte position
+                    let original_pos: u64 =
+                        (decoder.current_sample * bytes_per_pcm_frame) - (buf.len() as u64);
 
-                match pos.cmp(&0) {
-                    Ordering::Less => {
-                        original_pos
-                            .checked_sub(pos.unsigned_abs())
-                            .ok_or(std::io::Error::new(
+                    match pos.cmp(&0) {
+                        Ordering::Less => original_pos.checked_sub(pos.unsigned_abs()).ok_or(
+                            std::io::Error::new(
                                 std::io::ErrorKind::InvalidInput,
                                 "cannot seek below byte 0",
-                            ))?
-                    }
-                    Ordering::Equal => return Ok(original_pos),
-                    Ordering::Greater => {
-                        original_pos
-                            .checked_add(pos.unsigned_abs())
-                            .ok_or(std::io::Error::new(
+                            ),
+                        )?,
+                        Ordering::Equal => return Ok(original_pos),
+                        Ordering::Greater => original_pos.checked_add(pos.unsigned_abs()).ok_or(
+                            std::io::Error::new(
                                 std::io::ErrorKind::InvalidInput,
                                 "seek offset too large",
-                            ))?
+                            ),
+                        )?,
                     }
                 }
-            }
-            std::io::SeekFrom::End(pos) => {
-                // if the total samples is unknown in streaminfo,
-                // we have no way to know where the file's end is
-                // (this is a very unusual case)
-                let max_pos: u64 = decoder.total_samples().map(|s| s.get()).ok_or_else(|| {
-                    std::io::Error::new(std::io::ErrorKind::NotSeekable, "total samples not known")
-                })?;
+                std::io::SeekFrom::End(pos) => {
+                    // if the total samples is unknown in streaminfo,
+                    // we have no way to know where the file's end is
+                    // (this is a very unusual case)
+                    let max_pos = decoder
+                        .total_samples()
+                        .and_then(|samples| samples.get().checked_mul(bytes_per_pcm_frame))
+                        .ok_or_else(|| {
+                            std::io::Error::new(
+                                std::io::ErrorKind::NotSeekable,
+                                "total stream byte length not known",
+                            )
+                        })?;
 
-                match pos.cmp(&0) {
-                    Ordering::Less => max_pos.checked_sub(pos.unsigned_abs()).ok_or_else(|| {
-                        std::io::Error::new(
-                            std::io::ErrorKind::InvalidInput,
-                            "cannot seek below byte 0",
-                        )
-                    })?,
-                    Ordering::Equal => max_pos,
-                    Ordering::Greater => {
-                        return Err(std::io::Error::new(
-                            std::io::ErrorKind::InvalidInput,
-                            "cannot seek beyond end of file",
-                        ));
+                    match pos.cmp(&0) {
+                        Ordering::Less => {
+                            max_pos.checked_sub(pos.unsigned_abs()).ok_or_else(|| {
+                                std::io::Error::new(
+                                    std::io::ErrorKind::InvalidInput,
+                                    "cannot seek below byte 0",
+                                )
+                            })?
+                        }
+                        Ordering::Equal => max_pos,
+                        Ordering::Greater => {
+                            return Err(std::io::Error::new(
+                                std::io::ErrorKind::InvalidInput,
+                                "cannot seek beyond end of file",
+                            ));
+                        }
                     }
                 }
-            }
-        };
+            };
+
+        if decoder.total_samples().is_some_and(|samples| {
+            samples
+                .get()
+                .checked_mul(bytes_per_pcm_frame)
+                .is_none_or(|length| desired_pos > length)
+        }) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "cannot seek beyond end of file",
+            ));
+        }
 
         // perform seek in stream to the desired sample
         // (this will usually be some position prior to the desired sample)
@@ -822,6 +841,14 @@ impl<R: std::io::Read + std::io::Seek> FlacSampleReader<R> {
     /// The sample is relative to the beginning of the stream
     pub fn seek(&mut self, sample: u64) -> Result<(), Error> {
         let channels: u8 = self.channel_count();
+
+        if self
+            .decoder
+            .total_samples()
+            .is_some_and(|total| sample > total.get())
+        {
+            return Err(Error::InvalidSeek);
+        }
 
         // actual position, in channel-independent samples
         let mut pos = self.decoder.seek(
@@ -1027,6 +1054,14 @@ impl<R: std::io::Read + std::io::Seek> FlacChannelReader<R> {
     ///
     /// The sample is relative to the beginning of the stream
     pub fn seek(&mut self, sample: u64) -> Result<(), Error> {
+        if self
+            .decoder
+            .total_samples()
+            .is_some_and(|total| sample > total.get())
+        {
+            return Err(Error::InvalidSeek);
+        }
+
         // actual position, in channel-independent samples
         let mut pos = self.decoder.seek(
             self.frames_start
@@ -1318,6 +1353,7 @@ struct Decoder<R> {
     // frames_start: u64,
     // the current sample, in channel-independent samples
     current_sample: u64,
+    frame_sequence: crate::stream::FrameSequence,
     // raw decoded frame samples
     buf: Frame,
 }
@@ -1338,6 +1374,7 @@ impl<R: std::io::Read> Decoder<R> {
             reader,
             blocks,
             current_sample: 0,
+            frame_sequence: crate::stream::FrameSequence::new(),
             buf: Frame::default(),
         }
     }
@@ -1387,26 +1424,35 @@ impl<R: std::io::Read> Decoder<R> {
     /// Returns any decoding error from the stream.
     fn read_frame(&mut self) -> Result<Option<&Frame>, Error> {
         use crate::crc::{Checksum, Crc16, CrcReader};
-        use crate::stream::FrameHeader;
+        use crate::stream::{FrameHeader, validate_block_position, validate_frame_size};
         use bitstream_io::{BigEndian, BitReader};
         use std::io::Read;
 
-        let mut crc16_reader: CrcReader<_, Crc16> = CrcReader::new(self.reader.by_ref());
+        let mut frame_reader = crate::Counter::new(self.reader.by_ref());
+        let mut crc16_reader: CrcReader<_, Crc16> = CrcReader::new(&mut frame_reader);
 
-        let header = match self
+        let remaining_samples = self
             .blocks
             .streaminfo()
             .total_samples
-            .map(|total| total.get() - self.current_sample)
-        {
+            .map(|total| {
+                total
+                    .get()
+                    .checked_sub(self.current_sample)
+                    .ok_or(Error::TooManySamples)
+            })
+            .transpose()?;
+
+        let header = match remaining_samples {
             Some(0) => return Ok(None),
             Some(remaining) => FrameHeader::read(crc16_reader.by_ref(), self.blocks.streaminfo())
                 .and_then(|header| {
-                // only the last block in a stream may contain <= 14 samples
-                let block_size = u16::from(header.block_size);
-                (u64::from(block_size) == remaining || block_size > 14)
-                    .then_some(header)
-                    .ok_or(Error::ShortBlock)
+                validate_block_position(
+                    u16::from(header.block_size),
+                    remaining,
+                    self.blocks.streaminfo(),
+                )?;
+                Ok(header)
             })?,
             // if total number of remaining samples isn't known,
             // treat an EOF error as the end of stream
@@ -1420,6 +1466,8 @@ impl<R: std::io::Read> Decoder<R> {
             },
         };
 
+        self.frame_sequence.validate(&header, self.current_sample)?;
+
         read_subframes(
             BitReader::endian(crc16_reader.by_ref(), BigEndian),
             &header,
@@ -1429,6 +1477,8 @@ impl<R: std::io::Read> Decoder<R> {
         if !crc16_reader.into_checksum().valid() {
             return Err(Error::Crc16Mismatch);
         }
+
+        validate_frame_size(frame_reader.count, self.blocks.streaminfo())?;
 
         self.current_sample += u64::from(u16::from(header.block_size));
 
@@ -1470,12 +1520,14 @@ impl<R: std::io::Seek> Decoder<R> {
                         self.reader
                             .seek(SeekFrom::Start(frames_start + byte_offset))?;
                         self.current_sample = *sample_offset;
+                        self.frame_sequence.seek(*sample_offset);
                         Ok(*sample_offset)
                     }
                     _ => {
                         // empty seektable so rewind to start of stream
                         self.reader.seek(SeekFrom::Start(frames_start))?;
                         self.current_sample = 0;
+                        self.frame_sequence.seek(0);
                         Ok(0)
                     }
                 }
@@ -1485,6 +1537,7 @@ impl<R: std::io::Seek> Decoder<R> {
                 // all we can do is rewind data to start of stream
                 self.reader.seek(SeekFrom::Start(frames_start))?;
                 self.current_sample = 0;
+                self.frame_sequence.seek(0);
                 Ok(0)
             }
         }
@@ -1521,9 +1574,15 @@ fn read_subframes<R: BitRead>(
                 Some(side_bps) => {
                     read_subframe(&mut reader, side_bps, side)?;
 
-                    left.iter().zip(side.iter_mut()).for_each(|(left, side)| {
-                        *side = *left - *side;
-                    });
+                    left.iter()
+                        .zip(side.iter_mut())
+                        .try_for_each(|(left, side)| {
+                            *side = reconstructed_sample(
+                                i128::from(*left) - i128::from(*side),
+                                header.bits_per_sample.into(),
+                            )?;
+                            Ok::<_, Error>(())
+                        })?;
                 }
                 None => {
                     // the very rare case of 32-bps streams
@@ -1538,11 +1597,16 @@ fn read_subframes<R: BitRead>(
                         &mut side_i64,
                     )?;
 
-                    left.iter().zip(side_i64).zip(side.iter_mut()).for_each(
-                        |((left, side_i64), side)| {
-                            *side = (*left as i64 - side_i64) as i32;
-                        },
-                    );
+                    left.iter()
+                        .zip(side_i64)
+                        .zip(side.iter_mut())
+                        .try_for_each(|((left, side_i64), side)| {
+                            *side = reconstructed_sample(
+                                i128::from(*left) - i128::from(side_i64),
+                                header.bits_per_sample.into(),
+                            )?;
+                            Ok::<_, Error>(())
+                        })?;
                 }
             }
         }
@@ -1557,9 +1621,15 @@ fn read_subframes<R: BitRead>(
                     read_subframe(&mut reader, side_bps, side)?;
                     read_subframe(&mut reader, header.bits_per_sample.into(), right)?;
 
-                    side.iter_mut().zip(right.iter()).for_each(|(side, right)| {
-                        *side += *right;
-                    });
+                    side.iter_mut()
+                        .zip(right.iter())
+                        .try_for_each(|(side, right)| {
+                            *side = reconstructed_sample(
+                                i128::from(*side) + i128::from(*right),
+                                header.bits_per_sample.into(),
+                            )?;
+                            Ok::<_, Error>(())
+                        })?;
                 }
                 None => {
                     // the very rare case of 32-bps streams
@@ -1575,11 +1645,16 @@ fn read_subframes<R: BitRead>(
                     )?;
                     read_subframe(&mut reader, header.bits_per_sample.into(), right)?;
 
-                    side.iter_mut().zip(side_i64).zip(right.iter()).for_each(
-                        |((side, side_64), right)| {
-                            *side = (side_64 + *right as i64) as i32;
-                        },
-                    );
+                    side.iter_mut()
+                        .zip(side_i64)
+                        .zip(right.iter())
+                        .try_for_each(|((side, side_64), right)| {
+                            *side = reconstructed_sample(
+                                i128::from(side_64) + i128::from(*right),
+                                header.bits_per_sample.into(),
+                            )?;
+                            Ok::<_, Error>(())
+                        })?;
                 }
             }
         }
@@ -1595,11 +1670,21 @@ fn read_subframes<R: BitRead>(
                 Some(side_bps) => {
                     read_subframe(&mut reader, side_bps, side)?;
 
-                    mid.iter_mut().zip(side.iter_mut()).for_each(|(mid, side)| {
-                        let sum = *mid * 2 + side.abs() % 2;
-                        *mid = (sum + *side) >> 1;
-                        *side = (sum - *side) >> 1;
-                    });
+                    mid.iter_mut()
+                        .zip(side.iter_mut())
+                        .try_for_each(|(mid, side)| {
+                            let side_value = i128::from(*side);
+                            let sum = i128::from(*mid) * 2 + (side_value & 1);
+                            *mid = reconstructed_sample(
+                                (sum + side_value) >> 1,
+                                header.bits_per_sample.into(),
+                            )?;
+                            *side = reconstructed_sample(
+                                (sum - side_value) >> 1,
+                                header.bits_per_sample.into(),
+                            )?;
+                            Ok::<_, Error>(())
+                        })?;
                 }
                 None => {
                     // the very rare case of 32-bps streams
@@ -1614,13 +1699,22 @@ fn read_subframes<R: BitRead>(
                         &mut side_i64,
                     )?;
 
-                    mid.iter_mut().zip(side.iter_mut()).zip(side_i64).for_each(
-                        |((mid, side), side_i64)| {
-                            let sum = *mid as i64 * 2 + (side_i64.abs() % 2);
-                            *mid = ((sum + side_i64) >> 1) as i32;
-                            *side = ((sum - side_i64) >> 1) as i32;
-                        },
-                    );
+                    mid.iter_mut()
+                        .zip(side.iter_mut())
+                        .zip(side_i64)
+                        .try_for_each(|((mid, side), side_i64)| {
+                            let side_value = i128::from(side_i64);
+                            let sum = i128::from(*mid) * 2 + (side_value & 1);
+                            *mid = reconstructed_sample(
+                                (sum + side_value) >> 1,
+                                header.bits_per_sample.into(),
+                            )?;
+                            *side = reconstructed_sample(
+                                (sum - side_value) >> 1,
+                                header.bits_per_sample.into(),
+                            )?;
+                            Ok::<_, Error>(())
+                        })?;
                 }
             }
         }
@@ -1630,6 +1724,18 @@ fn read_subframes<R: BitRead>(
     reader.skip(16)?; // CRC-16 checksum
 
     Ok(())
+}
+
+fn reconstructed_sample(sample: i128, bits_per_sample: SignedBitCount<32>) -> Result<i32, Error> {
+    let bits_per_sample = u32::from(bits_per_sample);
+    let maximum = (1i128 << (bits_per_sample - 1)) - 1;
+    let minimum = -(1i128 << (bits_per_sample - 1));
+
+    (minimum..=maximum)
+        .contains(&sample)
+        .then(|| i32::try_from(sample).ok())
+        .flatten()
+        .ok_or(Error::SampleOutOfRange)
 }
 
 fn read_subframe<const MAX: u32, R: BitRead, I: SignedInteger>(
@@ -1691,7 +1797,7 @@ fn read_fixed_subframe<const MAX: u32, R: BitRead, I: SignedInteger>(
     })?;
 
     read_residuals(reader, coefficients.len(), residuals)?;
-    predict(coefficients, 0, channel);
+    predict(coefficients, 0, channel)?;
     Ok(())
 }
 
@@ -1731,24 +1837,32 @@ fn read_lpc_subframe<const MAX: u32, R: BitRead, I: SignedInteger>(
     })?;
 
     read_residuals(reader, coefficients.len(), residuals)?;
-    predict(coefficients, qlp_shift, channel);
+    predict(coefficients, qlp_shift, channel)?;
     Ok(())
 }
 
-fn predict<I: SignedInteger>(coefficients: &[i64], qlp_shift: u32, channel: &mut [I]) {
+fn predict<I: SignedInteger>(
+    coefficients: &[i64],
+    qlp_shift: u32,
+    channel: &mut [I],
+) -> Result<(), Error> {
     for split in coefficients.len()..channel.len() {
         let (predicted, residuals) = channel.split_at_mut(split);
 
-        residuals[0] += I::from_i64(
-            predicted
-                .iter()
-                .rev()
-                .zip(coefficients)
-                .map(|(x, y)| (*x).into() * y)
-                .sum::<i64>()
-                >> qlp_shift,
-        );
+        let prediction = predicted
+            .iter()
+            .rev()
+            .zip(coefficients)
+            .map(|(sample, coefficient)| i128::from((*sample).into()) * i128::from(*coefficient))
+            .sum::<i128>()
+            >> qlp_shift;
+
+        residuals[0] = residuals[0]
+            .checked_add_i128(prediction)
+            .ok_or(Error::AccumulatorOverflow)?;
     }
+
+    Ok(())
 }
 
 #[test]
@@ -1758,7 +1872,7 @@ fn verify_prediction() {
         -796, -547, -285, -32, 199, 443, 670, -2, -23, 14, 6, 3, -4, 12, -2, 10,
     ];
     coefficients.reverse();
-    predict(&coefficients, 9, &mut buffer);
+    predict(&coefficients, 9, &mut buffer).unwrap();
     assert_eq!(
         &buffer,
         &[
@@ -1770,7 +1884,7 @@ fn verify_prediction() {
     let mut coefficients = [119, -255, 555, -836, 879, -1199, 1757];
     let mut buffer = [-21363, -21951, -22649, -24364, -27297, -26870, -30017, 3157];
     coefficients.reverse();
-    predict(&coefficients, 10, &mut buffer);
+    predict(&coefficients, 10, &mut buffer).unwrap();
     assert_eq!(
         &buffer,
         &[
@@ -1787,7 +1901,7 @@ fn verify_prediction() {
         104836, 60794, 54523, 412, 17943, -6025, -3713, 8373, 11764, 30094,
     ];
     coefficients.reverse();
-    predict(&coefficients, 12, &mut buffer);
+    predict(&coefficients, 12, &mut buffer).unwrap();
     assert_eq!(
         &buffer,
         &[
@@ -1795,6 +1909,16 @@ fn verify_prediction() {
             104836, 60794, 54523, 412, 17943, -6025, -3713, 8373, 11764, 33931,
         ]
     );
+}
+
+#[test]
+fn reject_prediction_overflow() {
+    let mut buffer = [i32::MAX, 1];
+
+    assert!(matches!(
+        predict(&[1], 0, &mut buffer),
+        Err(Error::AccumulatorOverflow)
+    ));
 }
 
 fn read_residuals<R: BitRead, I: SignedInteger>(
@@ -1811,9 +1935,14 @@ fn read_residuals<R: BitRead, I: SignedInteger>(
 
         let block_size = predictor_order + residuals.len();
         let partition_order = reader.read::<4, u32>()?;
-        let partition_count = 1 << partition_order;
+        let partition_count = 1usize << partition_order;
+        let partition_size = block_size
+            .is_multiple_of(partition_count)
+            .then_some(block_size / partition_count)
+            .filter(|partition_size| *partition_size > predictor_order)
+            .ok_or(Error::InvalidPartitionOrder)?;
 
-        let partitions = residuals.rchunks_mut(block_size / partition_count).rev();
+        let partitions = residuals.rchunks_mut(partition_size).rev();
 
         if partitions.len() != partition_count {
             return Err(Error::InvalidPartitionOrder);
@@ -1853,4 +1982,17 @@ fn read_residuals<R: BitRead, I: SignedInteger>(
         1 => read_block::<0b11111, R, I>(reader, predictor_order, residuals),
         _ => Err(Error::InvalidCodingMethod),
     }
+}
+
+#[test]
+fn reject_excessive_residual_partition_order() {
+    use bitstream_io::{BigEndian, BitReader};
+
+    let mut residuals = [0i32; 16];
+    let mut reader = BitReader::endian(&[0b0011_1100][..], BigEndian);
+
+    assert!(matches!(
+        read_residuals(&mut reader, 0, &mut residuals),
+        Err(Error::InvalidPartitionOrder)
+    ));
 }

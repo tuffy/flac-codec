@@ -180,6 +180,8 @@ pub enum Error {
     SampleCountMismatch,
     /// Residual overflow
     ResidualOverflow,
+    /// PCM sample cannot be represented by the declared bits-per-sample
+    SampleOutOfRange,
     /// Number of samples not evenly divisible by number of channels
     SamplesNotDivisibleByChannels,
     /// Invalid total byte count
@@ -242,7 +244,7 @@ impl std::fmt::Display for Error {
             Self::InvalidBlockSize => "invalid frame block size".fmt(f),
             Self::ShortBlock => "block size <= 14 must be last in stream".fmt(f),
             Self::BlockSizeMismatch => {
-                "block size in frame larger than maximum block size in STREAMINFO".fmt(f)
+                "block size in frame outside block size range in STREAMINFO".fmt(f)
             }
             Self::InvalidSampleRate => "invalid frame sample rate".fmt(f),
             Self::NonSubsetSampleRate => "sample rate undefined for subset stream".fmt(f),
@@ -287,6 +289,7 @@ impl std::fmt::Display for Error {
             Self::NoSamples => "no samples written to encoder".fmt(f),
             Self::SampleCountMismatch => "samples written to stream differ from expected".fmt(f),
             Self::ResidualOverflow => "residual value too large".fmt(f),
+            Self::SampleOutOfRange => "sample outside declared bits-per-sample range".fmt(f),
             Self::SamplesNotDivisibleByChannels => {
                 "number of samples not divisible number number of channels".fmt(f)
             }

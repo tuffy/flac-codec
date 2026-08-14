@@ -276,6 +276,96 @@ impl FrameHeader {
     }
 }
 
+pub(crate) fn validate_frame_size(frame_size: u64, streaminfo: &Streaminfo) -> Result<(), Error> {
+    let below_minimum = streaminfo
+        .minimum_frame_size
+        .is_some_and(|minimum| frame_size < u64::from(minimum.get()));
+    let above_maximum = streaminfo
+        .maximum_frame_size
+        .is_some_and(|maximum| frame_size > u64::from(maximum.get()));
+
+    (!below_minimum && !above_maximum)
+        .then_some(())
+        .ok_or(Error::InvalidMetadataBlock)
+}
+
+pub(crate) fn validate_block_position(
+    block_size: u16,
+    remaining_samples: u64,
+    streaminfo: &Streaminfo,
+) -> Result<(), Error> {
+    let block_size_u64 = u64::from(block_size);
+
+    if block_size_u64 > remaining_samples {
+        Err(Error::TooManySamples)
+    } else if block_size_u64 != remaining_samples && block_size <= 14 {
+        Err(Error::ShortBlock)
+    } else if block_size_u64 != remaining_samples && block_size < streaminfo.minimum_block_size {
+        Err(Error::BlockSizeMismatch)
+    } else {
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct FrameSequence {
+    blocking_strategy: Option<bool>,
+    next_fixed_frame: Option<u64>,
+    legacy_variable: bool,
+}
+
+impl FrameSequence {
+    pub(crate) fn new() -> Self {
+        Self {
+            blocking_strategy: None,
+            next_fixed_frame: Some(0),
+            legacy_variable: false,
+        }
+    }
+
+    pub(crate) fn validate(
+        &mut self,
+        header: &FrameHeader,
+        current_sample: u64,
+    ) -> Result<(), Error> {
+        match self.blocking_strategy {
+            Some(strategy) if strategy != header.blocking_strategy => {
+                return Err(Error::InvalidFrameNumber);
+            }
+            Some(_) => {}
+            None => self.blocking_strategy = Some(header.blocking_strategy),
+        }
+
+        let expected = if header.blocking_strategy || self.legacy_variable {
+            Some(current_sample)
+        } else {
+            self.next_fixed_frame
+        };
+
+        if expected.is_some_and(|expected| header.frame_number.0 != expected) {
+            if !header.blocking_strategy
+                && !self.legacy_variable
+                && current_sample > 0
+                && header.frame_number.0 == current_sample
+            {
+                self.legacy_variable = true;
+            } else {
+                return Err(Error::InvalidFrameNumber);
+            }
+        }
+
+        if !header.blocking_strategy && !self.legacy_variable {
+            self.next_fixed_frame = Some(header.frame_number.0 + 1);
+        }
+
+        Ok(())
+    }
+
+    pub(crate) fn seek(&mut self, sample: u64) {
+        self.next_fixed_frame = (sample == 0).then_some(0);
+    }
+}
+
 impl FromBitStreamWith<'_> for FrameHeader {
     type Error = Error;
     type Context = Streaminfo;
@@ -1779,7 +1869,10 @@ impl Frame {
     /// Reads new frame from the given reader
     #[inline]
     pub fn read<R: std::io::Read>(reader: &mut R, streaminfo: &Streaminfo) -> Result<Self, Error> {
-        Self::read_inner(reader, |r| FrameHeader::read(r, streaminfo))
+        let mut reader = crate::Counter::new(reader);
+        let frame = Self::read_inner(&mut reader, |r| FrameHeader::read(r, streaminfo))?;
+        validate_frame_size(reader.count, streaminfo)?;
+        Ok(frame)
     }
 
     /// Reads new frame from the given reader
@@ -1933,6 +2026,8 @@ pub struct FrameIterator<R> {
     blocks: crate::metadata::BlockList,
     metadata_len: u64,
     remaining_samples: Option<u64>,
+    current_sample: u64,
+    frame_sequence: FrameSequence,
 }
 
 impl<R: std::io::Read> FrameIterator<R> {
@@ -1949,6 +2044,8 @@ impl<R: std::io::Read> FrameIterator<R> {
         Ok(Self {
             metadata_len: reader.count,
             remaining_samples: blocks.streaminfo().total_samples.map(|s| s.get()),
+            current_sample: 0,
+            frame_sequence: FrameSequence::new(),
             blocks,
             reader,
         })
@@ -1985,10 +2082,24 @@ impl<R: std::io::Read> Iterator for FrameIterator<R> {
                 let offset = self.reader.count;
                 match Frame::read(&mut self.reader, self.blocks.streaminfo()) {
                     Ok(frame) => {
-                        *remaining = remaining
-                            .checked_sub(u64::from(u16::from(frame.header.block_size)))
-                            .unwrap_or_default();
-                        Some(Ok((frame, offset)))
+                        let block_size = u16::from(frame.header.block_size);
+                        match self
+                            .frame_sequence
+                            .validate(&frame.header, self.current_sample)
+                            .and_then(|()| {
+                                validate_block_position(
+                                    block_size,
+                                    *remaining,
+                                    self.blocks.streaminfo(),
+                                )
+                            }) {
+                            Ok(()) => {
+                                *remaining -= u64::from(block_size);
+                                self.current_sample += u64::from(block_size);
+                                Some(Ok((frame, offset)))
+                            }
+                            Err(error) => Some(Err(error)),
+                        }
                     }
                     Err(err) => Some(Err(err)),
                 }
@@ -1999,7 +2110,16 @@ impl<R: std::io::Read> Iterator for FrameIterator<R> {
                 // (this is an uncommon case)
                 let offset = self.reader.count;
                 match Frame::read(&mut self.reader, self.blocks.streaminfo()) {
-                    Ok(frame) => Some(Ok((frame, offset))),
+                    Ok(frame) => match self
+                        .frame_sequence
+                        .validate(&frame.header, self.current_sample)
+                    {
+                        Ok(()) => {
+                            self.current_sample += u64::from(u16::from(frame.header.block_size));
+                            Some(Ok((frame, offset)))
+                        }
+                        Err(error) => Some(Err(error)),
+                    },
                     Err(Error::Io(err)) if err.kind() == std::io::ErrorKind::UnexpectedEof => None,
                     Err(err) => Some(Err(err)),
                 }
