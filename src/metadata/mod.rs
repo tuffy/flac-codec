@@ -1747,12 +1747,7 @@ impl ToBitStream for Streaminfo {
         w.write::<24, _>(self.maximum_frame_size)?;
         w.write::<20, _>(self.sample_rate)?;
         w.write::<3, _>(self.channels)?;
-        w.write_count(
-            self.bits_per_sample
-                .checked_sub::<0b11111>(1)
-                .unwrap()
-                .count(),
-        )?;
+        w.write::<5, _>(u32::from(self.bits_per_sample) - 1)?;
         w.write::<36, _>(self.total_samples)?;
         w.write_from(self.md5.unwrap_or([0; 16]))?;
         Ok(())
