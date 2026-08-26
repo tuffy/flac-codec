@@ -51,7 +51,7 @@ fn play_flac<P: AsRef<Path>>(flac: P, device: &cpal::Device) -> Result<(), Error
     let flac_duration = flac.duration().expect("FLAC duration must be known");
 
     let stream = device.build_output_stream(
-        &cpal::StreamConfig {
+        cpal::StreamConfig {
             channels: flac.channel_count().into(),
             sample_rate: flac.sample_rate(),
             buffer_size: cpal::BufferSize::Default,
@@ -112,8 +112,7 @@ fn samples_to_floats(flac: &[i32], output: &mut [f32], shift: f32) -> usize {
 #[derive(Debug)]
 enum Error {
     Flac(flac_codec::Error),
-    BuildStream(cpal::BuildStreamError),
-    PlayStream(cpal::PlayStreamError),
+    Cpal(cpal::Error),
 }
 
 #[cfg(feature = "cpal")]
@@ -127,16 +126,9 @@ impl From<flac_codec::Error> for Error {
 }
 
 #[cfg(feature = "cpal")]
-impl From<cpal::BuildStreamError> for Error {
-    fn from(err: cpal::BuildStreamError) -> Self {
-        Self::BuildStream(err)
-    }
-}
-
-#[cfg(feature = "cpal")]
-impl From<cpal::PlayStreamError> for Error {
-    fn from(err: cpal::PlayStreamError) -> Self {
-        Self::PlayStream(err)
+impl From<cpal::Error> for Error {
+    fn from(err: cpal::Error) -> Self {
+        Self::Cpal(err)
     }
 }
 
@@ -145,8 +137,7 @@ impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
             Self::Flac(flac) => flac.fmt(f),
-            Self::BuildStream(stream) => stream.fmt(f),
-            Self::PlayStream(stream) => stream.fmt(f),
+            Self::Cpal(stream) => stream.fmt(f),
         }
     }
 }

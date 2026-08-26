@@ -24,7 +24,7 @@ md5 = "0.8"
 rayon = { version = "1.12", optional = true }
 
 # For the flac-play example program
-cpal = { version = "0.17", optional = true }
+cpal = { version = "0.18", optional = true }
 
 # For the flac-view-artwork example program
 image = { version = "0.25", optional = true }
