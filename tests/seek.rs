@@ -18,7 +18,7 @@ fn test_byte_seeking() {
     let flac_len = flac.total_samples().unwrap();
 
     let bytes_per_pcm_frame =
-        u64::from(flac.channel_count()) * u64::from(u32::from(flac.bits_per_sample()) / 8);
+        u64::from(flac.channel_count()) * u64::from(flac.bits_per_sample() / 8);
 
     let mut all_data = Vec::new();
 
@@ -129,4 +129,59 @@ fn test_sample_seeking() {
     assert!(flac.seek(200000).is_ok());
     assert!(flac.seek(200001).is_err());
     assert!(flac.seek(u64::MAX).is_err());
+}
+
+#[test]
+fn test_failed_sample_seek_preserves_decoder_state() {
+    use flac_codec::decode::{FlacSampleReader, Metadata};
+    use std::io::Cursor;
+
+    let mut flac =
+        FlacSampleReader::new_seekable(Cursor::new(include_bytes!("data/sine.flac"))).unwrap();
+    let total_samples = flac.total_samples().unwrap();
+
+    assert!(flac.seek(total_samples + 1).is_err());
+    assert!(flac.seek(0).is_ok());
+
+    let mut samples = [0; 32];
+    assert_eq!(flac.read(&mut samples).unwrap(), samples.len());
+}
+
+#[test]
+fn test_byte_seek_from_end_uses_byte_length() {
+    use flac_codec::{
+        byteorder::LittleEndian,
+        decode::FlacByteReader,
+        encode::{FlacSampleWriter, Options},
+    };
+    use std::io::{Cursor, Read, Seek, SeekFrom};
+
+    let samples = (0..101)
+        .flat_map(|sample| [sample * 197 - 10_000, sample * -131 + 7_000])
+        .collect::<Vec<_>>();
+    let mut encoded = Cursor::new(Vec::new());
+    let mut writer = FlacSampleWriter::new(
+        &mut encoded,
+        Options::fast().block_size(16).unwrap().no_padding(),
+        44_100,
+        16,
+        2,
+        Some(samples.len() as u64),
+    )
+    .unwrap();
+    writer.write(&samples).unwrap();
+    writer.finalize().unwrap();
+
+    let mut reader =
+        FlacByteReader::<_, LittleEndian>::new_seekable(Cursor::new(encoded.into_inner())).unwrap();
+    let mut all_bytes = Vec::new();
+    reader.read_to_end(&mut all_bytes).unwrap();
+
+    assert_eq!(
+        reader.seek(SeekFrom::End(-7)).unwrap(),
+        all_bytes.len() as u64 - 7
+    );
+    let mut suffix = Vec::new();
+    reader.read_to_end(&mut suffix).unwrap();
+    assert_eq!(suffix, all_bytes[all_bytes.len() - 7..]);
 }

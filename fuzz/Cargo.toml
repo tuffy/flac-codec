@@ -1,0 +1,42 @@
+[package]
+name = "flac-codec-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.flac-codec]
+path = ".."
+
+[[bin]]
+name = "decode_raw"
+path = "fuzz_targets/decode_raw.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "decode_structured"
+path = "fuzz_targets/decode_structured.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "encode_roundtrip"
+path = "fuzz_targets/encode_roundtrip.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "decode_seek"
+path = "fuzz_targets/decode_seek.rs"
+test = false
+doc = false
+bench = false

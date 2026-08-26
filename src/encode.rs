@@ -152,6 +152,10 @@ impl<W: std::io::Write + std::io::Seek, E: crate::byteorder::Endianness> FlacByt
             .try_into()
             .map_err(|_| Error::InvalidBitsPerSample)?;
 
+        if !(1..=8).contains(&channels) {
+            return Err(Error::ExcessiveChannels);
+        }
+
         let bytes_per_sample = u32::from(bits_per_sample).div_ceil(8) as usize;
 
         let pcm_frame_size = bytes_per_sample * channels as usize;
@@ -243,15 +247,16 @@ impl<W: std::io::Write + std::io::Seek, E: crate::byteorder::Endianness> FlacByt
     }
 
     fn finalize_inner(&mut self) -> Result<(), Error> {
+        if !self.buf.len().is_multiple_of(self.pcm_frame_size) {
+            return Err(Error::SamplesNotDivisibleByChannels);
+        }
+
         if matches!(std::mem::take(&mut self.finalized), Finalized::NotFinalized) {
             // encode as many bytes as possible into final frame, if necessary
             if !self.buf.is_empty() {
                 use crate::byteorder::LittleEndian;
 
-                // truncate buffer to whole PCM frames
                 let buf = self.buf.as_mut_slice();
-                let buf_len = buf.len();
-                let buf = &mut buf[..(buf_len - buf_len % self.pcm_frame_size)];
 
                 // convert buffer to little-endian bytes
                 E::bytes_to_le(buf, self.bytes_per_sample);
@@ -496,6 +501,10 @@ impl<W: std::io::Write + std::io::Seek> FlacSampleWriter<W> {
             .try_into()
             .map_err(|_| Error::InvalidBitsPerSample)?;
 
+        if !(1..=8).contains(&channels) {
+            return Err(Error::ExcessiveChannels);
+        }
+
         let bytes_per_sample = u32::from(bits_per_sample).div_ceil(8) as usize;
 
         let pcm_frame_size = usize::from(channels);
@@ -586,13 +595,14 @@ impl<W: std::io::Write + std::io::Seek> FlacSampleWriter<W> {
     }
 
     fn finalize_inner(&mut self) -> Result<(), Error> {
+        if !self.sample_buf.len().is_multiple_of(self.pcm_frame_size) {
+            return Err(Error::SamplesNotDivisibleByChannels);
+        }
+
         if matches!(std::mem::take(&mut self.finalized), Finalized::NotFinalized) {
             // encode as many samples possible into final frame, if necessary
             if !self.sample_buf.is_empty() {
-                // truncate buffer to whole PCM frames
                 let buf = self.sample_buf.as_mut_slice();
-                let buf_len = buf.len();
-                let buf = &mut buf[..(buf_len - buf_len % self.pcm_frame_size)];
 
                 // update running MD5 sum calculation
                 // since samples are already interleaved in channel order
@@ -777,6 +787,10 @@ impl<W: std::io::Write + std::io::Seek> FlacChannelWriter<W> {
         let bits_per_sample: SignedBitCount<32> = bits_per_sample
             .try_into()
             .map_err(|_| Error::InvalidBitsPerSample)?;
+
+        if !(1..=8).contains(&channels) {
+            return Err(Error::ExcessiveChannels);
+        }
 
         let bytes_per_sample = u32::from(bits_per_sample).div_ceil(8) as usize;
 
@@ -1105,12 +1119,13 @@ impl<W: std::io::Write> FlacStreamWriter<W> {
             .try_into()
             .map_err(|_| Error::NonSubsetBitsPerSample)?;
 
-        // samples must divide evenly into channels
-        if !samples.len().is_multiple_of(usize::from(channels)) {
-            return Err(Error::SamplesNotDivisibleByChannels);
-        } else if !(1..=8).contains(&channels) {
+        if !(1..=8).contains(&channels) {
             return Err(Error::ExcessiveChannels);
+        } else if !samples.len().is_multiple_of(usize::from(channels)) {
+            return Err(Error::SamplesNotDivisibleByChannels);
         }
+
+        validate_samples(bits_per_sample, samples.iter().copied())?;
 
         self.options.use_rice2 = u32::from(bits_per_sample) > 16;
 
@@ -1995,6 +2010,8 @@ impl<W: std::io::Write + std::io::Seek> Encoder<W> {
     /// or if the frame's parameters are not a match
     /// for the encoder's.
     fn encode(&mut self, frame: &Frame) -> Result<(), Error> {
+        validate_samples(self.blocks.streaminfo().bits_per_sample, frame.iter())?;
+
         // drop in a new seekpoint
         self.seekpoints.push(EncoderSeekPoint {
             sample_offset: self.samples_written,
@@ -3843,7 +3860,7 @@ fn write_residuals<W: BitWrite>(
 
                     self.residuals.iter().try_for_each(|s| {
                         let (msb, lsb) = mask(if s.is_negative() {
-                            ((-*s as u32 - 1) << 1) + 1
+                            ((s.unsigned_abs() - 1) << 1) + 1
                         } else {
                             (*s as u32) << 1
                         });
@@ -3865,6 +3882,7 @@ fn write_residuals<W: BitWrite>(
     fn best_partitions<'r, const RICE_MAX: u32>(
         options: &EncoderOptions,
         block_size: usize,
+        predictor_order: usize,
         residuals: &'r [i32],
     ) -> ArrayVec<Partition<'r, RICE_MAX>, MAX_PARTITIONS> {
         (0..=block_size.trailing_zeros().min(options.max_partition_order))
@@ -3872,9 +3890,14 @@ fn write_residuals<W: BitWrite>(
             .take_while(|partition_count: &usize| partition_count.is_power_of_two())
             .filter_map(|partition_count| {
                 let mut estimated_bits = 0;
+                let partition_size = block_size / partition_count;
+
+                if partition_size <= predictor_order {
+                    return None;
+                }
 
                 let partitions = residuals
-                    .rchunks(block_size / partition_count)
+                    .rchunks(partition_size)
                     .rev()
                     .map(|partition| Partition::new(partition, &mut estimated_bits))
                     .collect::<Option<ArrayVec<_, MAX_PARTITIONS>>>()
@@ -3944,7 +3967,12 @@ fn write_residuals<W: BitWrite>(
     let block_size = predictor_order + residuals.len();
 
     if options.use_rice2 {
-        match try_reduce_rice(best_partitions(options, block_size, residuals)) {
+        match try_reduce_rice(best_partitions(
+            options,
+            block_size,
+            predictor_order,
+            residuals,
+        )) {
             CodingMethod::Rice(partitions) => {
                 writer.write::<2, u8>(0)?; // coding method 0
                 write_partitions(writer, partitions)
@@ -3955,7 +3983,7 @@ fn write_residuals<W: BitWrite>(
             }
         }
     } else {
-        let partitions = best_partitions::<0b1111>(options, block_size, residuals);
+        let partitions = best_partitions::<0b1111>(options, block_size, predictor_order, residuals);
         writer.write::<2, u8>(0)?; // coding method 0
         write_partitions(writer, partitions)
     }
@@ -4014,4 +4042,19 @@ where
     N: std::ops::Div<Output = N> + std::ops::Rem<Output = N> + std::cmp::PartialEq + Copy + Default,
 {
     (n % rhs == N::default()).then_some(n / rhs)
+}
+
+fn validate_samples(
+    bits_per_sample: SignedBitCount<32>,
+    samples: impl IntoIterator<Item = i32>,
+) -> Result<(), Error> {
+    let bits_per_sample = u32::from(bits_per_sample);
+    let maximum = (1i64 << (bits_per_sample - 1)) - 1;
+    let minimum = -(1i64 << (bits_per_sample - 1));
+
+    samples
+        .into_iter()
+        .all(|sample| (minimum..=maximum).contains(&i64::from(sample)))
+        .then_some(())
+        .ok_or(Error::SampleOutOfRange)
 }

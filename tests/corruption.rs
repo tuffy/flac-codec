@@ -27,17 +27,64 @@ fn test_file_corruption() {
     // (flipping a bit somewhere in a PADDING block might not be
     // noticed, for instance)
     let valid_range = 136..flac.len();
+    let mut rng = fastrand::Rng::with_seed(0x7E57_C0DE);
 
     for _ in 0..100 {
         let mut flac: Vec<u8> = Vec::from(flac);
-        flac[fastrand::usize(valid_range.clone())] ^= 1 << fastrand::u32(0..8);
+        let byte = rng.usize(valid_range.clone());
+        let bit = rng.u32(0..8);
+        flac[byte] ^= 1 << bit;
 
         assert!(
             copy(
                 &mut FlacByteReader::endian(&flac[..], LittleEndian).unwrap(),
                 &mut sink()
             )
-            .is_err()
+            .is_err(),
+            "corruption at byte {byte}, bit {bit} was not detected"
         );
+    }
+}
+
+#[test]
+fn test_every_single_frame_bit_corruption() {
+    use flac_codec::{
+        byteorder::LittleEndian,
+        decode::FlacByteReader,
+        encode::{FlacSampleWriter, Options},
+        metadata::BlockList,
+    };
+    use std::io::{Cursor, copy, sink};
+
+    let mut flac = Cursor::new(Vec::new());
+    let mut writer = FlacSampleWriter::new(
+        &mut flac,
+        Options::fast().block_size(16).unwrap().no_padding(),
+        44100,
+        16,
+        1,
+        Some(33),
+    )
+    .unwrap();
+    writer.write(&(0..33).collect::<Vec<_>>()).unwrap();
+    writer.finalize().unwrap();
+
+    let mut flac = flac.into_inner();
+    let mut input = Cursor::new(flac.as_slice());
+    BlockList::read(&mut input).unwrap();
+    let frames_start = usize::try_from(input.position()).unwrap();
+
+    for byte in frames_start..flac.len() {
+        for bit in 0..8 {
+            flac[byte] ^= 1 << bit;
+            let result = FlacByteReader::endian(flac.as_slice(), LittleEndian)
+                .and_then(|mut reader| copy(&mut reader, &mut sink()).map_err(Into::into));
+            flac[byte] ^= 1 << bit;
+
+            assert!(
+                result.is_err(),
+                "corruption at byte {byte}, bit {bit} was not detected"
+            );
+        }
     }
 }
