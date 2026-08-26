@@ -60,7 +60,6 @@ fn resample<P: AsRef<Path>>(input: P, output: P, sample_rate: usize) -> Result<(
         decoder.sample_rate() as usize,
         sample_rate,
         1024,
-        2,
         decoder.channel_count().into(),
         FixedSync::Both,
     )?;
