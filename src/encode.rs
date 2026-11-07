@@ -3753,8 +3753,6 @@ fn write_residuals<W: BitWrite>(
     use crate::stream::ResidualPartitionHeader;
     use bitstream_io::{BitCount, ToBitStream};
 
-    const MAX_PARTITIONS: usize = 64;
-
     #[derive(Debug)]
     struct Partition<'r, const RICE_MAX: u32> {
         header: ResidualPartitionHeader<RICE_MAX>,
@@ -3862,11 +3860,13 @@ fn write_residuals<W: BitWrite>(
         }
     }
 
+    // a partition order of up to 15 allows 32768 partitions,
+    // more than fit on the stack
     fn best_partitions<'r, const RICE_MAX: u32>(
         options: &EncoderOptions,
         block_size: usize,
         residuals: &'r [i32],
-    ) -> ArrayVec<Partition<'r, RICE_MAX>, MAX_PARTITIONS> {
+    ) -> Vec<Partition<'r, RICE_MAX>> {
         (0..=block_size.trailing_zeros().min(options.max_partition_order))
             .map(|partition_order| 1 << partition_order)
             .take_while(|partition_count: &usize| partition_count.is_power_of_two())
@@ -3877,7 +3877,7 @@ fn write_residuals<W: BitWrite>(
                     .rchunks(block_size / partition_count)
                     .rev()
                     .map(|partition| Partition::new(partition, &mut estimated_bits))
-                    .collect::<Option<ArrayVec<_, MAX_PARTITIONS>>>()
+                    .collect::<Option<Vec<_>>>()
                     .filter(|p| !p.is_empty() && p.len().is_power_of_two())?;
 
                 Some((partitions, estimated_bits))
@@ -3897,7 +3897,7 @@ fn write_residuals<W: BitWrite>(
 
     fn write_partitions<const RICE_MAX: u32, W: BitWrite>(
         writer: &mut W,
-        partitions: ArrayVec<Partition<'_, RICE_MAX>, MAX_PARTITIONS>,
+        partitions: Vec<Partition<'_, RICE_MAX>>,
     ) -> Result<(), Error> {
         writer.write::<4, u32>(partitions.len().ilog2())?; // partition order
         for partition in partitions {
@@ -3922,13 +3922,11 @@ fn write_residuals<W: BitWrite>(
     }
 
     enum CodingMethod<'p> {
-        Rice(ArrayVec<Partition<'p, 0b1111>, MAX_PARTITIONS>),
-        Rice2(ArrayVec<Partition<'p, 0b11111>, MAX_PARTITIONS>),
+        Rice(Vec<Partition<'p, 0b1111>>),
+        Rice2(Vec<Partition<'p, 0b11111>>),
     }
 
-    fn try_reduce_rice(
-        partitions: ArrayVec<Partition<'_, 0b11111>, MAX_PARTITIONS>,
-    ) -> CodingMethod<'_> {
+    fn try_reduce_rice(partitions: Vec<Partition<'_, 0b11111>>) -> CodingMethod<'_> {
         match partitions
             .iter()
             .map(|Partition { header, residuals }| {

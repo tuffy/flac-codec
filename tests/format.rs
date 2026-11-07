@@ -134,6 +134,50 @@ fn test_blocksize_variations() {
 }
 
 #[test]
+fn test_partition_order_variations() {
+    use flac_codec::decode::FlacSampleReader;
+    use flac_codec::encode::FlacSampleWriter;
+
+    // a quiet sine, so the subframes carry residual partitions
+    let samples: Vec<i32> = (0..65536)
+        .map(|i| (f64::from(i) * 0.05).sin() * 1000.0)
+        .map(|s| s as i32)
+        .collect();
+
+    // every partition order the options accept, in blocks of 2^15 samples
+    // (the encoder tries orders up to the block size's trailing zeros)
+    for partition_order in 0..=15 {
+        let mut flac = Cursor::new(vec![]);
+
+        let mut writer = FlacSampleWriter::new(
+            &mut flac,
+            Options::default()
+                .block_size(32768)
+                .unwrap()
+                .max_partition_order(partition_order)
+                .unwrap(),
+            44100,
+            16,
+            1,
+            Some(samples.len() as u64),
+        )
+        .unwrap();
+        writer.write(&samples).unwrap();
+        writer.finalize().unwrap();
+
+        assert!(flac.rewind().is_ok());
+
+        let mut output = vec![];
+        FlacSampleReader::new(flac)
+            .unwrap()
+            .read_to_end(&mut output)
+            .unwrap();
+
+        assert_eq!(output, samples);
+    }
+}
+
+#[test]
 fn test_fractional() {
     fn perform_test(blocksize: u16, samples: usize) {
         let data = include_bytes!("data/noise.raw");
