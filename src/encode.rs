@@ -3482,7 +3482,7 @@ fn autocorrelate(
     // verified output against reference implementation
     // See: FLAC__lpc_compute_autocorrelation
 
-    debug_assert!(usize::from(max_lpc_order.get()) < MAX_LPC_COEFFS);
+    debug_assert!(usize::from(max_lpc_order.get()) <= MAX_LPC_COEFFS);
 
     let mut tail = windowed;
     // let mut autocorrelated = Vec::with_capacity(max_lpc_order.get().into());
@@ -3524,6 +3524,20 @@ fn test_autocorrelation() {
         ),
         arrayvec![51408.0, 49792.0, 45304.0, 38466.0, 29914.0],
     )
+}
+
+#[test]
+fn test_autocorrelation_at_max_order() {
+    // Options::max_lpc_order accepts up to 32, which takes 33 values
+    let windowed: Vec<f64> = (0..64).map(f64::from).collect();
+    let autocorrelated = autocorrelate(&windowed, NonZero::new(32).unwrap());
+    assert_eq!(autocorrelated.len(), 33);
+    assert_eq!(
+        autocorrelated[32],
+        (0..32)
+            .map(|n| f64::from(n) * f64::from(n + 32))
+            .sum::<f64>()
+    );
 }
 
 #[derive(Debug)]
