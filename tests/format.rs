@@ -82,6 +82,59 @@ fn test_small_files() {
 }
 
 #[test]
+fn test_drop_without_finalize() {
+    use flac_codec::decode::FlacSampleReader;
+    use flac_codec::encode::{FlacChannelWriter, FlacSampleWriter};
+
+    // two whole blocks and part of a third, which dropping the writer must
+    // write as finalizing it does
+    let left: Vec<i32> = (0..5000).map(|i| (i % 200) - 100).collect();
+    let right: Vec<i32> = (0..5000).map(|i| (i % 300) - 150).collect();
+    let samples: Vec<i32> = left
+        .iter()
+        .zip(&right)
+        .flat_map(|(l, r)| [*l, *r])
+        .collect();
+
+    let decode = |flac: Cursor<Vec<u8>>| {
+        let mut output = vec![];
+        FlacSampleReader::new(Cursor::new(flac.into_inner()))
+            .unwrap()
+            .read_to_end(&mut output)
+            .unwrap();
+        output
+    };
+
+    let mut flac = Cursor::new(vec![]);
+    let mut writer = FlacSampleWriter::new(
+        &mut flac,
+        Options::default().block_size(2048).unwrap(),
+        44100,
+        16,
+        2,
+        None,
+    )
+    .unwrap();
+    writer.write(&samples).unwrap();
+    drop(writer);
+    assert_eq!(decode(flac), samples);
+
+    let mut flac = Cursor::new(vec![]);
+    let mut writer = FlacChannelWriter::new(
+        &mut flac,
+        Options::default().block_size(2048).unwrap(),
+        44100,
+        16,
+        2,
+        None,
+    )
+    .unwrap();
+    writer.write([&left, &right]).unwrap();
+    drop(writer);
+    assert_eq!(decode(flac), samples);
+}
+
+#[test]
 fn test_blocksize_variations() {
     let data: &[u8] = include_bytes!("data/noise32.raw");
 
