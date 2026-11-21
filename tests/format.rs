@@ -1382,3 +1382,46 @@ fn test_noise_4ch_32bps() {
 fn test_noise_8ch_32bps() {
     test_noise(8, 32);
 }
+
+#[test]
+fn test_max_partition_orders() {
+    // every order the options accept, in blocks of 4096 samples
+    // (orders above 12 are limited by the block size)
+    let data = include_bytes!("data/noise.raw");
+
+    for max_partition_order in 0..=15 {
+        let mut flac = Cursor::new(vec![]);
+
+        assert_eq!(
+            std::io::copy(
+                &mut data.as_slice(),
+                &mut FlacByteWriter::endian(
+                    &mut flac,
+                    LittleEndian,
+                    Options::default()
+                        .max_partition_order(max_partition_order)
+                        .unwrap(),
+                    44100,
+                    16,
+                    2,
+                    data.len().try_into().ok(),
+                )
+                .unwrap(),
+            )
+            .unwrap(),
+            data.len().try_into().unwrap()
+        );
+
+        assert!(flac.rewind().is_ok());
+
+        let mut output = vec![];
+        assert!(
+            std::io::copy(
+                &mut FlacByteReader::endian(flac, LittleEndian).unwrap(),
+                &mut output,
+            )
+            .is_ok()
+        );
+        assert_eq!(output, data);
+    }
+}

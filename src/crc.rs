@@ -73,11 +73,6 @@ impl<W, C: Checksum> CrcWriter<W, C> {
     pub fn checksum(&self) -> C {
         self.checksum
     }
-
-    /// Consumes self and returns writer
-    pub fn into_writer(self) -> W {
-        self.writer
-    }
 }
 
 impl<W: std::io::Write, C: Checksum> std::io::Write for CrcWriter<W, C> {
@@ -142,6 +137,70 @@ impl From<Crc8> for u8 {
 /// A frame footer's CRC-16 checksum
 #[derive(Copy, Clone, Default, Debug)]
 pub struct Crc16(u16);
+
+impl Crc16 {
+    /// Returns the checksum of the given bytes
+    pub fn of(bytes: &[u8]) -> Self {
+        // Slicing-by-8: TABLES[k][b] is the checksum of byte b
+        // followed by k zero bytes, so 8 bytes take one step.
+        const TABLES: [[u16; 256]; 8] = {
+            let mut tables = [[0; 256]; 8];
+            let mut b = 0;
+            while b < 256 {
+                let mut crc = (b as u16) << 8;
+                let mut bit = 0;
+                while bit < 8 {
+                    crc = if crc & 0x8000 != 0 {
+                        (crc << 1) ^ 0x8005
+                    } else {
+                        crc << 1
+                    };
+                    bit += 1;
+                }
+                tables[0][b] = crc;
+                b += 1;
+            }
+            let mut k = 1;
+            while k < 8 {
+                let mut b = 0;
+                while b < 256 {
+                    let prev = tables[k - 1][b];
+                    tables[k][b] = (prev << 8) ^ tables[0][(prev >> 8) as usize];
+                    b += 1;
+                }
+                k += 1;
+            }
+            tables
+        };
+
+        let (chunks, rest) = bytes.as_chunks::<8>();
+        let crc = chunks.iter().fold(0, |crc: u16, chunk| {
+            let [hi, lo] = crc.to_be_bytes();
+            TABLES[7][usize::from(chunk[0] ^ hi)]
+                ^ TABLES[6][usize::from(chunk[1] ^ lo)]
+                ^ TABLES[5][usize::from(chunk[2])]
+                ^ TABLES[4][usize::from(chunk[3])]
+                ^ TABLES[3][usize::from(chunk[4])]
+                ^ TABLES[2][usize::from(chunk[5])]
+                ^ TABLES[1][usize::from(chunk[6])]
+                ^ TABLES[0][usize::from(chunk[7])]
+        });
+        rest.iter().fold(Self(crc), |c, b| c.update(*b))
+    }
+}
+
+#[test]
+fn test_crc16_of() {
+    let bytes: Vec<u8> = (0..1000u32)
+        .map(|i| (i.wrapping_mul(2_654_435_761) >> 13) as u8)
+        .collect();
+    for len in [0, 1, 7, 8, 9, 15, 16, 17, 999, 1000] {
+        let expected = bytes[..len]
+            .iter()
+            .fold(Crc16::default(), |c, b| c.update(*b));
+        assert_eq!(u16::from(Crc16::of(&bytes[..len])), u16::from(expected));
+    }
+}
 
 impl From<Crc16> for u16 {
     #[inline(always)]
