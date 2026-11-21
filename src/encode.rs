@@ -1098,7 +1098,6 @@ impl<W: std::io::Write> FlacStreamWriter<W> {
         bits_per_sample: u32,
         samples: &[i32],
     ) -> Result<(), Error> {
-        use crate::crc::{Crc16, CrcWriter};
         use crate::stream::{BitsPerSample, FrameHeader, SampleRate};
 
         let bits_per_sample: SignedBitCount<32> = bits_per_sample
@@ -1136,8 +1135,10 @@ impl<W: std::io::Write> FlacStreamWriter<W> {
             bps => bps,
         };
 
-        let mut w: CrcWriter<_, Crc16> = CrcWriter::new(&mut self.writer);
-        let mut bw: BitWriter<CrcWriter<&mut W, Crc16>, BigEndian>;
+        // the whole frame is built in memory, then checksummed and written at once
+        let mut w = &mut self.caches.frame;
+        w.clear();
+        let mut bw: BitWriter<&mut Vec<u8>, BigEndian>;
 
         match self
             .frame
@@ -1263,8 +1264,7 @@ impl<W: std::io::Write> FlacStreamWriter<W> {
             }
         }
 
-        let crc16: u16 = bw.aligned_writer()?.checksum().into();
-        bw.write_from(crc16)?;
+        finish_frame(bw, &mut self.writer)?;
 
         if self.frame_number.try_increment().is_err() {
             self.frame_number = FrameNumber::default();
@@ -1816,6 +1816,23 @@ impl Default for Window {
 struct EncodingCaches {
     channels: Vec<ChannelCache>,
     correlated: CorrelationCache,
+    // the frame being built
+    frame: Vec<u8>,
+}
+
+/// Pads the frame to a whole byte, appends its CRC-16
+/// and writes it, returning the frame's size in bytes
+fn finish_frame<W: std::io::Write>(
+    mut bw: BitWriter<&mut Vec<u8>, BigEndian>,
+    writer: &mut W,
+) -> Result<usize, Error> {
+    use crate::crc::Crc16;
+
+    let frame = bw.aligned_writer()?;
+    let crc16: u16 = Crc16::of(frame).into();
+    frame.extend_from_slice(&crc16.to_be_bytes());
+    writer.write_all(frame)?;
+    Ok(frame.len())
 }
 
 #[derive(Default)]
@@ -2269,16 +2286,15 @@ fn encode_frame<W>(
 where
     W: std::io::Write,
 {
-    use crate::Counter;
-    use crate::crc::{Crc16, CrcWriter};
     use crate::stream::FrameHeader;
     use bitstream_io::BigEndian;
 
     debug_assert!(!frame.is_empty());
 
-    let size = Counter::new(writer.by_ref());
-    let mut w: CrcWriter<_, Crc16> = CrcWriter::new(size);
-    let mut bw: BitWriter<CrcWriter<Counter<&mut W>, Crc16>, BigEndian>;
+    // the whole frame is built in memory, then checksummed and written at once
+    let mut w = &mut cache.frame;
+    w.clear();
+    let mut bw: BitWriter<&mut Vec<u8>, BigEndian>;
 
     match frame.as_slice() {
         [channel] => {
@@ -2406,13 +2422,12 @@ where
         }
     }
 
-    let crc16: u16 = bw.aligned_writer()?.checksum().into();
-    bw.write_from(crc16)?;
+    let frame_size = finish_frame(bw, writer.by_ref())?;
 
     frame_number.try_increment()?;
 
     // update minimum and maximum frame size values
-    if let s @ Some(size) = u32::try_from(bw.into_writer().into_writer().count)
+    if let s @ Some(size) = u32::try_from(frame_size)
         .ok()
         .filter(|size| *size < Streaminfo::MAX_FRAME_SIZE)
         .and_then(NonZero::new)
