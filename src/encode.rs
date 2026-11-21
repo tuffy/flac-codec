@@ -3767,16 +3767,11 @@ fn write_residuals<W: BitWrite>(
     }
 
     impl<'r, const RICE_MAX: u32> Partition<'r, RICE_MAX> {
-        fn new(partition: &'r [i32], estimated_bits: &mut u32) -> Option<Self> {
+        fn new(partition: &'r [i32], partition_sum: u64, estimated_bits: &mut u32) -> Option<Self> {
             let partition_samples = partition.len() as u16;
             if partition_samples == 0 {
                 return None;
             }
-
-            let partition_sum = partition
-                .iter()
-                .map(|i| u64::from(i.unsigned_abs()))
-                .sum::<u64>();
 
             if partition_sum > 0 {
                 let rice = if partition_sum > partition_samples.into() {
@@ -3789,14 +3784,7 @@ fn write_residuals<W: BitWrite>(
                     }) {
                         Some(rice) => rice,
                         None => {
-                            let escape_size = (partition
-                                .iter()
-                                .map(|i| u64::from(i.unsigned_abs()))
-                                .sum::<u64>()
-                                .ilog2()
-                                + 2)
-                            .try_into()
-                            .ok()?;
+                            let escape_size = (partition_sum.ilog2() + 2).try_into().ok()?;
 
                             *estimated_bits +=
                                 u32::from(escape_size) * u32::from(partition_samples);
@@ -3872,18 +3860,61 @@ fn write_residuals<W: BitWrite>(
         block_size: usize,
         residuals: &'r [i32],
     ) -> ArrayVec<Partition<'r, RICE_MAX>, MAX_PARTITIONS> {
-        (0..=block_size.trailing_zeros().min(options.max_partition_order))
-            .map(|partition_order| 1 << partition_order)
-            .take_while(|partition_count: &usize| partition_count.is_power_of_two())
-            .filter_map(|partition_count| {
+        fn abs_sum(partition: &[i32]) -> u64 {
+            partition.iter().map(|i| u64::from(i.unsigned_abs())).sum()
+        }
+
+        let max_order = block_size
+            .trailing_zeros()
+            .min(options.max_partition_order)
+            .min(MAX_PARTITIONS.ilog2());
+        let predictor_order = block_size - residuals.len();
+
+        // Each partition's sum of absolute residuals, by partition order.
+        // They're summed once at the finest order whose first partition
+        // has samples, and each coarser order adds pairs of the finer one.
+        let mut order_sums: [ArrayVec<u64, MAX_PARTITIONS>; MAX_PARTITIONS.ilog2() as usize + 1] =
+            Default::default();
+        if let Some(finest) = (0..=max_order)
+            .rev()
+            .find(|o| predictor_order < block_size >> o)
+        {
+            let finest = finest as usize;
+            order_sums[finest] = residuals
+                .rchunks(block_size >> finest)
+                .rev()
+                .map(abs_sum)
+                .collect();
+            for order in (0..finest).rev() {
+                order_sums[order] = order_sums[order + 1]
+                    .chunks_exact(2)
+                    .map(|pair| pair[0] + pair[1])
+                    .collect();
+            }
+        }
+
+        (0..=max_order)
+            .filter_map(|partition_order| {
+                let partition_count = 1 << partition_order;
                 let mut estimated_bits = 0;
 
-                let partitions = residuals
-                    .rchunks(block_size / partition_count)
-                    .rev()
-                    .map(|partition| Partition::new(partition, &mut estimated_bits))
-                    .collect::<Option<ArrayVec<_, MAX_PARTITIONS>>>()
-                    .filter(|p| !p.is_empty() && p.len().is_power_of_two())?;
+                let chunks = residuals.rchunks(block_size / partition_count).rev();
+                let sums = &order_sums[partition_order as usize];
+                let partitions = if sums.len() == partition_count {
+                    chunks
+                        .zip(sums)
+                        .map(|(partition, sum)| {
+                            Partition::new(partition, *sum, &mut estimated_bits)
+                        })
+                        .collect::<Option<ArrayVec<_, MAX_PARTITIONS>>>()
+                } else {
+                    chunks
+                        .map(|partition| {
+                            Partition::new(partition, abs_sum(partition), &mut estimated_bits)
+                        })
+                        .collect::<Option<ArrayVec<_, MAX_PARTITIONS>>>()
+                }
+                .filter(|p| !p.is_empty() && p.len().is_power_of_two())?;
 
                 Some((partitions, estimated_bits))
             })
