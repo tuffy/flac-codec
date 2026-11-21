@@ -200,10 +200,9 @@ impl Frame {
                 for ((l, r), pair) in left
                     .iter_mut()
                     .zip(right.iter_mut())
-                    .zip(samples.chunks_exact(2))
+                    .zip(samples.as_chunks::<2>().0)
                 {
-                    *l = pair[0];
-                    *r = pair[1];
+                    [*l, *r] = *pair;
                 }
             }
             channels => {
