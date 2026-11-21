@@ -191,8 +191,31 @@ impl Frame {
         self.channel_len = samples.len() / self.channels;
         self.samples.resize(samples.len(), 0);
 
-        for (o, i) in self.iter_mut().zip(samples) {
-            *o = *i;
+        // de-interleave one channel at a time,
+        // which is far cheaper than walking all channels in lockstep
+        match self.channels {
+            1 => self.samples.copy_from_slice(samples),
+            2 => {
+                let (left, right) = self.samples.split_at_mut(self.channel_len);
+                for ((l, r), pair) in left
+                    .iter_mut()
+                    .zip(right.iter_mut())
+                    .zip(samples.chunks_exact(2))
+                {
+                    *l = pair[0];
+                    *r = pair[1];
+                }
+            }
+            channels => {
+                if let Some(channel_len) = std::num::NonZero::new(self.channel_len) {
+                    for (c, output) in self.samples.chunks_exact_mut(channel_len.get()).enumerate()
+                    {
+                        for (o, i) in output.iter_mut().zip(samples[c..].iter().step_by(channels)) {
+                            *o = *i;
+                        }
+                    }
+                }
+            }
         }
 
         self

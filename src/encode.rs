@@ -1292,27 +1292,32 @@ impl<W: std::io::Write> FlacStreamWriter<W> {
 fn update_md5(md5: &mut md5::Context, samples: impl Iterator<Item = i32>, bytes_per_sample: usize) {
     use crate::byteorder::{Endianness, LittleEndian};
 
+    // MD5 is fed in batches, since each call to consume() has overhead
+    fn consume<const N: usize>(
+        md5: &mut md5::Context,
+        samples: impl Iterator<Item = i32>,
+        to_bytes: impl Fn(i32) -> [u8; N],
+    ) {
+        let mut buf = [0; 4096];
+        let mut len = 0;
+        for s in samples {
+            buf[len..len + N].copy_from_slice(&to_bytes(s));
+            len += N;
+            if len + N > buf.len() {
+                md5.consume(&buf[..len]);
+                len = 0;
+            }
+        }
+        if len > 0 {
+            md5.consume(&buf[..len]);
+        }
+    }
+
     match bytes_per_sample {
-        1 => {
-            for s in samples {
-                md5.consume(LittleEndian::i8_to_bytes(s as i8));
-            }
-        }
-        2 => {
-            for s in samples {
-                md5.consume(LittleEndian::i16_to_bytes(s as i16));
-            }
-        }
-        3 => {
-            for s in samples {
-                md5.consume(LittleEndian::i24_to_bytes(s));
-            }
-        }
-        4 => {
-            for s in samples {
-                md5.consume(LittleEndian::i32_to_bytes(s));
-            }
-        }
+        1 => consume(md5, samples, |s| LittleEndian::i8_to_bytes(s as i8)),
+        2 => consume(md5, samples, |s| LittleEndian::i16_to_bytes(s as i16)),
+        3 => consume(md5, samples, LittleEndian::i24_to_bytes),
+        4 => consume(md5, samples, LittleEndian::i32_to_bytes),
         _ => panic!("unsupported number of bytes per sample"),
     }
 }
