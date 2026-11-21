@@ -4142,12 +4142,41 @@ impl<const RICE_MAX: u32> bitstream_io::ToBitStream for Partition<'_, RICE_MAX> 
         match self.header {
             ResidualPartitionHeader::Standard { rice } => {
                 let mask = rice.mask_lsb();
+                let rice = u32::from(rice);
+                let lsb_mask = (1u32 << rice) - 1;
 
-                self.residuals.iter().try_for_each(|s| {
-                    let (msb, lsb) = mask(zigzag(*s));
-                    w.write_unary::<1>(msb)?;
-                    w.write_checked(lsb)
-                })?;
+                // Each residual is a unary MSB (zeros and a stop bit)
+                // followed by a rice-bit LSB. Residuals that fit in 32 bits
+                // are packed into an accumulator and written 32 bits at a time,
+                // rather than with two writes apiece.
+                let mut acc: u64 = 0;
+                let mut acc_bits: u32 = 0;
+                for s in self.residuals {
+                    let z = zigzag(*s);
+                    let bits = (z >> rice) + 1 + rice;
+                    if bits <= 32 {
+                        // acc_bits < 32, so the accumulator has room
+                        acc = (acc << bits) | u64::from((1 << rice) | (z & lsb_mask));
+                        acc_bits += bits;
+                        if acc_bits >= 32 {
+                            acc_bits -= 32;
+                            w.write::<32, u32>((acc >> acc_bits) as u32)?;
+                            acc &= (1 << acc_bits) - 1;
+                        }
+                    } else {
+                        if acc_bits > 0 {
+                            w.write_var(acc_bits, acc as u32)?;
+                            acc = 0;
+                            acc_bits = 0;
+                        }
+                        let (msb, lsb) = mask(z);
+                        w.write_unary::<1>(msb)?;
+                        w.write_checked(lsb)?;
+                    }
+                }
+                if acc_bits > 0 {
+                    w.write_var(acc_bits, acc as u32)?;
+                }
             }
             ResidualPartitionHeader::Escaped { escape_size } => {
                 self.residuals
