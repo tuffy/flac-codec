@@ -3259,47 +3259,59 @@ impl<'w, 'r> LpcSubframeParameters<'w, 'r> {
         channel: &'w [i32],
         residuals: &'r mut Vec<i32>,
     ) -> Result<(&'w [i32], &'r [i32]), ResidualOverflow> {
-        // One loop per order, so the prediction is unrolled.
-        fn calculate<const ORDER: usize>(
-            coefficients: &[i32],
-            shift: u32,
-            channel: &[i32],
-            residuals: &mut Vec<i32>,
-        ) -> Result<(), ResidualOverflow> {
-            // coefficients[0] applies to the most recent sample,
-            // so reverse them to line up with each window of samples
-            let mut reversed = [0i64; ORDER];
-            for (r, c) in reversed.iter_mut().rev().zip(coefficients) {
-                *r = i64::from(*c);
-            }
+        // One loop per order, so the prediction is unrolled,
+        // and per accumulator width: when no sum of products can exceed
+        // 32 bits, 32-bit arithmetic gives the same results and
+        // packs twice as many lanes per vector.
+        macro_rules! calculate {
+            ($name:ident, $acc:ty) => {
+                fn $name<const ORDER: usize>(
+                    coefficients: &[i32],
+                    shift: u32,
+                    channel: &[i32],
+                    residuals: &mut Vec<i32>,
+                ) -> Result<(), ResidualOverflow> {
+                    // coefficients[0] applies to the most recent sample,
+                    // so reverse them to line up with each window of samples
+                    let mut reversed = [0; ORDER];
+                    for (r, c) in reversed.iter_mut().rev().zip(coefficients) {
+                        *r = <$acc>::from(*c);
+                    }
 
-            let mut overflowed = false;
-            residuals.extend(channel.windows(ORDER).zip(&channel[ORDER..]).map(
-                |(previous, current)| {
-                    let previous: &[i32; ORDER] = previous.try_into().unwrap();
-                    let prediction = previous
-                        .iter()
-                        .zip(&reversed)
-                        .map(|(x, c)| i64::from(*x) * c)
-                        .sum::<i64>();
-                    let (residual, overflow) =
-                        current.overflowing_sub((prediction >> shift) as i32);
-                    overflowed |= overflow;
-                    residual
-                },
-            ));
+                    let mut overflowed = false;
+                    residuals.extend(channel.windows(ORDER).zip(&channel[ORDER..]).map(
+                        |(previous, current)| {
+                            let previous: &[i32; ORDER] = previous.try_into().unwrap();
+                            let prediction = previous
+                                .iter()
+                                .zip(&reversed)
+                                .map(|(x, c)| <$acc>::from(*x) * c)
+                                .sum::<$acc>();
+                            let (residual, overflow) =
+                                current.overflowing_sub((prediction >> shift) as i32);
+                            overflowed |= overflow;
+                            residual
+                        },
+                    ));
 
-            if overflowed {
-                Err(ResidualOverflow)
-            } else {
-                Ok(())
-            }
+                    if overflowed {
+                        Err(ResidualOverflow)
+                    } else {
+                        Ok(())
+                    }
+                }
+            };
         }
 
+        type Calculate = fn(&[i32], u32, &[i32], &mut Vec<i32>) -> Result<(), ResidualOverflow>;
+
+        calculate!(calculate_32, i32);
+        calculate!(calculate_64, i64);
+
         macro_rules! by_order {
-            ($($order:literal)*) => {
+            ($calculate:ident, $($order:literal)*) => {
                 match parameters.order.get() {
-                    $($order => calculate::<$order>,)*
+                    $($order => $calculate::<$order>,)*
                     _ => unreachable!("LPC order exceeds maximum"),
                 }
             };
@@ -3308,7 +3320,22 @@ impl<'w, 'r> LpcSubframeParameters<'w, 'r> {
         residuals.clear();
 
         if usize::from(parameters.order.get()) < channel.len() {
-            by_order!(1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32)(
+            // every partial sum of a prediction is at most this large
+            let max_prediction =
+                u64::from(channel.iter().map(|s| s.unsigned_abs()).max().unwrap_or(0))
+                    * parameters
+                        .coefficients
+                        .iter()
+                        .map(|c| u64::from(c.unsigned_abs()))
+                        .sum::<u64>();
+
+            let calculate: Calculate = if max_prediction <= i32::MAX as u64 {
+                by_order!(calculate_32, 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32)
+            } else {
+                by_order!(calculate_64, 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32)
+            };
+
+            calculate(
                 &parameters.coefficients,
                 parameters.shift,
                 channel,
