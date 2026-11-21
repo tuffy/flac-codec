@@ -3181,24 +3181,61 @@ impl<'w, 'r> LpcSubframeParameters<'w, 'r> {
         channel: &'w [i32],
         residuals: &'r mut Vec<i32>,
     ) -> Result<(&'w [i32], &'r [i32]), ResidualOverflow> {
+        // One loop per order, so the prediction is unrolled.
+        fn calculate<const ORDER: usize>(
+            coefficients: &[i32],
+            shift: u32,
+            channel: &[i32],
+            residuals: &mut Vec<i32>,
+        ) -> Result<(), ResidualOverflow> {
+            // coefficients[0] applies to the most recent sample,
+            // so reverse them to line up with each window of samples
+            let mut reversed = [0i64; ORDER];
+            for (r, c) in reversed.iter_mut().rev().zip(coefficients) {
+                *r = i64::from(*c);
+            }
+
+            let mut overflowed = false;
+            residuals.extend(channel.windows(ORDER).zip(&channel[ORDER..]).map(
+                |(previous, current)| {
+                    let previous: &[i32; ORDER] = previous.try_into().unwrap();
+                    let prediction = previous
+                        .iter()
+                        .zip(&reversed)
+                        .map(|(x, c)| i64::from(*x) * c)
+                        .sum::<i64>();
+                    let (residual, overflow) =
+                        current.overflowing_sub((prediction >> shift) as i32);
+                    overflowed |= overflow;
+                    residual
+                },
+            ));
+
+            if overflowed {
+                Err(ResidualOverflow)
+            } else {
+                Ok(())
+            }
+        }
+
+        macro_rules! by_order {
+            ($($order:literal)*) => {
+                match parameters.order.get() {
+                    $($order => calculate::<$order>,)*
+                    _ => unreachable!("LPC order exceeds maximum"),
+                }
+            };
+        }
+
         residuals.clear();
 
-        for split in usize::from(parameters.order.get())..channel.len() {
-            let (previous, current) = channel.split_at(split);
-
-            residuals.push(
-                current[0]
-                    .checked_sub(
-                        (previous
-                            .iter()
-                            .rev()
-                            .zip(&parameters.coefficients)
-                            .map(|(x, y)| *x as i64 * *y as i64)
-                            .sum::<i64>()
-                            >> parameters.shift) as i32,
-                    )
-                    .ok_or(ResidualOverflow)?,
-            );
+        if usize::from(parameters.order.get()) < channel.len() {
+            by_order!(1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32)(
+                &parameters.coefficients,
+                parameters.shift,
+                channel,
+                residuals,
+            )?;
         }
 
         Ok((
@@ -3487,19 +3524,43 @@ fn autocorrelate(
     // verified output against reference implementation
     // See: FLAC__lpc_compute_autocorrelation
 
+    // Lags are summed a block at a time in one pass over the samples,
+    // which keeps several independent sums in flight.
+    // Each lag's terms are still added in sample order,
+    // so the results match summing one lag at a time.
+    const BLOCK: usize = 8;
+
     debug_assert!(usize::from(max_lpc_order.get()) < MAX_LPC_COEFFS);
 
-    let mut tail = windowed;
-    // let mut autocorrelated = Vec::with_capacity(max_lpc_order.get().into());
+    let lags = (usize::from(max_lpc_order.get()) + 1).min(windowed.len());
     let mut autocorrelated = ArrayVec::default();
 
-    for _ in 0..=max_lpc_order.get() {
-        if tail.is_empty() {
-            return autocorrelated;
-        } else {
-            autocorrelated.push(windowed.iter().zip(tail).map(|(x, y)| x * y).sum());
-            tail.split_off_first();
+    for start in (0..lags).step_by(BLOCK) {
+        let mut sums = [-0.0; BLOCK];
+
+        // samples for which every lag in this block is in range
+        let full = windowed.len().saturating_sub(start + BLOCK - 1);
+        for (x, ys) in windowed[..full]
+            .iter()
+            .zip(windowed[start..].windows(BLOCK))
+        {
+            let ys: &[f64; BLOCK] = ys.try_into().unwrap();
+            for (sum, y) in sums.iter_mut().zip(ys) {
+                *sum += x * y;
+            }
         }
+
+        // the rest, where higher lags run past the end
+        for (i, x) in windowed.iter().enumerate().skip(full) {
+            for (sum, y) in sums
+                .iter_mut()
+                .zip(windowed.get(i + start..).unwrap_or_default())
+            {
+                *sum += x * y;
+            }
+        }
+
+        autocorrelated.extend(sums.into_iter().take(lags - start));
     }
 
     autocorrelated
