@@ -2873,31 +2873,34 @@ fn encode_subframe<'c>(
         );
     }
 
-    // determine any wasted bits
-    let (channel, bits_per_sample, wasted_bps) =
-        match channel.iter().try_fold(WASTED_MAX, |acc, sample| {
-            NonZero::new(sample.trailing_zeros()).map(|sample| sample.min(acc))
-        }) {
-            None => (channel, bits_per_sample, 0),
-            Some(WASTED_MAX) => {
-                return Subframe::new(
-                    bits_per_sample,
-                    0,
-                    SubframeKind::Constant { sample: channel[0] },
-                );
-            }
-            Some(wasted_bps) => {
-                let wasted_bps = wasted_bps.get();
-                wasted.clear();
-                wasted.extend(channel.iter().map(|sample| sample >> wasted_bps));
-                let wasted: &'c Vec<i32> = wasted;
-                (
-                    wasted.as_slice(),
-                    bits_per_sample.checked_sub(wasted_bps).unwrap(),
-                    wasted_bps,
-                )
-            }
-        };
+    // determine any wasted bits, which are the trailing zeros
+    // all samples share (32 if every sample is 0)
+    let (channel, bits_per_sample, wasted_bps) = match NonZero::new(
+        channel
+            .iter()
+            .fold(0, |acc, sample| acc | sample)
+            .trailing_zeros(),
+    ) {
+        None => (channel, bits_per_sample, 0),
+        Some(WASTED_MAX) => {
+            return Subframe::new(
+                bits_per_sample,
+                0,
+                SubframeKind::Constant { sample: channel[0] },
+            );
+        }
+        Some(wasted_bps) => {
+            let wasted_bps = wasted_bps.get();
+            wasted.clear();
+            wasted.extend(channel.iter().map(|sample| sample >> wasted_bps));
+            let wasted: &'c Vec<i32> = wasted;
+            (
+                wasted.as_slice(),
+                bits_per_sample.checked_sub(wasted_bps).unwrap(),
+                wasted_bps,
+            )
+        }
+    };
 
     let verbatim = || {
         Subframe::new(
@@ -3137,20 +3140,20 @@ fn encode_fixed_subframe<'c>(
         fixed_orders.push(channel);
 
         // accumulate a set of FIXED diffs
-        'outer: for buf in buffers.iter_mut() {
+        for buf in buffers.iter_mut() {
             let prev_order = fixed_orders.last().unwrap();
             match prev_order.split_at_checked(1) {
                 Some((_, r)) => {
+                    // overflow is checked once at the end,
+                    // so the loop has no early exit and can vectorize
+                    let mut overflowed = false;
                     buf.clear();
-                    for (n, p) in r.iter().zip(*prev_order) {
-                        match n.checked_sub(*p) {
-                            Some(v) => {
-                                buf.push(v);
-                            }
-                            None => break 'outer,
-                        }
-                    }
-                    if buf.is_empty() {
+                    buf.extend(r.iter().zip(*prev_order).map(|(n, p)| {
+                        let (v, overflow) = n.overflowing_sub(*p);
+                        overflowed |= overflow;
+                        v
+                    }));
+                    if overflowed || buf.is_empty() {
                         break;
                     } else {
                         let buf: &'c Vec<i32> = buf;
