@@ -1385,10 +1385,11 @@ fn test_noise_8ch_32bps() {
 
 #[test]
 fn test_max_partition_orders() {
-    // orders above 6 are accepted, though there are at most 64 partitions
+    // every order the options accept, in blocks of 4096 samples
+    // (orders above 12 are limited by the block size)
     let data = include_bytes!("data/noise.raw");
 
-    for max_partition_order in [6, 7, 8, 15] {
+    for max_partition_order in 0..=15 {
         let mut flac = Cursor::new(vec![]);
 
         assert_eq!(

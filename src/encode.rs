@@ -3885,12 +3885,12 @@ fn test_compute_best_order() {
     assert_float_approx!(bits.next().unwrap(), 3935.492805);
 }
 
-const MAX_PARTITIONS: usize = 64;
-
 /// A subframe's residuals, split into partitions but not yet written
 enum Residuals<'r> {
-    Rice(ArrayVec<Partition<'r, 0b1111>, MAX_PARTITIONS>),
-    Rice2(ArrayVec<Partition<'r, 0b11111>, MAX_PARTITIONS>),
+    // a partition order of up to 15 allows 32768 partitions,
+    // more than fit on the stack
+    Rice(Vec<Partition<'r, 0b1111>>),
+    Rice2(Vec<Partition<'r, 0b11111>>),
 }
 
 impl<'r> Residuals<'r> {
@@ -3922,7 +3922,7 @@ impl<'r> Residuals<'r> {
         }
     }
 
-    fn try_reduce_rice(partitions: ArrayVec<Partition<'r, 0b11111>, MAX_PARTITIONS>) -> Self {
+    fn try_reduce_rice(partitions: Vec<Partition<'r, 0b11111>>) -> Self {
         match partitions
             .iter()
             .map(|Partition { header, residuals }| {
@@ -4119,7 +4119,7 @@ fn best_partitions<'r, const RICE_MAX: u32>(
     options: &EncoderOptions,
     block_size: usize,
     residuals: &'r [i32],
-) -> ArrayVec<Partition<'r, RICE_MAX>, MAX_PARTITIONS> {
+) -> Vec<Partition<'r, RICE_MAX>> {
     use crate::stream::ResidualPartitionHeader;
     use bitstream_io::SignedBitCount;
 
@@ -4127,17 +4127,13 @@ fn best_partitions<'r, const RICE_MAX: u32>(
         partition.iter().map(|i| u64::from(i.unsigned_abs())).sum()
     }
 
-    let max_order = block_size
-        .trailing_zeros()
-        .min(options.max_partition_order)
-        .min(MAX_PARTITIONS.ilog2());
+    let max_order = block_size.trailing_zeros().min(options.max_partition_order);
     let predictor_order = block_size - residuals.len();
 
     // Each partition's sum of absolute residuals, by partition order.
     // They're summed once at the finest order whose first partition
     // has samples, and each coarser order adds pairs of the finer one.
-    let mut order_sums: [ArrayVec<u64, MAX_PARTITIONS>; MAX_PARTITIONS.ilog2() as usize + 1] =
-        Default::default();
+    let mut order_sums: Vec<Vec<u64>> = vec![Vec::new(); max_order as usize + 1];
     if let Some(finest) = (0..=max_order)
         .rev()
         .find(|o| predictor_order < block_size >> o)
@@ -4169,13 +4165,13 @@ fn best_partitions<'r, const RICE_MAX: u32>(
                 chunks
                     .zip(sums)
                     .map(|(partition, sum)| Partition::new(partition, *sum, &mut estimated_bits))
-                    .collect::<Option<ArrayVec<_, MAX_PARTITIONS>>>()
+                    .collect::<Option<Vec<_>>>()
             } else {
                 chunks
                     .map(|partition| {
                         Partition::new(partition, abs_sum(partition), &mut estimated_bits)
                     })
-                    .collect::<Option<ArrayVec<_, MAX_PARTITIONS>>>()
+                    .collect::<Option<Vec<_>>>()
             }
             .filter(|p| !p.is_empty() && p.len().is_power_of_two())?;
 
